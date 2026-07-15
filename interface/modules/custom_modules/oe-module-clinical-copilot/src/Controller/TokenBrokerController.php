@@ -28,6 +28,7 @@ declare(strict_types=1);
 namespace OpenEMR\Modules\ClinicalCopilot\Controller;
 
 use OpenEMR\Common\Csrf\CsrfUtils;
+use OpenEMR\Common\Logging\EventAuditLogger;
 use OpenEMR\Common\Session\PatientSessionUtil;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\OEGlobalsBag;
@@ -54,6 +55,14 @@ final class TokenBrokerController
 
     /** Dev token lifetime in seconds. */
     private const TOKEN_TTL_SECONDS = 3600;
+
+    /**
+     * Audit event name recorded when a user opens the Co-Pilot on a chart.
+     * Its own category (not one of OpenEMR's built-in event categories) so a
+     * "who opened the Co-Pilot on which chart, and when" query is a single
+     * predicate on the log table.
+     */
+    private const AUDIT_EVENT = 'copilot-open';
 
     public function handleRequest(): void
     {
@@ -89,10 +98,44 @@ final class TokenBrokerController
             return;
         }
 
+        $this->recordChartAccess($session);
+
         echo json_encode([
             'agent_url' => $this->agentUrl(),
             'token' => $token,
         ]);
+    }
+
+    /**
+     * Record the module's chart-access audit event (plan §4.2): who opened
+     * the Co-Pilot on which patient chart, and when.
+     *
+     * The broker is the honest per-open trigger: the panel JS acquires a
+     * token lazily and caches it for the panel session, so this fires once
+     * when the user actually engages the Co-Pilot to start a conversation --
+     * not on every dashboard render -- and it covers both the embedded
+     * dashboard panel and the standalone PWA, which share this broker. The
+     * audit logger supplies the timestamp. Only reached after authentication,
+     * CSRF verification, and a successful token mint, so the open is genuine.
+     */
+    private function recordChartAccess(SessionInterface $session): void
+    {
+        $rawUsername = $session->get('authUser');
+        $username = is_string($rawUsername) ? $rawUsername : '';
+
+        $rawGroup = $session->get('authProvider');
+        $group = is_string($rawGroup) ? $rawGroup : '';
+
+        $pid = PatientSessionUtil::getPid();
+
+        EventAuditLogger::getInstance()->newEvent(
+            self::AUDIT_EVENT,
+            $username,
+            $group,
+            1,
+            'Opened Clinical Co-Pilot on patient chart',
+            $pid > 0 ? $pid : null,
+        );
     }
 
     private function mintToken(SessionInterface $session, int $authUserId): string

@@ -25,6 +25,7 @@ declare(strict_types=1);
 
 namespace OpenEMR\Tests\E2e;
 
+use OpenEMR\Common\Database\QueryUtils;
 use OpenEMR\Tests\E2e\Base\BaseTrait;
 use OpenEMR\Tests\E2e\Login\LoginTestData;
 use OpenEMR\Tests\E2e\Login\LoginTrait;
@@ -43,6 +44,9 @@ class ClinicalCopilotTokenBrokerTest extends PantherTestCase
 
     private const BROKER_PATH = '/interface/modules/custom_modules/oe-module-clinical-copilot/public/ajax.php';
 
+    /** Audit event name the broker records when a chart's Co-Pilot is opened. */
+    private const AUDIT_EVENT = 'copilot-open';
+
     #[Test]
     public function testBrokerBehaviour(): void
     {
@@ -56,6 +60,10 @@ class ClinicalCopilotTokenBrokerTest extends PantherTestCase
             $this->assertIsString($csrfToken, 'panel context must expose a CSRF token for the broker');
             $this->assertNotSame('', $csrfToken, 'CSRF token must be non-empty');
 
+            // Snapshot the log high-water mark so the audit assertion only
+            // sees the row this test's broker call writes.
+            $maxLogIdBefore = $this->maxLogId();
+
             // Positive: a valid CSRF token yields a token + agent URL.
             $ok = $this->callBroker('POST', $csrfToken);
             $this->assertSame(200, $ok['status'], 'valid CSRF POST should succeed');
@@ -66,6 +74,15 @@ class ClinicalCopilotTokenBrokerTest extends PantherTestCase
             $this->assertNotSame('', $okBody['token'], 'token must be non-empty');
             $this->assertIsString($okBody['agent_url'] ?? null, 'broker must return the agent base URL');
             $this->assertNotSame('', $okBody['agent_url'], 'agent URL must be non-empty');
+
+            // Chart-access audit trail (P2.17): a successful open records a
+            // copilot-open event naming WHO (the logged-in user) and WHICH
+            // patient (the panel pid), timestamped by the audit logger.
+            $auditRow = $this->latestChartAccessEvent($maxLogIdBefore);
+            $this->assertNotNull($auditRow, 'broker must record a copilot-open audit event on a successful open');
+            $this->assertSame(LoginTestData::username, $auditRow['user'], 'audit event must name the logged-in user');
+            $this->assertSame(self::DEMO_PATIENT_PID, $auditRow['patient_id'], 'audit event must name the opened patient');
+            $this->assertSame('1', $auditRow['success'], 'a successful open must be logged as success');
 
             // Negative: a tampered CSRF token is rejected with no token leaked.
             $bad = $this->callBroker('POST', $csrfToken . 'tampered');
@@ -120,5 +137,43 @@ class ClinicalCopilotTokenBrokerTest extends PantherTestCase
         $body = is_array($decoded) && is_string($decoded['body'] ?? null) ? $decoded['body'] : '';
 
         return ['status' => $status, 'body' => $body];
+    }
+
+    /**
+     * Current maximum id in the audit `log` table, used as a high-water mark
+     * so the audit assertion ignores rows written before the broker call.
+     */
+    private function maxLogId(): int
+    {
+        $row = QueryUtils::querySingleRow('SELECT COALESCE(MAX(id), 0) AS max_id FROM log');
+        $maxId = is_array($row) ? ($row['max_id'] ?? 0) : 0;
+
+        return is_numeric($maxId) ? (int) $maxId : 0;
+    }
+
+    /**
+     * The copilot-open audit event written after the given log id, if any.
+     *
+     * @return array{user: string, patient_id: int, success: string}|null
+     */
+    private function latestChartAccessEvent(int $afterLogId): ?array
+    {
+        $row = QueryUtils::querySingleRow(
+            'SELECT `user`, `patient_id`, `success` FROM `log`'
+            . ' WHERE `event` = ? AND `id` > ? ORDER BY `id` DESC LIMIT 1',
+            [self::AUDIT_EVENT, $afterLogId]
+        );
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $patientId = $row['patient_id'] ?? null;
+        $success = $row['success'] ?? null;
+
+        return [
+            'user' => is_string($row['user']) ? $row['user'] : '',
+            'patient_id' => is_numeric($patientId) ? (int) $patientId : 0,
+            'success' => is_scalar($success) ? (string) $success : '',
+        ];
     }
 }

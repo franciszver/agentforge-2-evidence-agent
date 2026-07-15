@@ -28,6 +28,7 @@ SSE frame contract (``ChatEvent`` -- the P2.14 UI's source of truth):
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from collections.abc import Callable, Iterable
@@ -150,13 +151,70 @@ def get_planner_factory(authorization: str | None = Header(default=None)) -> Pla
     return _default_planner_factory(_bearer_token_or_empty(authorization))
 
 
+UNKNOWN_USER = "unknown"
+
+
+@dataclass
+class Turn:
+    """One recorded conversation turn: the chart-access audit record P2.17
+    requires the agent to keep per turn -- WHO asked (``user``), about WHICH
+    patient (``patient_id``), under WHAT ``correlation_id`` -- plus the
+    question and answer.
+
+    ``correlation_id`` is a minimal per-turn identifier; the full
+    correlation-id middleware is P4.1. ``user`` is a best-effort identity
+    assertion read from the dev bearer token (see ``_user_identity_from_token``
+    and the module's ``DevAgentToken``), not a validated principal -- real
+    token introspection is the deferred P4.1 work. The durable, DB-backed
+    home for these records is P4.2; this dataclass keeps the shape a durable
+    store would persist.
+    """
+
+    correlation_id: str
+    user: str
+    patient_id: int
+    question: str
+    answer: str
+
+
+def _user_identity_from_token(token: str) -> str:
+    """Best-effort user identity for the per-turn audit record.
+
+    The dev bearer token (``DevAgentToken``) is
+    ``base64url(payloadJson) . base64url(sig)`` and carries the logged-in
+    ``username``/``sub`` claim for exactly this agent-side audit use. We read
+    that claim WITHOUT verifying the signature: this is an identity assertion
+    for the trace record, not an authorization decision (signature/token
+    introspection is the deferred P4.1 work, and the token validator seam
+    still gates the request). Returns ``UNKNOWN_USER`` when the token cannot
+    be parsed into a payload with a usable identity claim.
+    """
+    segment = token.split(".", 1)[0]
+    padded = segment + "=" * (-len(segment) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded)
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return UNKNOWN_USER
+    if not isinstance(payload, dict):
+        return UNKNOWN_USER
+
+    username = payload.get("username")
+    if isinstance(username, str) and username:
+        return username
+    sub = payload.get("sub")
+    if isinstance(sub, (int, str)) and str(sub):
+        return str(sub)
+    return UNKNOWN_USER
+
+
 @dataclass
 class Conversation:
     """One multi-turn conversation, bound to the patient it was created for."""
 
     conversation_id: str
     patient_id: int
-    history: list[tuple[str, str]] = field(default_factory=list)
+    history: list[Turn] = field(default_factory=list)
 
 
 class ConversationStore:
@@ -177,8 +235,8 @@ class ConversationStore:
         self._conversations[conversation.conversation_id] = conversation
         return conversation
 
-    def append_turn(self, conversation_id: str, question: str, answer: str) -> None:
-        self._conversations[conversation_id].history.append((question, answer))
+    def append_turn(self, conversation_id: str, turn: Turn) -> None:
+        self._conversations[conversation_id].history.append(turn)
 
 
 _default_store = ConversationStore()
@@ -198,7 +256,10 @@ def _stream_chat(
     conversation: Conversation,
     store: ConversationStore,
     message: str,
+    user: str,
 ) -> Iterable[str]:
+    correlation_id = str(uuid.uuid4())
+
     yield _sse(ChatEvent.CONVERSATION, {"conversation_id": conversation.conversation_id})
 
     result = planner.run(message)
@@ -211,7 +272,16 @@ def _stream_chat(
 
     yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
 
-    store.append_turn(conversation.conversation_id, message, result.answer)
+    store.append_turn(
+        conversation.conversation_id,
+        Turn(
+            correlation_id=correlation_id,
+            user=user,
+            patient_id=conversation.patient_id,
+            question=message,
+            answer=result.answer,
+        ),
+    )
 
     yield _sse(ChatEvent.DONE, {})
 
@@ -231,9 +301,12 @@ async def chat_endpoint(
     store: ConversationStore = Depends(get_conversation_store),
 ) -> StreamingResponse:
     try:
-        validator(_extract_bearer_token(authorization))
+        token = _extract_bearer_token(authorization)
+        validator(token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
+
+    user = _user_identity_from_token(token)
 
     if request.conversation_id:
         conversation = store.get(request.conversation_id)
@@ -250,6 +323,6 @@ async def chat_endpoint(
     planner = planner_factory(request.patient_id)
 
     return StreamingResponse(
-        _stream_chat(planner, conversation, store, request.message),
+        _stream_chat(planner, conversation, store, request.message, user),
         media_type="text/event-stream",
     )

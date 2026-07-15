@@ -7,6 +7,7 @@ service is ever contacted. See ``app/chat.py`` for the seams.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterator
 
@@ -18,6 +19,7 @@ from app.chat import (
     ConversationStore,
     PatientMismatchError,
     TokenValidationError,
+    Turn,
     get_conversation_store,
     get_planner_factory,
     get_token_validator,
@@ -232,6 +234,95 @@ def test_rejected_token_returns_401_and_never_invokes_planner():
 
     assert response.status_code == 401
     assert fake_planner.questions == []
+
+
+def _dev_bearer(username: str, sub: int, pid: int) -> str:
+    """Build a DevAgentToken-shaped bearer (``base64url(payload).sig``).
+
+    Mirrors ``DevAgentToken::mint`` on the PHP side closely enough for the
+    agent's best-effort identity read: the payload segment carries the
+    ``username``/``sub`` claims; the signature segment is opaque filler (the
+    agent does not verify it -- that is the deferred introspection work).
+    """
+    payload = json.dumps(
+        {"sub": sub, "username": username, "pid": pid, "typ": "copilot-dev"}
+    ).encode()
+    segment = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+    return f"{segment}.signature-not-verified"
+
+
+def test_per_turn_record_captures_user_patient_and_correlation_id():
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    response = client.post(
+        "/chat",
+        json={"message": "hi", "patient_id": 7},
+        headers={"Authorization": "Bearer " + _dev_bearer("dr.house", 42, 7)},
+    )
+    assert response.status_code == 200
+
+    conversation_id = _conversation_id(response.text)
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert len(conversation.history) == 1
+
+    turn = conversation.history[0]
+    assert isinstance(turn, Turn)
+    assert turn.user == "dr.house"
+    assert turn.patient_id == 7
+    assert turn.correlation_id  # non-empty per-turn id
+    assert turn.question == "hi"
+    assert turn.answer == "ok"
+
+
+def test_correlation_id_is_unique_per_turn():
+    fake_planner = FakePlanner(trace=[], answer="a")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    headers = {"Authorization": "Bearer " + _dev_bearer("dr.house", 42, 3)}
+    first = client.post(
+        "/chat", json={"message": "one", "patient_id": 3}, headers=headers
+    )
+    conversation_id = _conversation_id(first.text)
+    client.post(
+        "/chat",
+        json={"message": "two", "patient_id": 3, "conversation_id": conversation_id},
+        headers=headers,
+    )
+
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert len(conversation.history) == 2
+    correlation_ids = {turn.correlation_id for turn in conversation.history}
+    assert len(correlation_ids) == 2, "each turn must get a distinct correlation id"
+
+
+def test_unparseable_token_records_unknown_user():
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    response = client.post(
+        "/chat",
+        json={"message": "hi", "patient_id": 5},
+        headers={"Authorization": "Bearer not-a-real-dev-token"},
+    )
+    conversation_id = _conversation_id(response.text)
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert conversation.history[0].user == "unknown"
 
 
 def test_chat_event_enum_matches_frame_names():
