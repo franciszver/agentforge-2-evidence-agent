@@ -123,7 +123,18 @@ Each build phase closes only when its user scenarios pass — automated via Pant
 
 Every suite runs against the pinned demo dataset (`DEMO_MODE=standard`; image pinned and checksummed in the compose file) plus a small set of seeded fixture states. Nothing depends on hand-created data that exists only in one developer's database.
 
-A fresh clone gets the demo dataset automatically the first time the stack comes up on a clean volume — `DEMO_MODE=standard` drives OpenEMR's own install-time demo load. `evals/fixtures/seed.py`'s job is only the canonical-state layering on top of that (§ below), not the base demo load. If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), the demo dataset can be imported directly from the SQL already baked into the `openemr` image: `docker compose -f docker/development-easy/docker-compose.yml exec -T openemr sh -c "mariadb -h mysql -uopenemr -popenemr openemr < /root/demo_5_0_0_5.sql"`. This is a one-time recovery step for an already-running stack, not part of normal setup.
+A fresh clone gets the demo dataset automatically the first time the stack comes up on a clean volume — `DEMO_MODE=standard` (set by the copilot overlay, `docker-compose.copilot.yml`) drives OpenEMR's own install-time demo load against the current schema. `evals/fixtures/seed.py`'s job is only the canonical-state layering on top of that (§ below), not the base demo load. The fresh-clone quickstart (P5.6) exercises this same path.
+
+If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), or the demo data otherwise needs to be reset, recover by rebuilding the state that holds it, not by importing data into it. Remove exactly the database volume **and** the sites volume — the sites volume holds OpenEMR's install flag (`sites/default/sqlconf.php`), so leaving it behind gives a configured-but-empty stack where the demo load never re-runs; removing anything more (a blanket `down -v`) destroys `ollamamodels`, and the no-egress ollama service cannot re-pull the model without repeating the one-time provisioning step:
+
+```bash
+cd docker/development-easy
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
+docker volume rm development-easy_databasevolume development-easy_sitesvolume
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+```
+
+The stack comes back up on clean volumes, `DEMO_MODE=standard` reseeds demo data against the current schema, and the model and derived build-artifact volumes survive; re-run `evals/fixtures/seed.py` afterward to reapply the canonical fixture layer. **Never** import the OpenEMR-image-bundled `/root/demo_5_0_0_5.sql` directly into a running stack — it is a full OpenEMR 5.0.0.5-era database dump, and loading it downgrades the live schema and version metadata to 5.0.0.5 and disables the `rest_api`/`rest_fhir_api`/`oauth_password_grant` globals, breaking the API.
 
 - **Canonical test patients:** selected from the demo dataset in Phase 2 and recorded in the table below — one per property the suites need (allergy-conflict candidate, no-labs patient, stale-data-only patient, multi-encounter patient for UC1/UC4). Eval cases and integration tests reference these stable fixture ids, never ad-hoc lookups.
 - **Seeded states:** conditions the demo data doesn't ship with (the adversarial note for injection evals, a guaranteed allergy–medication conflict) are applied by an idempotent seeding script (`evals/fixtures/seed.py`, lands with the first case that needs it). Re-running it is always safe; scenarios assume it has run.
