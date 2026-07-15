@@ -96,6 +96,7 @@ class EncounterType(StrEnum):
     HOSPITAL = "hospital"
     PROCEDURE = "procedure"
     OTHER = "other"
+    UNKNOWN = "unknown"
 
 
 class AppointmentStatus(StrEnum):
@@ -105,6 +106,7 @@ class AppointmentStatus(StrEnum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     NO_SHOW = "no_show"
+    UNKNOWN = "unknown"
 
 
 class InteractionSeverity(StrEnum):
