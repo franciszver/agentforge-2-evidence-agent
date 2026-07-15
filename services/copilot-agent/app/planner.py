@@ -19,14 +19,19 @@ silently dropped. Full cross-tool authorization enforcement (refusing calls
 whose *effective* pid diverges from the bound one at every layer) is P2.16;
 this loop is structured so that binding is already the only path in.
 
-Quarantine seam (P2.9, NOT built here): today, ``summarize_tool_result``
-is a pure pass-through of a tool's own Pydantic output. P2.9 will replace
-its body with a call to a QUARANTINED summarizer -- a model call that reads
-the raw tool output (which may carry adversarial text injected into a
-patient's notes) and returns only a sanitized structured summary, so the
-*planner* call never sees raw record text. Keeping tool-result handling
-behind this one function is what makes that swap local instead of a loop
-rewrite.
+Quarantine seam (P2.9): tool output is not fed to the planner raw. Each
+tool result is routed through ``app.quarantine.quarantine_tool_result``,
+which passes safe typed fields through verbatim but replaces every free-text
+string (which may carry adversarial text injected into a patient's notes)
+with an LLM-cleaned summary produced by a QUARANTINED summarizer that cannot
+invoke any tool -- so the *planner* call never sees raw record free-text. See
+``app.quarantine`` for the structural no-tool-access guarantee.
+
+Two-call final answer (P2.9): once the planner decides to answer, it does
+NOT return the decision's ``final_answer`` directly. It reasons in free text
+(a ``chat`` call) and then extracts the final answer into the
+``FinalAnswer`` schema via constrained decoding (an ``extract`` call) --
+constraining only the extraction, not the reasoning. See ``_finalize_answer``.
 """
 
 from __future__ import annotations
@@ -39,8 +44,9 @@ from typing import Any
 
 from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrApiError, OpenEmrClient
+from app.quarantine import QuarantinedSummarizer, quarantine_tool_result
 from app.schemas.common import ToolSchemaModel
-from app.schemas.planner import PlannerAction, PlannerDecision, ToolName
+from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
     GetAllergiesInput,
     GetAppointmentsInput,
@@ -235,13 +241,13 @@ def _build_system_prompt(patient_id: int, registry: Mapping[ToolName, ToolSpec])
     )
 
 
-def summarize_tool_result(tool: ToolName, output: ToolSchemaModel) -> dict[str, Any]:
-    """Structured tool result handed back into the planner's working context.
-
-    TODO(P2.9): pure pass-through today (``model_dump``). P2.9 plugs its
-    QUARANTINED summarizer call in here -- see module docstring.
-    """
-    return output.model_dump(mode="json")
+_FINAL_REASON_PROMPT = (
+    "You now have everything you need. Think through the clinician's question "
+    "using ONLY the tool results already in this conversation, and write the "
+    "answer in plain prose. Do not invent facts or mention other patients. "
+    "/no_think"
+)
+_FINAL_EXTRACT_PROMPT = "Extract the final answer for the clinician as JSON."
 
 
 def _coerce_arg(key: str, value: str) -> Any:
@@ -321,6 +327,9 @@ class Planner:
         self._patient_id = patient_id
         self._registry = registry if registry is not None else TOOL_REGISTRY
         self._max_turns = max_turns
+        # The summarizer gets ONLY the ollama client -- never the registry,
+        # openemr client, or token -- so it structurally cannot call a tool.
+        self._summarizer = QuarantinedSummarizer(ollama_client=ollama_client)
 
     def run(self, question: str) -> PlannerResult:
         messages: list[dict[str, str]] = [
@@ -333,7 +342,8 @@ class Planner:
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
-                return PlannerResult(answer=decision.final_answer or "", trace=trace)
+                final = self._finalize_answer(messages)
+                return PlannerResult(answer=final.answer, trace=trace)
 
             messages.append({"role": "assistant", "content": decision.model_dump_json()})
 
@@ -353,8 +363,24 @@ class Planner:
                 messages.append({"role": "user", "content": f"[tool result] {decision.tool.value} failed: {exc.category.value}"})
                 continue
 
-            summary = summarize_tool_result(decision.tool, output)
+            summary = quarantine_tool_result(self._summarizer, decision.tool, output)
             trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=summary, error=None))
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
         return PlannerResult(answer=_best_effort_answer(trace, self._max_turns), trace=trace)
+
+    def _finalize_answer(self, messages: list[dict[str, str]]) -> FinalAnswer:
+        """Produce the final answer via the two-call pattern (P2.9).
+
+        First a free-text reasoning ``chat`` call (unconstrained, so reasoning
+        quality is not taxed by the grammar), then a constrained ``extract``
+        call that pins the answer to ``FinalAnswer``. The reasoning is fed
+        into the extraction call so the extractor only has to transcribe, not
+        re-derive.
+        """
+        reasoning = self._ollama.chat(messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}])
+        extract_messages = messages + [
+            {"role": "assistant", "content": reasoning},
+            {"role": "user", "content": _FINAL_EXTRACT_PROMPT},
+        ]
+        return self._ollama.extract(extract_messages, FinalAnswer)

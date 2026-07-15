@@ -15,7 +15,8 @@ from unittest.mock import MagicMock
 
 from app.openemr_client import ErrorCategory, OpenEmrApiError
 from app.planner import Planner, ToolSpec
-from app.schemas.planner import PlannerAction, PlannerDecision, ToolName
+from app.quarantine import QuarantineSummary
+from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
     GetMedicationsInput,
     GetRecentLabsInput,
@@ -26,17 +27,38 @@ from app.schemas.tools import (
 
 
 class _ScriptedOllamaClient:
-    """Fake ``OllamaClient``: returns one scripted ``PlannerDecision`` per call."""
+    """Fake ``OllamaClient`` dispatching ``extract`` by requested schema.
+
+    ``PlannerDecision`` extractions return the next scripted decision;
+    ``QuarantineSummary`` and ``FinalAnswer`` extractions return canned values
+    (the ``FinalAnswer`` echoes the last scripted decision's ``final_answer``
+    so the two-call finalize step reproduces the intended answer). ``chat``
+    (the reasoning half of the two-call answer) returns a fixed string.
+    ``calls`` records only the PlannerDecision extractions.
+    """
 
     def __init__(self, decisions: list[PlannerDecision]) -> None:
         self._decisions = list(decisions)
         self.calls: list[list[dict[str, str]]] = []
+        self.chat_calls: list[list[dict[str, str]]] = []
+        self._last_final_answer = ""
 
-    def extract(self, messages: list[dict[str, str]], schema: type) -> PlannerDecision:
+    def extract(self, messages: list[dict[str, str]], schema: type):
+        if schema is QuarantineSummary:
+            return QuarantineSummary(summary="quarantined summary")
+        if schema is FinalAnswer:
+            return FinalAnswer(answer=self._last_final_answer)
         self.calls.append(messages)
         if not self._decisions:
             raise AssertionError("scripted decisions exhausted -- planner looped too many times")
-        return self._decisions.pop(0)
+        decision = self._decisions.pop(0)
+        if decision.final_answer:
+            self._last_final_answer = decision.final_answer
+        return decision
+
+    def chat(self, messages: list[dict[str, str]], *, options=None) -> str:
+        self.chat_calls.append(messages)
+        return "reasoning"
 
 
 class _AlwaysCallToolOllamaClient:
@@ -50,6 +72,9 @@ class _AlwaysCallToolOllamaClient:
     def extract(self, messages: list[dict[str, str]], schema: type) -> PlannerDecision:
         self.call_count += 1
         return PlannerDecision(action=PlannerAction.CALL_TOOL, tool=self._tool, reason="looping")
+
+    def chat(self, messages: list[dict[str, str]], *, options=None) -> str:
+        return "reasoning"
 
 
 def _fake_medications_spec(fn: MagicMock) -> ToolSpec:
