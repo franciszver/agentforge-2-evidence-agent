@@ -15,6 +15,8 @@ declare(strict_types=1);
 namespace OpenEMR\Tests\Isolated\Modules\ClinicalCopilot;
 
 use OpenEMR\Core\ModulesClassLoader;
+use OpenEMR\Events\PatientDemographics\RenderEvent as PatientDemographicsRenderEvent;
+use OpenEMR\Events\UserInterface\PageHeadingRenderEvent;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\EventDispatcher\EventDispatcher;
@@ -43,14 +45,21 @@ class BootstrapRegistrationTest extends TestCase
     }
 
     #[Test]
-    public function testBootstrapSubscribesToEvents(): void
+    public function testBootstrapRegistersPatientDemographicsAndPageHeadingListeners(): void
     {
         $eventDispatcher = new EventDispatcher();
         $bootstrapClass = 'OpenEMR\\Modules\\ClinicalCopilot\\Bootstrap';
         $bootstrap = new $bootstrapClass($eventDispatcher);
 
-        // Construction and event subscription must complete without throwing.
         $bootstrap->subscribeToEvents();
-        $this->expectNotToPerformAssertions();
+
+        $this->assertNotEmpty(
+            $eventDispatcher->getListeners(PatientDemographicsRenderEvent::EVENT_SECTION_LIST_RENDER_BEFORE),
+            'Bootstrap should register a listener for PatientDemographics RenderEvent::EVENT_SECTION_LIST_RENDER_BEFORE (copilot card injection)'
+        );
+        $this->assertNotEmpty(
+            $eventDispatcher->getListeners(PageHeadingRenderEvent::EVENT_PAGE_HEADING_RENDER),
+            'Bootstrap should register a listener for PageHeadingRenderEvent::EVENT_PAGE_HEADING_RENDER (open-chat button injection)'
+        );
     }
 }
