@@ -89,7 +89,29 @@ final class CopilotPanelController
                 title="<?php echo xla('Open Clinical Co-Pilot'); ?>">
             <i class="fa fa-comment-medical"></i> <?php echo xlt('Co-Pilot'); ?>
         </button>
-        <div id="copilot-chat-panel" class="copilot-chat-panel copilot-hidden" aria-hidden="true">
+        <?php echo $this->renderChatPanel(false); ?>
+        <?php
+        return $this->endCapture();
+    }
+
+    /**
+     * Render the chat panel itself: message list, input, and send button.
+     * Shared by the embedded dashboard panel (P2.14, toggled hidden/visible
+     * by the open-chat button above) and the standalone PWA page (P2.15,
+     * where the panel *is* the page and there is no button to toggle it) --
+     * both consumers point copilot-chat.js at the exact same element ids,
+     * so its behavior (submit handling, SSE consumption) is never forked.
+     *
+     * @param bool $visible Whether the panel starts open (standalone page)
+     *                      or closed behind the toggle button (embedded panel).
+     */
+    public function renderChatPanel(bool $visible): string
+    {
+        $hiddenClass = $visible ? '' : ' copilot-hidden';
+        $ariaHidden = $visible ? 'false' : 'true';
+        ob_start();
+        ?>
+        <div id="copilot-chat-panel" class="copilot-chat-panel<?php echo $hiddenClass; ?>" aria-hidden="<?php echo $ariaHidden; ?>">
             <div id="copilot-chat-messages" class="copilot-chat-messages" role="log" aria-live="polite" aria-label="<?php echo xla('Co-Pilot conversation'); ?>"></div>
             <form id="copilot-chat-form" class="copilot-chat-form">
                 <label for="copilot-chat-input" class="sr-only"><?php echo xlt('Message'); ?></label>

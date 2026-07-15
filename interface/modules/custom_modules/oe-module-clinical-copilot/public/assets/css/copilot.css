@@ -102,3 +102,37 @@
     color: #fff;
     font-size: 1rem;
 }
+
+/**
+ * Standalone PWA page (P2.15, public/copilot.php). Here the panel *is* the
+ * page rather than a floating overlay, so it fills the viewport instead of
+ * using the fixed bottom-right positioning above.
+ */
+.copilot-standalone-body {
+    margin: 0;
+    height: 100vh;
+    height: 100dvh;
+}
+
+.copilot-standalone-body .copilot-chat-panel {
+    position: static;
+    width: 100%;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.copilot-standalone-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    height: 100dvh;
+    padding: 1rem;
+    text-align: center;
+    color: #495057;
+}
