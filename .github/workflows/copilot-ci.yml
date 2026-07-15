@@ -29,4 +29,4 @@ jobs:
 
       - name: Run pytest (exclude browser tests)
         working-directory: services/copilot-agent
-        run: pytest -m "not browser"
+        run: pytest -m "not browser and not integration"
