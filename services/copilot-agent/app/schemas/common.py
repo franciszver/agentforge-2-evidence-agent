@@ -66,6 +66,7 @@ class ProblemStatus(StrEnum):
     ACTIVE = "active"
     RESOLVED = "resolved"
     INACTIVE = "inactive"
+    UNKNOWN = "unknown"
 
 
 class AbnormalFlag(StrEnum):
@@ -74,6 +75,7 @@ class AbnormalFlag(StrEnum):
     LOW = "low"
     CRITICAL_HIGH = "critical_high"
     CRITICAL_LOW = "critical_low"
+    UNKNOWN = "unknown"
 
 
 class VitalType(StrEnum):
