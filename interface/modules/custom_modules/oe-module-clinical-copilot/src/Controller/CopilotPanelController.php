@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 namespace OpenEMR\Modules\ClinicalCopilot\Controller;
 
+use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Session\EncounterSessionUtil;
 use OpenEMR\Common\Session\PatientSessionUtil;
 use OpenEMR\Common\Session\SessionWrapperFactory;
@@ -34,6 +35,8 @@ final class CopilotPanelController
 
     private readonly string $moduleUrl;
 
+    private readonly string $csrfToken;
+
     public function __construct()
     {
         $this->pid = PatientSessionUtil::getPid();
@@ -42,6 +45,9 @@ final class CopilotPanelController
         $session = SessionWrapperFactory::getInstance()->getActiveSession();
         $rawAuthUserId = $session->get('authUserID');
         $this->authUserId = is_numeric($rawAuthUserId) ? (int) $rawAuthUserId : 0;
+
+        // CSRF token the panel JS sends to the token broker (public/ajax.php).
+        $this->csrfToken = CsrfUtils::collectCsrfToken($session);
 
         $this->moduleUrl = OEGlobalsBag::getInstance()->getWebRoot() . Bootstrap::MODULE_INSTALLATION_PATH;
     }
@@ -87,7 +93,7 @@ final class CopilotPanelController
 
     /**
      * Render the module's CSS/JS asset tags and the current session
-     * context (pid, encounter, authUserID) for the panel JS to read.
+     * context (pid, encounter, authUserID, csrfToken) for the panel JS to read.
      *
      * The context values are ints parsed at the session boundary, and the
      * JSON_HEX_* flags escape <, >, &, ', and " so no value can break out
@@ -102,6 +108,7 @@ final class CopilotPanelController
             'pid' => $this->pid,
             'encounter' => $this->encounter,
             'authUserID' => $this->authUserId,
+            'csrfToken' => $this->csrfToken,
         ];
         $contextJson = json_encode(
             $context,
