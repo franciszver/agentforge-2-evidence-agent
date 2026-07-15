@@ -123,6 +123,8 @@ Each build phase closes only when its user scenarios pass — automated via Pant
 
 Every suite runs against the pinned demo dataset (`DEMO_MODE=standard`; image pinned and checksummed in the compose file) plus a small set of seeded fixture states. Nothing depends on hand-created data that exists only in one developer's database.
 
+A fresh clone gets the demo dataset automatically the first time the stack comes up on a clean volume — `DEMO_MODE=standard` drives OpenEMR's own install-time demo load. `evals/fixtures/seed.py`'s job is only the canonical-state layering on top of that (§ below), not the base demo load. If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), the demo dataset can be imported directly from the SQL already baked into the `openemr` image: `docker compose -f docker/development-easy/docker-compose.yml exec -T openemr sh -c "mariadb -h mysql -uopenemr -popenemr openemr < /root/demo_5_0_0_5.sql"`. This is a one-time recovery step for an already-running stack, not part of normal setup.
+
 - **Canonical test patients:** selected from the demo dataset in Phase 2 and recorded in the table below — one per property the suites need (allergy-conflict candidate, no-labs patient, stale-data-only patient, multi-encounter patient for UC1/UC4). Eval cases and integration tests reference these stable fixture ids, never ad-hoc lookups.
 - **Seeded states:** conditions the demo data doesn't ship with (the adversarial note for injection evals, a guaranteed allergy–medication conflict) are applied by an idempotent seeding script (`evals/fixtures/seed.py`, lands with the first case that needs it). Re-running it is always safe; scenarios assume it has run.
 - **Dataset drift:** if the pinned demo image is ever bumped, the canonical-patient table below is re-validated in that same PR — evals must not rot silently because upstream demo data shifted.
@@ -130,7 +132,12 @@ Every suite runs against the pinned demo dataset (`DEMO_MODE=standard`; image pi
 
 | Fixture id | Patient | Property | Used by |
 |---|---|---|---|
-| *(populated in Phase 2 as canonical patients are selected)* | | | |
+| `allergy-conflict` | Phil Belford (pubpid `1`) | Recorded Ibuprofen/NSAID allergy (seeded — the pinned demo dataset ships only a penicillin allergy for this patient) | UC2 medication list; Constraint category evals |
+| `no-labs` | Wanda Moore (pubpid `3`) | Zero `procedure_order`/`procedure_result` rows (verified — true of the unmodified demo dataset for all three patients) | Missing data category evals |
+| `stale-data-only` | Wanda Moore (pubpid `3`) | Only the single 2014-02-01 demo encounter, nothing recent (verified — true of the unmodified demo dataset) | Stale data category evals |
+| `multi-encounter` | Susan Underwood (pubpid `2`) | Second, more recent encounter with a SOAP note (seeded), including the planted adversarial-instruction text in its plan field | UC1 pre-visit brief / "what changed"; UC4 drill-down; Injection category evals |
+
+Wanda Moore carries both `no-labs` and `stale-data-only`: the pinned demo dataset ships only three patients, and both properties already hold for her unmodified — no seeding needed, so a fourth synthetic patient wasn't invented for it. Seeded via the idempotent `evals/fixtures/seed.py` (run: `python evals/fixtures/seed.py`; requires the dev stack up and the demo dataset imported). Re-running it is always safe — see `evals/fixtures/test_seed.py` (`@pytest.mark.integration`) for the idempotency and expected-state assertions.
 
 ## 8. Running the suites
 
