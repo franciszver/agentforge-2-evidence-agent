@@ -74,7 +74,10 @@ final class CopilotPanelController
 
     /**
      * Render the persistent open-chat button injected into the page
-     * heading, plus an inert placeholder panel it toggles.
+     * heading, plus the chat panel it toggles: message list, input, and
+     * send button (P2.14). Structure/accessibility (labels, aria-live
+     * message log) is server-rendered here; copilot-chat.js owns behavior
+     * (submit handling, SSE consumption, appending messages).
      */
     public function renderOpenChatButton(): string
     {
@@ -86,7 +89,24 @@ final class CopilotPanelController
                 title="<?php echo xla('Open Clinical Co-Pilot'); ?>">
             <i class="fa fa-comment-medical"></i> <?php echo xlt('Co-Pilot'); ?>
         </button>
-        <div id="copilot-chat-panel" class="copilot-chat-panel copilot-hidden" aria-hidden="true"></div>
+        <div id="copilot-chat-panel" class="copilot-chat-panel copilot-hidden" aria-hidden="true">
+            <div id="copilot-chat-messages" class="copilot-chat-messages" role="log" aria-live="polite" aria-label="<?php echo xla('Co-Pilot conversation'); ?>"></div>
+            <form id="copilot-chat-form" class="copilot-chat-form">
+                <label for="copilot-chat-input" class="sr-only"><?php echo xlt('Message'); ?></label>
+                <textarea id="copilot-chat-input"
+                          class="copilot-chat-input"
+                          rows="1"
+                          placeholder="<?php echo xla('Ask about this patient...'); ?>"
+                          required></textarea>
+                <button type="submit"
+                        id="copilot-chat-send-btn"
+                        class="copilot-chat-send-btn"
+                        title="<?php echo xla('Send'); ?>"
+                        aria-label="<?php echo xla('Send'); ?>">
+                    <i class="fa fa-paper-plane"></i>
+                </button>
+            </form>
+        </div>
         <?php
         return $this->endCapture();
     }
@@ -121,6 +141,7 @@ final class CopilotPanelController
             window.CopilotContext = <?php echo $contextJson; ?>;
         </script>
         <script src="<?php echo attr($this->moduleUrl . '/public/assets/js/copilot.js'); ?>" defer></script>
+        <script src="<?php echo attr($this->moduleUrl . '/public/assets/js/copilot-chat.js'); ?>" defer></script>
         <?php
         return $this->endCapture();
     }

@@ -39,7 +39,10 @@ from fastapi import Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.planner import PlannerResult
+from app.config import get_settings
+from app.ollama_client import OllamaClient
+from app.openemr_client import OpenEmrClient
+from app.planner import Planner, PlannerResult
 
 
 class ChatEvent(StrEnum):
@@ -101,19 +104,50 @@ def get_token_validator() -> TokenValidator:
     return _default_token_validator
 
 
-def _default_planner_factory(patient_id: int) -> PlannerProtocol:
-    """Production planner factory is not wired yet -- requires a per-request
-    OpenEMR bearer token and live Ollama/OpenEMR clients that this seam does
-    not have access to. Hermetic tests always override
-    ``get_planner_factory``; wiring the real factory is follow-up work once
-    this endpoint is called from a real deployment.
+def _bearer_token_or_empty(authorization: str | None) -> str:
+    """Extract the bearer token if present, else "" -- never raises.
+
+    Used only to build the production planner factory's closure. The 401
+    decision for a missing/invalid token is made by ``validator`` in
+    ``chat_endpoint`` (via the raising ``_extract_bearer_token``); that check
+    always runs, and always runs first, so a closure built here with an
+    empty token is never actually invoked on the reject path.
     """
-    raise NotImplementedError("production planner factory is not wired yet")
+    prefix = "Bearer "
+    if authorization and authorization.startswith(prefix):
+        return authorization[len(prefix) :]
+    return ""
 
 
-def get_planner_factory() -> PlannerFactory:
+def _default_planner_factory(token: str) -> PlannerFactory:
+    """Build the production planner factory for one request's bearer token.
+
+    Wires real ``OllamaClient``/``OpenEmrClient`` instances from ``Settings``
+    (P0.5/P2.2's ``from_settings`` constructors) and passes the request's
+    bearer token straight through to ``Planner`` -- the same token flows
+    browser -> agent -> OpenEMR API tool calls, per the trust-boundary design
+    (plan §5). The token's real-OAuth-token replacement for the current
+    dev-only identity assertion is a documented, separate carry-forward
+    (see ``TokenBrokerController``); tool calls against OpenEMR made with an
+    invalid token fail per-call (caught as ``OpenEmrApiError`` in the planner
+    loop) without crashing the conversation.
+    """
+    settings = get_settings()
+
+    def factory(patient_id: int) -> PlannerProtocol:
+        return Planner(
+            ollama_client=OllamaClient.from_settings(settings),
+            openemr_client=OpenEmrClient.from_settings(settings),
+            token=token,
+            patient_id=patient_id,
+        )
+
+    return factory
+
+
+def get_planner_factory(authorization: str | None = Header(default=None)) -> PlannerFactory:
     """FastAPI dependency: builds a ``PlannerProtocol`` for a patient_id. Override in tests."""
-    return _default_planner_factory
+    return _default_planner_factory(_bearer_token_or_empty(authorization))
 
 
 @dataclass

@@ -18,6 +18,12 @@
     bottom: 1rem;
     width: 320px;
     max-width: calc(100vw - 2rem);
+    /* 360px-first: fits a 320px panel + thumb-reach margins at the
+       smallest supported viewport, then stays the same fixed size on
+       larger screens rather than growing unbounded. */
+    max-height: min(70vh, 30rem);
+    display: flex;
+    flex-direction: column;
     background: var(--white, #fff);
     border: 1px solid #dee2e6;
     border-radius: 0.25rem;
@@ -29,4 +35,70 @@
 
 .copilot-hidden {
     display: none;
+}
+
+.copilot-chat-messages {
+    flex: 1 1 auto;
+    min-height: 8rem;
+    overflow-y: auto;
+    padding: 0.75rem;
+}
+
+.copilot-chat-message {
+    max-width: 85%;
+    margin-bottom: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.75rem;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.copilot-chat-message-user {
+    margin-left: auto;
+    background: #0b5a8a;
+    color: #fff;
+    border-bottom-right-radius: 0.15rem;
+}
+
+.copilot-chat-message-assistant {
+    margin-right: auto;
+    background: #f1f3f5;
+    color: #1a1a1a;
+    border-bottom-left-radius: 0.15rem;
+}
+
+.copilot-chat-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border-top: 1px solid #dee2e6;
+}
+
+.copilot-chat-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* 16px prevents iOS Safari from auto-zooming the page on focus. */
+    font-size: 16px;
+    line-height: 1.3;
+    padding: 0.5rem;
+    max-height: 5rem;
+    resize: none;
+    border: 1px solid #ced4da;
+    border-radius: 0.25rem;
+}
+
+.copilot-chat-send-btn {
+    flex: 0 0 auto;
+    /* Minimum recommended touch target so the send action stays reachable
+       and tappable one-handed at the 360px breakpoint -- no hover state
+       required to discover or activate it. */
+    width: 2.75rem;
+    height: 2.75rem;
+    border: none;
+    border-radius: 50%;
+    background: #0b5a8a;
+    color: #fff;
+    font-size: 1rem;
 }
