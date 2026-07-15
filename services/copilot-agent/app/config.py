@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     trace_db_path: str = "/data/traces.db"
     openemr_verify_ssl: bool = False
 
+    # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
+    # ``openemr_base_url``.
+    openemr_oauth_registration_path: str = "/oauth2/default/registration"
+    openemr_oauth_token_path: str = "/oauth2/default/token"
+    # Superset of scopes requested for the dev token flow: OIDC + refresh,
+    # standard + FHIR API, and a FHIR Patient read scope for the proof call.
+    openemr_oauth_scopes: str = (
+        "openid offline_access api:oemr api:fhir user/patient.read user/Patient.read"
+    )
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""
