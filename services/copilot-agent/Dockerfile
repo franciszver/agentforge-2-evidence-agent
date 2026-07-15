@@ -8,6 +8,13 @@ COPY app ./app
 RUN pip install --no-cache-dir .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
+
+# Trace store lives at /data (trace_db_path in app/config.py); provision it
+# owned by appuser before dropping root. Mounting a volume over /data shadows
+# this ownership and would reintroduce the PermissionError from #111 — re-chown
+# after mount if persistence is ever added.
+RUN mkdir /data && chown appuser:appuser /data
+
 USER appuser
 
 EXPOSE 8000
