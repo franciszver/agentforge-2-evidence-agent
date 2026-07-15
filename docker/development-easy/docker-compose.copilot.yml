@@ -1,0 +1,56 @@
+# Co-Pilot overlay: adds the `agent` (FastAPI clinical co-pilot) and `ollama`
+# (local LLM runtime) services.
+#
+# Security intent: `agent` and `ollama` are attached ONLY to the internal
+# `copilot_internal` network, which is declared `internal: true` — Docker
+# blocks all outbound traffic from that network to the outside world, so
+# neither service can reach the public internet or exfiltrate PHI. `agent`
+# reaches OpenEMR over this same internal network, so `openemr` is also
+# attached to it (in addition to its existing default network, which it
+# still needs for its own normal operation).
+#
+# This overlay touches `openemr` for two reasons: (a) attaching it to the
+# internal `copilot_internal` network so the agent can reach it, and
+# (b) setting DEMO_MODE: standard to load the OpenEMR demo dataset.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up
+services:
+  openemr:
+    environment:
+      DEMO_MODE: standard
+    networks:
+      - default
+      - copilot_internal
+
+  ollama:
+    restart: always
+    image: ollama/ollama:0.12.6@sha256:352e045b937ac29d3d9550c22fb85525f60a89e064df34c26579bee5a93b3a16
+    volumes:
+      - ollamamodels:/root/.ollama
+    networks:
+      - copilot_internal
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  agent:
+    build:
+      context: ../../services/copilot-agent
+    environment:
+      OPENEMR_BASE_URL: https://openemr
+      OLLAMA_BASE_URL: http://ollama:11434
+    networks:
+      - copilot_internal
+    depends_on:
+      - ollama
+
+networks:
+  copilot_internal:
+    internal: true
+
+volumes:
+  ollamamodels: {}
