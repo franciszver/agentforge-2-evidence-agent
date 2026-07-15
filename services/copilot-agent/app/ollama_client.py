@@ -1,0 +1,232 @@
+"""Ollama chat client: streaming chat + JSON-schema-constrained extraction.
+
+Scope (P2.7): a thin client for the internal Ollama instance serving
+``qwen3:4b`` (the *thinking* variant). Two entry points:
+
+  * ``chat``    — POST ``/api/chat`` with ``stream: true``, assemble the
+                  NDJSON chunk stream into the full response text.
+  * ``extract`` — POST ``/api/chat`` with ``format`` set to a Pydantic
+                  model's JSON schema, so Ollama constrains decoding to
+                  valid JSON for that schema, then ``model_validate`` the
+                  result. Retries a small, fixed number of times on
+                  malformed output before raising.
+
+Design notes:
+  * ``think: false`` is set on every request. ``qwen3:4b`` is the thinking
+    variant and emits ``thinking`` tokens by default; the agent wants plain
+    Instruct-style output, not the chain-of-thought preamble.
+  * Live-verified quirk (Ollama 0.12.6 + qwen3:4b): ``think: false`` stops
+    Ollama from separating reasoning into ``message.thinking``, but does NOT
+    stop the model from generating it -- the reasoning leaks straight into
+    ``message.content``, terminated by a stray ``</think>`` marker (often
+    with no matching opening tag). ``_strip_leaked_thinking`` defends
+    against this by dropping everything up to and including the first
+    ``</think>`` marker, so callers only ever see the real answer.
+  * ``temperature: 0`` by default (overridable per call via ``options``) —
+    deterministic output is what both chat replies and constrained
+    extraction want here.
+  * Synchronous, matching ``app.openemr_client``'s injectable-``httpx.Client``
+    pattern: the client is always passed in, so tests drive it with
+    ``httpx.MockTransport`` and no real network is touched.
+  * ``OllamaError`` messages are log-safe: never the raw model output, which
+    may echo injected or PHI-bearing text from the prompt — only a fixed
+    operation label and, where relevant, the HTTP status code.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, TypeVar
+
+import httpx
+from pydantic import BaseModel, ValidationError
+
+from app.config import Settings
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+_CHAT_PATH = "/api/chat"
+
+# Matches everything up to and including the first "</think>" marker (and any
+# whitespace right after it), whether or not a matching "<think>" opening tag
+# is present. See the module docstring's "Live-verified quirk" note.
+_LEAKED_THINK_RE = re.compile(r"^.*?</think>\s*", re.DOTALL)
+
+
+class OllamaError(Exception):
+    """Raised when an Ollama request or constrained extraction fails.
+
+    The message is intentionally log-safe: it never embeds raw model output,
+    which may contain injected or PHI-bearing text from the prompt.
+    """
+
+
+class OllamaClient:
+    """Chat + constrained-extraction client for the internal Ollama instance.
+
+    Args:
+        base_url: Origin of the Ollama instance, e.g. ``"http://ollama:11434"``.
+        client: An injectable ``httpx.Client`` — hermetic tests inject one
+            backed by ``httpx.MockTransport``; production injects one via
+            :meth:`from_settings`.
+        model: Ollama model name to request, e.g. ``"qwen3:4b"``.
+        max_retries: Max attempts :meth:`extract` makes before raising when
+            the model's output fails to parse/validate as the target schema
+            (this is a total-attempts count, not "retries in addition to
+            the first attempt").
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        client: httpx.Client,
+        model: str = "qwen3:4b",
+        max_retries: int = 2,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._client = client
+        self._model = model
+        self._max_retries = max_retries
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> OllamaClient:
+        """Build a production client, threading base URL, model, timeout, and retries."""
+        client = httpx.Client(timeout=settings.ollama_api_timeout_seconds)
+        return cls(
+            base_url=settings.ollama_base_url,
+            client=client,
+            model=settings.ollama_model,
+            max_retries=settings.ollama_extract_max_retries,
+        )
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        options: dict[str, Any] | None = None,
+    ) -> str:
+        """Send a chat request and return the assembled response text.
+
+        POSTs with ``stream: true`` and assembles the NDJSON chunk stream's
+        ``message.content`` pieces into the full response.
+        """
+        body = self._build_body(messages, stream=True, options=options)
+        response = self._post_chat(body)
+        return self._assemble_stream(response)
+
+    def extract(
+        self,
+        prompt_or_messages: str | list[dict[str, str]],
+        schema: type[ModelT],
+        *,
+        options: dict[str, Any] | None = None,
+    ) -> ModelT:
+        """Extract ``schema`` from the model's response via constrained decoding.
+
+        POSTs with ``format`` set to ``schema.model_json_schema()`` so Ollama
+        constrains decoding to valid JSON for that schema, then parses and
+        ``model_validate``s the result. If the returned content isn't valid
+        JSON, or fails schema validation, retries up to ``max_retries`` total
+        attempts before raising ``OllamaError``. Network/HTTP failures (a
+        non-2xx status, a timeout, a connection error) are NOT retried here —
+        they propagate immediately as ``OllamaError``.
+        """
+        messages = self._normalize_messages(prompt_or_messages)
+        body = self._build_body(
+            messages,
+            stream=False,
+            format=schema.model_json_schema(),
+            options=options,
+        )
+
+        for _ in range(self._max_retries):
+            response = self._post_chat(body)
+            try:
+                content = self._single_message_content(response)
+                payload = json.loads(content)
+                return schema.model_validate(payload)
+            except (OllamaError, ValueError, ValidationError):
+                continue
+
+        raise OllamaError(f"constrained extraction failed after {self._max_retries} attempts")
+
+    def _post_chat(self, body: dict[str, Any]) -> httpx.Response:
+        url = f"{self._base_url}{_CHAT_PATH}"
+        try:
+            response = self._client.post(url, json=body)
+        except httpx.TimeoutException as exc:
+            raise OllamaError("Ollama request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError("Ollama request failed") from exc
+
+        if not response.is_success:
+            raise OllamaError(f"Ollama request failed (status {response.status_code})")
+        return response
+
+    def _build_body(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: bool,
+        format: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        merged_options: dict[str, Any] = {"temperature": 0}
+        if options:
+            merged_options.update(options)
+
+        body: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "stream": stream,
+            "think": False,
+            "options": merged_options,
+        }
+        if format is not None:
+            body["format"] = format
+        return body
+
+    @staticmethod
+    def _normalize_messages(prompt_or_messages: str | list[dict[str, str]]) -> list[dict[str, str]]:
+        if isinstance(prompt_or_messages, str):
+            return [{"role": "user", "content": prompt_or_messages}]
+        return prompt_or_messages
+
+    @staticmethod
+    def _assemble_stream(response: httpx.Response) -> str:
+        """Parse an NDJSON chunk stream and concatenate ``message.content`` pieces."""
+        parts: list[str] = []
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except ValueError as exc:
+                raise OllamaError("Ollama stream contained invalid JSON") from exc
+            message = chunk.get("message") if isinstance(chunk, dict) else None
+            if isinstance(message, dict):
+                piece = message.get("content")
+                if isinstance(piece, str):
+                    parts.append(piece)
+        return OllamaClient._strip_leaked_thinking("".join(parts))
+
+    @staticmethod
+    def _single_message_content(response: httpx.Response) -> str:
+        """Extract ``message.content`` from a non-streamed (single-object) response."""
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise OllamaError("Ollama response was not valid JSON") from exc
+
+        message = payload.get("message") if isinstance(payload, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise OllamaError("Ollama response missing message content")
+        return OllamaClient._strip_leaked_thinking(content)
+
+    @staticmethod
+    def _strip_leaked_thinking(content: str) -> str:
+        """Drop a leaked chain-of-thought preamble; see module docstring."""
+        return _LEAKED_THINK_RE.sub("", content, count=1)

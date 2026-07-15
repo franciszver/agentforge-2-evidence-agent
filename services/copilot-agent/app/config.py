@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # Per-request timeout for calls made by ``OpenEmrClient`` (app/openemr_client.py).
     openemr_api_timeout_seconds: float = 10.0
 
+    # Model served by the internal Ollama instance and per-request timeout /
+    # retry policy for ``OllamaClient`` (app/ollama_client.py).
+    ollama_model: str = "qwen3:4b"
+    ollama_api_timeout_seconds: float = 60.0
+    ollama_extract_max_retries: int = 2
+
     # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
     # ``openemr_base_url``.
     openemr_oauth_registration_path: str = "/oauth2/default/registration"
