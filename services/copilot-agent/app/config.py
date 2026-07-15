@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
     trace_db_path: str = "/data/traces.db"
     openemr_verify_ssl: bool = False
+    # Per-request timeout for calls made by ``OpenEmrClient`` (app/openemr_client.py).
+    openemr_api_timeout_seconds: float = 10.0
 
     # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
     # ``openemr_base_url``.
