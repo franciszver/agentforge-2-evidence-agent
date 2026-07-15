@@ -1,3 +1,11 @@
+# Clinical Co-Pilot (on OpenEMR)
+
+> **This repo hosts the Clinical Co-Pilot project** — an AI co-pilot embedded in OpenEMR with local-only inference and deterministic claim verification.
+> 📋 **[Project board (live plan)](https://github.com/users/franciszver/projects/2)** · 📐 [Implementation plan](docs/IMPLEMENTATION_PLAN.md) · 🧪 [Test plan](docs/TEST_PLAN.md) · 🧭 [Developer's guide](docs/DEVELOPERS_GUIDE.md)
+> The OpenEMR base README follows below.
+
+---
+
 [![Syntax Status](https://github.com/openemr/openemr/actions/workflows/syntax.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/syntax.yml)
 [![Styling Status](https://github.com/openemr/openemr/actions/workflows/styling.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/styling.yml)
 [![Testing Status](https://github.com/openemr/openemr/actions/workflows/test.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/test.yml)
