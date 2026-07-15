@@ -14,10 +14,16 @@ dispatch uses that id -- never anything the model puts in ``tool_args``.
 ``_build_tool_kwargs`` enforces this structurally by only ever reading
 tool-specific filter keys (``limit``, ``since``, ``start_date``,
 ``end_date``) out of ``tool_args``; ``patient_id`` is not among them, so a
-model that tries to smuggle a different patient id into ``tool_args`` has it
-silently dropped. Full cross-tool authorization enforcement (refusing calls
-whose *effective* pid diverges from the bound one at every layer) is P2.16;
-this loop is structured so that binding is already the only path in.
+model that tries to smuggle a different patient id into ``tool_args`` cannot
+retarget a tool. On top of that structural drop, P2.16 adds a LOUD, auditable
+refusal: before every dispatch the loop calls
+``app.authz.enforce_patient_binding``, which raises
+``PatientBindingViolation`` if ``tool_args`` names a patient other than the
+bound one. The loop catches it, records a ``patient_binding_violation``
+trace entry (no tool run, no record content), and feeds a refusal note back --
+so a cross-patient attempt is refused and recorded rather than silently
+ignored. This is defense-in-depth narrowing, not a second RBAC (role
+enforcement stays in OpenEMR).
 
 Quarantine seam (P2.9): tool output is not fed to the planner raw. Each
 tool result is routed through ``app.quarantine.quarantine_tool_result``,
@@ -42,6 +48,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from app.authz import PatientBindingViolation, enforce_patient_binding
 from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrApiError, OpenEmrClient
 from app.quarantine import QuarantinedSummarizer, quarantine_tool_result
@@ -351,6 +358,21 @@ class Planner:
             if spec is None:
                 messages.append(
                     {"role": "user", "content": f"[tool result] unknown tool {decision.tool!r}; choose from the available tools."}
+                )
+                continue
+
+            try:
+                enforce_patient_binding(bound_patient_id=self._patient_id, tool_args=decision.tool_args)
+            except PatientBindingViolation:
+                trace.append(ToolCallTrace(tool=decision.tool, args={}, result=None, error="patient_binding_violation"))
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"[tool result] {decision.tool.value} refused: this conversation is bound to a "
+                            "single patient and cannot access another; do not attempt to change the patient."
+                        ),
+                    }
                 )
                 continue
 

@@ -169,7 +169,7 @@ def test_max_turns_guard_stops_looping_and_returns_best_effort_answer():
 # --- patient-context binding ---------------------------------------------------
 
 
-def test_dispatches_tools_with_conversations_bound_patient_id_never_a_model_supplied_id():
+def test_smuggled_divergent_patient_id_is_refused_loudly_not_silently_run():
     medications_fn = MagicMock(return_value=MedicationsOutput(items=[]))
     registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
 
@@ -186,9 +186,21 @@ def test_dispatches_tools_with_conversations_bound_patient_id_never_a_model_supp
     ollama = _ScriptedOllamaClient(decisions)
     planner = _make_planner(ollama, registry)
 
-    planner.run("What meds is she on?")
+    result = planner.run("What meds is she on?")
 
-    medications_fn.assert_called_once_with(planner._openemr, "tok", BOUND_PATIENT_ID)
+    # The tool is NOT dispatched -- the binding violation is refused before
+    # any patient data is fetched (loud + auditable, not a silent drop).
+    medications_fn.assert_not_called()
+    # The refusal is recorded in the trace as a typed, auditable category,
+    # and carries NO record content (zero PHI on refusal).
+    assert len(result.trace) == 1
+    refusal = result.trace[0]
+    assert refusal.tool == ToolName.GET_MEDICATIONS
+    assert refusal.result is None
+    assert refusal.error == "patient_binding_violation"
+    assert refusal.args == {}
+    # The loop continues rather than crashing.
+    assert result.answer == "done"
 
 
 def test_tool_args_are_filtered_to_the_tools_own_input_schema_fields():
