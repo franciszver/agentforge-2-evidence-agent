@@ -3,6 +3,7 @@
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.chat import chat_endpoint
 from app.readiness import ReadinessReport, compute_readiness
 
 CHAT_SHELL_HTML = """<!DOCTYPE html>
@@ -105,6 +106,8 @@ def create_app() -> FastAPI:
     @app.get("/chat")
     def chat_shell() -> HTMLResponse:
         return HTMLResponse(content=CHAT_SHELL_HTML)
+
+    app.add_api_route("/chat", chat_endpoint, methods=["POST"])
 
     return app
 
