@@ -1,0 +1,7 @@
+id: fixture-malformed-yaml
+category: tool_selection
+question: "unterminated string
+patient_id: 1
+assertions:
+  - type: first_tool_in
+    tools: [get_medications]

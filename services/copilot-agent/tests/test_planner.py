@@ -4,8 +4,9 @@ Both the Ollama client and the tool registry are faked -- no HTTP, no
 Ollama, no OpenEMR. ``_ScriptedOllamaClient`` returns a pre-scripted
 sequence of ``PlannerDecision``s (one per turn), so each test asserts
 exactly the loop behaviour it names rather than depending on real model
-output. A separate ``@pytest.mark.integration`` eval (``evals/tool_selection/``)
-exercises the real qwen3:4b model.
+output. The offline eval suite (``evals/cases/tool_selection/`` + the P4.7
+record/replay runner, ``evals/test_cases.py``) exercises the real qwen3:4b
+model's tool-selection behavior via committed recordings.
 """
 
 from __future__ import annotations

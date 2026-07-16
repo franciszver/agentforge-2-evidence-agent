@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The problem list (active problems) is the most direct source for this question.",
+        "tool": "get_problems",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "The patient has no active problems.",
+        "reason": "The get_problems tool returned an empty list of active problems for this patient. This means the patient currently has no active problems.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient has no active problems listed in the system.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient has no active problems listed in the system.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

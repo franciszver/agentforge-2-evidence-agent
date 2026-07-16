@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "Check the medication list.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No medications are on file.",
+        "reason": "Medication list is empty.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "No medications on file for this patient.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "No medications are on file.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

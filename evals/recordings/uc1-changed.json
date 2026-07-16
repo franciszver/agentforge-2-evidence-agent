@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The encounter history shows what changed since the last visit.",
+        "tool": "get_encounters",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "There have been no changes since her last visit.",
+        "reason": "The get_encounters tool returned an empty list, meaning there have been no encounters since the last visit (or the patient has no encounter history).",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The encounter history shows no recent visits, so there is nothing recorded as having changed since the last visit.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The encounter history shows no recent visits, so there is nothing recorded as having changed since the last visit.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

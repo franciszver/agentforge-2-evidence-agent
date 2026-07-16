@@ -1,0 +1,11 @@
+id: uc3-a1c-trend
+category: tool_selection
+failure_mode: >
+  A lab-trend question ("last three A1c values") is answered without
+  consulting the recent-labs tool.
+question: "What are her last three A1c values, and when?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    tools: [get_recent_labs]

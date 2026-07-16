@@ -1,0 +1,15 @@
+id: fixture-fail
+category: tool_selection
+failure_mode: >
+  Harness self-test: proves the runner reports FAIL when a case's recording
+  replays through the real pipeline but an assertion does not hold (the
+  recording legitimately dispatches get_medications; the case wrongly
+  demands get_allergies).
+question: "What meds is she on?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items: []
+assertions:
+  - type: first_tool_in
+    tools: [get_allergies]

@@ -1,0 +1,7 @@
+id: fixture-invalid-schema
+category: not_a_real_category
+question: "What meds is she on?"
+patient_id: 1
+assertions:
+  - type: made_up_assertion_type
+    foo: bar

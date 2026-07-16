@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The medication list answers this directly.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "The patient has no medications currently.",
+        "reason": "The get_medications tool returned an empty list, meaning the patient has no medications currently.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient has no medications currently listed.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient has no medications currently listed.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

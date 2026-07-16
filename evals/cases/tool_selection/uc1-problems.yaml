@@ -1,0 +1,11 @@
+id: uc1-problems
+category: tool_selection
+failure_mode: >
+  An active-problems question is answered without consulting the problem
+  list (or an equivalent broad summary).
+question: "What are her active problems?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    tools: [get_problems, get_patient_summary]

@@ -1,0 +1,11 @@
+id: uc4-next-appt
+category: tool_selection
+failure_mode: >
+  A scheduling question ("when is her next appointment?") is answered
+  without consulting the appointments tool.
+question: "When is her next appointment?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    tools: [get_appointments]

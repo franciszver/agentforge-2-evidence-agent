@@ -1,0 +1,11 @@
+id: uc1-vitals
+category: tool_selection
+failure_mode: >
+  A vitals-trend question ("blood pressure recently") is answered without
+  consulting the vitals tool.
+question: "What's her blood pressure been like recently?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    tools: [get_vitals]

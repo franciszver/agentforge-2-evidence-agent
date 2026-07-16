@@ -1,0 +1,14 @@
+id: uc1-changed
+category: tool_selection
+failure_mode: >
+  A pre-visit "what changed since her last visit" question is answered
+  without consulting encounter history (or an equivalent broad summary).
+question: "What's changed since her last visit?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    # A broad "what changed" question is defensibly answered by either --
+    # widened per the original P2.8 case's "widen and note it honestly"
+    # guidance rather than over-fitting to one model phrasing.
+    tools: [get_encounters, get_patient_summary]

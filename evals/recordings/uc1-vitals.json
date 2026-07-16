@@ -1,0 +1,41 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks about recent blood pressure trends, so get_vitals is the appropriate tool to retrieve recent vital signs including blood pressure.",
+        "tool": "get_vitals",
+        "tool_args": {
+          "limit": "5"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No recent blood pressure readings are available for this patient.",
+        "reason": "The get_vitals tool returned an empty list of recent vital signs. This means there are no recent blood pressure readings available for this patient. The answer should reflect that no recent blood pressure data exists.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "There are no recent blood pressure readings available for this patient.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "There are no recent blood pressure readings available for this patient.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

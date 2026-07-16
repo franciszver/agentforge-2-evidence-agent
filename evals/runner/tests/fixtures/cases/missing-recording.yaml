@@ -1,0 +1,13 @@
+id: fixture-missing-recording
+category: tool_selection
+failure_mode: >
+  Harness self-test: proves a case with no committed recording artifact
+  fails clearly (not silently skipped).
+question: "What meds is she on?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items: []
+assertions:
+  - type: first_tool_in
+    tools: [get_medications]

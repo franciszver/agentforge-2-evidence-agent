@@ -1,0 +1,11 @@
+id: uc2-allergies
+category: tool_selection
+failure_mode: >
+  An allergy-safety question ("any allergies?") is answered without
+  consulting the allergy-list tool.
+question: "Does she have any allergies?"
+patient_id: 1
+tool_data: {}
+assertions:
+  - type: first_tool_in
+    tools: [get_allergies]

@@ -1,0 +1,118 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for two things: current medications and drug allergies. I need to get both pieces of information. I'll start by calling get_medications to get the medication list, then get_allergies for the allergies.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking Penicillin 500mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for two things: current medications and drug allergies. I've already called get_medications and got the medication list. Now I need to get the allergies using get_allergies.",
+        "tool": "get_allergies",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient has an allergy to Penicillin, which causes hives."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "The patient is currently taking Penicillin 500mg orally. She has an allergy to Penicillin, which causes hives.",
+        "reason": "The question asked for two things: current medications and drug allergies. I called get_medications and got that the patient is currently taking Penicillin 500mg orally. Then I called get_allergies and found that the patient has an allergy to Penicillin, which causes hives. Both pieces of information are now available from the tool results.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient is currently taking Penicillin 500mg orally. She has a severe allergy to Penicillin, which causes hives.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient is currently taking Penicillin 500mg orally. She has a severe allergy to Penicillin, which causes hives.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Penicillin",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "500mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking Penicillin 500mg orally."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Penicillin",
+                "field": "substance",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              },
+              {
+                "asserted_value": "hives",
+                "field": "reaction",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              },
+              {
+                "asserted_value": "severe",
+                "field": "severity",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              }
+            ],
+            "text": "The patient has a severe allergy to Penicillin, which causes hives."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}
