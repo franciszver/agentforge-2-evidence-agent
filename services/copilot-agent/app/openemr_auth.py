@@ -108,9 +108,13 @@ def introspect_token(
     """Introspect a forwarded bearer token via OpenEMR's RFC 7662 endpoint.
 
     ``POST {base_url}{introspect_path}`` with the confidential client
-    authenticated by HTTP **Basic** auth (``client_id:client_secret`` -- never
-    placed in the URL or query string) and the token to check carried in the
-    form body as ``token=<token>``.
+    authenticated by ``client_secret_post`` -- ``client_id``/``client_secret``
+    in the form body (never the URL/query). OpenEMR's introspection endpoint
+    reads the client credentials from the POST body, not the Authorization
+    header, so HTTP Basic auth is silently ignored there (a valid token would
+    come back ``active:false``). The token to check and an explicit
+    ``token_type_hint=access_token`` (the only kind forwarded to ``/chat``)
+    ride in the same body.
 
     Fails closed: an inactive token, a malformed/non-JSON body, a non-2xx
     status, and any network/timeout error all return
@@ -120,7 +124,15 @@ def introspect_token(
     """
     url = f"{base_url}{introspect_path}"
     try:
-        response = client.post(url, data={"token": token}, auth=(client_id, client_secret))
+        response = client.post(
+            url,
+            data={
+                "token": token,
+                "token_type_hint": "access_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
     except httpx.HTTPError:
         return IntrospectionResult(active=False, exp=None)
 

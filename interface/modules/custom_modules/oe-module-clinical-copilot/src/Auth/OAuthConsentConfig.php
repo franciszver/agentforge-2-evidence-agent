@@ -55,6 +55,23 @@ final readonly class OAuthConsentConfig
     public const CLIENT_ID_GLOBAL = 'clinical_copilot_prod_client_id';
     public const CLIENT_SECRET_GLOBAL = 'clinical_copilot_prod_client_secret';
 
+    /**
+     * OpenEMR global overriding the SERVER-SIDE token-exchange URL. The token
+     * exchange (and refresh) run inside the openemr container and must reach the
+     * OAuth server over the internal docker network, NOT via the browser-facing
+     * public origin ($tokenUrl / site_addr_oath) -- that host (e.g. localhost:9300)
+     * is a host port map apache does not listen on inside the container, so a POST
+     * there fails outright. Unset => DEFAULT_INTERNAL_TOKEN_URL.
+     */
+    public const INTERNAL_TOKEN_URL_GLOBAL = 'clinical_copilot_oauth_internal_token_url';
+
+    /**
+     * Default container-internal token endpoint: the `openemr` docker-network
+     * alias the agent already uses for server-to-server calls. Site is the
+     * "default" site, matching the fixed browser-facing redirect_uri path.
+     */
+    public const DEFAULT_INTERNAL_TOKEN_URL = 'https://openemr/oauth2/default/token';
+
     public function __construct(
         public bool $enabled,
         public string $clientId,
@@ -63,6 +80,8 @@ final readonly class OAuthConsentConfig
         public string $scope,
         public string $authorizeUrl,
         public string $tokenUrl,
+        public string $internalTokenUrl,
+        public string $audience,
     ) {
     }
 
@@ -84,7 +103,25 @@ final readonly class OAuthConsentConfig
             scope: self::SCOPE,
             authorizeUrl: $server->getAuthorizeUrl(),
             tokenUrl: $server->getTokenUrl(),
+            internalTokenUrl: self::resolveInternalTokenUrl($globals),
+            // SMART `aud`: OpenEMR forces this to the FHIR/API resource base (not
+            // the token endpoint) whenever a launch token is present. This is the
+            // browser-facing FHIR base, so it stays on the public origin.
+            audience: $server->getFhirUrl(),
         );
+    }
+
+    /**
+     * Server-side token endpoint reachable from inside the openemr container.
+     * Honours the override global; falls back to the internal docker alias
+     * default. The browser-facing $tokenUrl (used for the authorize `aud`) is
+     * deliberately left unchanged -- only the server-to-server POST target moves.
+     */
+    private static function resolveInternalTokenUrl(OEGlobalsBag $globals): string
+    {
+        $override = self::readString($globals, self::INTERNAL_TOKEN_URL_GLOBAL);
+
+        return $override !== '' ? $override : self::DEFAULT_INTERNAL_TOKEN_URL;
     }
 
     private static function readString(OEGlobalsBag $globals, string $key): string

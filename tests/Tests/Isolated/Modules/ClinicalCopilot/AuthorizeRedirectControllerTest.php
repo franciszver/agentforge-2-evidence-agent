@@ -48,6 +48,13 @@ class AuthorizeRedirectControllerTest extends TestCase
     private const SCOPE = 'openid offline_access launch launch/patient api:oemr api:fhir';
     private const AUTHORIZE_URL = 'https://localhost:9300/oauth2/default/authorize';
     private const TOKEN_URL = 'https://localhost:9300/oauth2/default/token';
+    /**
+     * SMART `aud` must be the FHIR/API resource base, NOT the token endpoint.
+     * OpenEMR's CustomAuthCodeGrant forces aud to be one of {fhirUrl, apiBase/api,
+     * apiBase/portal} whenever a launch token is present (always, here), so
+     * aud=tokenUrl is rejected with "Aud parameter did not match authorized server".
+     */
+    private const AUDIENCE = 'https://localhost:9300/apis/default/fhir';
 
     protected function setUp(): void
     {
@@ -105,7 +112,7 @@ class AuthorizeRedirectControllerTest extends TestCase
         $this->assertSame(self::CANONICAL_REDIRECT_URI, $params['redirect_uri']);
         $this->assertSame(self::SCOPE, $params['scope']);
         $this->assertSame('S256', $params['code_challenge_method']);
-        $this->assertSame(self::TOKEN_URL, $params['aud']);
+        $this->assertSame(self::AUDIENCE, $params['aud']);
         $this->assertArrayHasKey('code_challenge', $params);
         $this->assertArrayHasKey('state', $params);
         $this->assertArrayHasKey('launch', $params);
@@ -190,6 +197,8 @@ class AuthorizeRedirectControllerTest extends TestCase
             scope: self::SCOPE,
             authorizeUrl: self::AUTHORIZE_URL,
             tokenUrl: self::TOKEN_URL,
+            internalTokenUrl: 'https://openemr/oauth2/default/token',
+            audience: self::AUDIENCE,
         );
     }
 

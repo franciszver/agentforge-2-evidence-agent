@@ -2,7 +2,7 @@
 
 All HTTP is served by ``httpx.MockTransport`` -- the suite never touches the
 network. Covers the low-level ``introspect_token`` primitive (active / inactive
-/ malformed / non-2xx / network-error, Basic-auth header, token-not-in-URL,
+/ malformed / non-2xx / network-error, body client_secret_post auth, token-not-in-URL,
 no-token/secret logging), the short-TTL ``TokenIntrospector`` cache (hash-keyed,
 network only re-hit when uncached), and the introspection-based validator's
 active/inactive/expired/empty mapping to ``TokenValidationError``.
@@ -14,7 +14,6 @@ this file.
 
 from __future__ import annotations
 
-import base64
 import logging
 
 import httpx
@@ -30,23 +29,16 @@ _CSEC = "cs-1"
 _TOK = "utok-a"
 
 
-def _basic_from(request: httpx.Request) -> str:
-    """Decode the ``Authorization: Basic ...`` header into ``id:secret``."""
-    scheme, _, b64 = request.headers["Authorization"].partition(" ")
-    assert scheme == "Basic"
-    return base64.b64decode(b64).decode()
-
-
 # --- introspect_token primitive -------------------------------------------
 
 
-def test_introspect_active_returns_active_with_exp_and_uses_basic_auth():
+def test_introspect_active_returns_active_and_uses_body_client_auth():
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["url"] = str(request.url)
-        captured["basic"] = _basic_from(request)
+        captured["has_auth_header"] = "Authorization" in request.headers
         captured["body"] = request.content.decode()
         return httpx.Response(200, json={"active": True, "exp": 9999999999})
 
@@ -62,12 +54,20 @@ def test_introspect_active_returns_active_with_exp_and_uses_basic_auth():
 
     assert result == IntrospectionResult(active=True, exp=9999999999)
     assert captured["path"] == "/oauth2/default/introspect"
-    # Client authenticated via HTTP Basic (client creds NOT in the URL/query).
-    assert captured["basic"] == f"{_CID}:{_CSEC}"
-    # Forwarded token travels in the form body, never in the URL.
-    assert f"token={_TOK}" in captured["body"]
+    # OpenEMR's introspection endpoint reads the client credentials from the
+    # POST body (client_secret_post), NOT the Authorization header -- Basic-auth
+    # creds are ignored there, yielding a spurious active:false. So the creds
+    # must travel in the form body alongside the token.
+    body = captured["body"]
+    assert isinstance(body, str)
+    assert f"client_id={_CID}" in body
+    assert f"client_secret={_CSEC}" in body
+    assert f"token={_TOK}" in body
+    assert captured["has_auth_header"] is False
+    # Nothing sensitive travels in the URL/query.
     assert _TOK not in captured["url"]
     assert _CSEC not in captured["url"]
+    assert _CID not in captured["url"]
 
 
 def test_introspect_inactive_returns_invalid():

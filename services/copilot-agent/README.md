@@ -108,6 +108,48 @@ The production client secret is written only to the container-local
 `copilot_prod_client_creds_path` (default `/data/openemr-prod-client.json`) and
 is never printed or committed.
 
+### Wire the client into the module globals (dev) — #124 Phase 6
+
+Registering + enabling the client is not enough: the OpenEMR module reads the
+client id/secret and the consent-enable flag from **globals**
+(`OAuthConsentConfig::fromEnvironment()`), and nothing copies the creds file into
+those globals automatically. For the dev loop, run:
+
+```bash
+bash scripts/wire-copilot-prod-globals.sh
+```
+
+This reads the creds file from the agent container and upserts
+`clinical_copilot_prod_client_id`, `clinical_copilot_prod_client_secret`,
+`clinical_copilot_oauth_consent_enabled=1`, and `clinical_copilot_oauth_verify_ssl=0`
+(dev self-signed cert). It is **dev-only** (direct SQL + TLS opt-out). In
+production an admin provisions the secret out-of-band and enables the flag
+deliberately.
+
+**Server-side token endpoint (browser origin vs. internal alias).** The consent
+callback runs *inside* the openemr container and performs the
+`authorization_code`→token exchange server-to-server. It must NOT reuse the
+browser-facing origin (`https://localhost:9300`, a host port map apache does not
+listen on inside the container) — a POST there fails outright. So the exchanger
+targets `OAuthConsentConfig::DEFAULT_INTERNAL_TOKEN_URL`
+(`https://openemr/oauth2/default/token`, the internal docker alias the agent
+already uses), overridable via the `clinical_copilot_oauth_internal_token_url`
+global. The browser-facing `authorize` URL, `redirect_uri`, and SMART `aud`
+(the FHIR resource base) stay on the public origin — OpenEMR validates
+`redirect_uri`/client/PKCE against stored state, not the request host.
+
+### Operational gotchas (dev stack)
+
+- **Rebuild the agent image after merges.** The `agent` service bakes its code
+  into the image (no source bind-mount). After pulling changes, recreate it or
+  the container runs stale code (e.g. missing `app/prod_client_registration.py`):
+  `docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build agent`.
+- **`/data` is ephemeral.** The agent has no volume for `/data`, so every
+  recreate wipes the dev/prod creds files. Re-run
+  `scripts/bootstrap-copilot-dev-client.sh` (and, for the consent flow,
+  `scripts/register-copilot-prod-client.sh` + `scripts/wire-copilot-prod-globals.sh`)
+  after recreating the agent.
+
 ## Container
 
 ```bash

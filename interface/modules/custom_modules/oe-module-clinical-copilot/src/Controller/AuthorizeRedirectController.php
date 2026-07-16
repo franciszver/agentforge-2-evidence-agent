@@ -111,7 +111,7 @@ final class AuthorizeRedirectController
             'state' => CsrfUtils::collectCsrfToken($session, OAuthConsentSession::STATE_SUBJECT),
             'code_challenge' => $pkce->challenge,
             'code_challenge_method' => 'S256',
-            'aud' => $this->config->tokenUrl,
+            'aud' => $this->config->audience,
             'launch' => $this->launchTokenFactory->create($pid),
         ];
 

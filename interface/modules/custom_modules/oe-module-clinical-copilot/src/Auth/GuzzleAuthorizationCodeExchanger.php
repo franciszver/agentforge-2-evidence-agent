@@ -45,7 +45,7 @@ final class GuzzleAuthorizationCodeExchanger implements AuthorizationCodeExchang
         // messages only; the original is chained (never embedded) so creds/URLs
         // in an underlying message cannot leak.
         try {
-            $response = $this->client->post($this->config->tokenUrl, [
+            $response = $this->client->post($this->config->internalTokenUrl, [
                 'form_params' => [
                     'grant_type' => 'authorization_code',
                     'code' => $code,
@@ -92,7 +92,7 @@ final class GuzzleAuthorizationCodeExchanger implements AuthorizationCodeExchang
         // the refresh token on every refresh, so the response carries a NEW
         // refresh token the caller must persist in place of the old one.
         try {
-            $response = $this->client->post($this->config->tokenUrl, [
+            $response = $this->client->post($this->config->internalTokenUrl, [
                 'form_params' => [
                     'grant_type' => 'refresh_token',
                     'refresh_token' => $refreshToken,
