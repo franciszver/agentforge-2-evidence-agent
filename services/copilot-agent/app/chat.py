@@ -26,15 +26,13 @@ SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
   * ``verification`` -- the P3.8 verification result for this response (verdict
                          badge, citation chips, warning banner). See
                          ``build_verification_payload`` for the payload shape.
-                         **Under-populated today**: the answer->claims/meds
-                         extraction pipeline that would produce a real
-                         ``VerdictResult``/``RenderedAnswer`` from the planner's
-                         free-text answer is not built yet (the same seam gap
-                         called out in ``app.verdict`` / ``app.rendering`` /
-                         ``app.allergy_check``), so this frame currently carries
-                         the *pending* payload (``verdict: null``, no segments,
-                         no warnings). TODO(extraction): feed real verification
-                         data here once that pipeline lands.
+                         Populated live by ``app.extraction.run_verification``:
+                         the planner's answer is decomposed into cited claims,
+                         each re-validated against the RAW records
+                         (deterministic, no LLM) and stripped if unverifiable,
+                         then folded with the allergy / interaction checks into
+                         the whole-answer verdict. An answer with no surviving
+                         claims fails closed to ``blocked`` (P3.7).
   * ``done``           -- terminal frame, ``{}``.
 """
 
@@ -54,6 +52,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.dev_token_bridge import DevTokenBridge
+from app.extraction import ClaimExtractor, ClaimExtractorLike, run_verification
 from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
@@ -175,6 +174,18 @@ def get_planner_factory(
     event loop.
     """
     return _default_planner_factory(dev_token_bridge.get_token())
+
+
+def get_claim_extractor() -> ClaimExtractorLike:
+    """FastAPI dependency: the answer->claims extractor. Override in tests.
+
+    Built with ONLY an ``OllamaClient`` -- no tool registry, no OpenEMR
+    client, no token -- so the extraction LLM is structurally tool-less (see
+    ``app.extraction``'s security-boundary docstring). It is a distinct
+    ``OllamaClient`` from the planner's, underscoring that the extractor
+    never shares the planner's tool-selecting context.
+    """
+    return ClaimExtractor(ollama_client=OllamaClient.from_settings(get_settings()))
 
 
 UNKNOWN_USER = "unknown"
@@ -313,11 +324,10 @@ def build_verification_payload(
     banner).
 
     ``None`` inputs produce the *pending* payload (``verdict: null``, no
-    segments, no warnings): the answer->claims/meds extraction pipeline is not
-    built yet, so a live response has no ``VerdictResult``/``RenderedAnswer`` to
-    serialize. The UI renders nothing for the pending payload; when extraction
-    lands, ``_stream_chat`` passes real values here and the same contract
-    carries the full result.
+    segments, no warnings), which the UI renders nothing for. The live
+    ``_stream_chat`` path now always passes a real ``VerdictResult`` /
+    ``RenderedAnswer`` from ``app.extraction.run_verification``; the ``None``
+    contract is retained for callers that want an explicit pending frame.
     """
     if verdict_result is None:
         return {
@@ -366,6 +376,7 @@ def _sse(event: ChatEvent, data: dict[str, object]) -> str:
 
 def _stream_chat(
     planner: PlannerProtocol,
+    extractor: ClaimExtractorLike,
     conversation: Conversation,
     store: ConversationStore,
     message: str,
@@ -385,13 +396,13 @@ def _stream_chat(
 
     yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
 
-    # TODO(extraction): the answer->claims/meds extraction pipeline (see the
-    # module docstring's `verification` frame note and app.verdict /
-    # app.rendering) is not built, so no VerdictResult/RenderedAnswer is
-    # available for a live answer. Emit the pending payload so the P3.8 UI has
-    # a frame to render against; wire real verification data here when
-    # extraction lands.
-    yield _sse(ChatEvent.VERIFICATION, build_verification_payload(None, None))
+    # Run the answer->claims extraction pipeline and populate the verification
+    # frame with the REAL verdict / citation chips / warnings for this answer.
+    # ``run_verification`` re-validates every extracted claim against the RAW
+    # records (deterministic, no LLM) and strips the unverifiable ones, so a
+    # miscited or injection-steered claim never reaches the user as fact.
+    verdict_result, rendered = run_verification(extractor, result)
+    yield _sse(ChatEvent.VERIFICATION, build_verification_payload(verdict_result, rendered))
 
     store.append_turn(
         conversation.conversation_id,
@@ -419,6 +430,7 @@ async def chat_endpoint(
     authorization: str | None = Header(default=None),
     validator: TokenValidator = Depends(get_token_validator),
     planner_factory: PlannerFactory = Depends(get_planner_factory),
+    extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
 ) -> StreamingResponse:
     try:
@@ -444,6 +456,6 @@ async def chat_endpoint(
     planner = planner_factory(request.patient_id)
 
     return StreamingResponse(
-        _stream_chat(planner, conversation, store, request.message, user),
+        _stream_chat(planner, extractor, conversation, store, request.message, user),
         media_type="text/event-stream",
     )

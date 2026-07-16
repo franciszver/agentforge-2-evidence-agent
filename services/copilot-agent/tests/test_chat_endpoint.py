@@ -20,27 +20,51 @@ from app.chat import (
     PatientMismatchError,
     TokenValidationError,
     Turn,
+    get_claim_extractor,
     get_conversation_store,
     get_planner_factory,
     get_token_validator,
 )
 from app.main import app
 from app.planner import PlannerResult, ToolCallTrace
+from app.schemas.common import MedicationStatus, SourceRef
 from app.schemas.planner import ToolName
+from app.schemas.tools import MedicationItem, MedicationsOutput
+from app.schemas.verification import Claim
 
 
 class FakePlanner:
     """Scripted planner double: records the question it was asked and
-    returns a fixed trace + answer."""
+    returns a fixed trace + answer (+ optional verifier-only raw_results)."""
 
-    def __init__(self, trace: list[ToolCallTrace], answer: str) -> None:
+    def __init__(
+        self,
+        trace: list[ToolCallTrace],
+        answer: str,
+        raw_results: list[dict | None] | None = None,
+    ) -> None:
         self._trace = trace
         self._answer = answer
+        self._raw_results = raw_results or []
         self.questions: list[str] = []
 
     def run(self, question: str) -> PlannerResult:
         self.questions.append(question)
-        return PlannerResult(answer=self._answer, trace=self._trace)
+        return PlannerResult(answer=self._answer, trace=self._trace, raw_results=self._raw_results)
+
+
+class FakeExtractor:
+    """A ``ClaimExtractor`` double returning canned claims, no model call."""
+
+    def __init__(self, claims: list[Claim] | None = None) -> None:
+        self._claims = claims or []
+
+    def extract_claims(self, *, answer, tools, raw_results) -> list[Claim]:
+        return list(self._claims)
+
+
+def _override_extractor(extractor: FakeExtractor) -> None:
+    app.dependency_overrides[get_claim_extractor] = lambda: extractor
 
 
 @pytest.fixture(autouse=True)
@@ -335,15 +359,15 @@ def test_chat_event_enum_matches_frame_names():
     assert ChatEvent.DONE.value == "done"
 
 
-def test_stream_emits_pending_verification_frame_after_answer_before_done():
+def test_stream_emits_verification_frame_after_answer_before_done():
     # P3.8: every response carries a verification frame (verdict badge /
-    # citation chips / warning banner contract). The answer->claims/meds
-    # extraction pipeline is not built yet, so the live frame is the *pending*
-    # payload (verdict null, no segments, no warnings); the frame's position
-    # in the stream and its contract shape are pinned here.
+    # citation chips / warning banner contract). With no extractable claims
+    # (empty trace/raw), the pipeline fails closed to a `blocked` verdict with
+    # no segments/warnings; the frame's position and contract shape are pinned.
     fake_planner = FakePlanner(trace=[], answer="ok")
     _override_ok_validator()
     _override_planner_factory(fake_planner)
+    _override_extractor(FakeExtractor())
 
     response = client.post(
         "/chat",
@@ -361,10 +385,67 @@ def test_stream_emits_pending_verification_frame_after_answer_before_done():
     verification_data = json.loads(
         next(data for name, data in events if name == "verification")
     )
-    assert verification_data["verdict"] is None
+    # No claims survived (there were none) -> fail-closed blocked, no evidence.
+    assert verification_data["verdict"] == "blocked"
     assert verification_data["segments"] == []
     assert verification_data["warnings"] == {
         "allergy_conflicts": [],
         "blocking_interactions": [],
         "warning_interactions": [],
     }
+
+
+def test_stream_emits_populated_verification_frame_with_real_claim():
+    # The flagship integration: a grounded medication claim flows through
+    # extraction -> checker -> render -> verdict and lands in the SSE frame as
+    # a `verified` badge with a citation chip on the real record value.
+    meds_raw = MedicationsOutput(
+        items=[
+            MedicationItem(
+                name="Lisinopril", dose="10 mg", route="oral", status=MedicationStatus.ACTIVE
+            )
+        ]
+    ).model_dump(mode="json")
+    trace = [ToolCallTrace(tool=ToolName.GET_MEDICATIONS, args={}, result={"summary": "q"}, error=None)]
+    fake_planner = FakePlanner(
+        trace=trace, answer="She is on Lisinopril.", raw_results=[meds_raw]
+    )
+    claim = Claim(
+        text="She is on Lisinopril.",
+        source_refs=[
+            SourceRef(
+                tool_call_id="call_0", record_id="0", field="name", asserted_value="Lisinopril"
+            )
+        ],
+    )
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+    _override_extractor(FakeExtractor([claim]))
+
+    response = client.post(
+        "/chat",
+        json={"message": "What meds is she on?", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    events = _iter_sse_events(response.text)
+    verification_data = json.loads(
+        next(data for name, data in events if name == "verification")
+    )
+
+    assert verification_data["verdict"] == "verified"
+    assert verification_data["segments"] == [
+        {
+            "type": "claim",
+            "text": "She is on Lisinopril.",
+            "citations": [
+                {
+                    "tool_call_id": "call_0",
+                    "record_id": "0",
+                    "field": "name",
+                    "value": "Lisinopril",
+                }
+            ],
+        }
+    ]
+    assert verification_data["warnings"]["allergy_conflicts"] == []
