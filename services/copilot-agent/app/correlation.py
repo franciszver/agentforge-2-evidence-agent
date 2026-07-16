@@ -52,6 +52,7 @@ exactly the coroutine that later drives the streamed body.
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
@@ -130,6 +131,38 @@ class CorrelationIdMiddleware:
             await self.app(scope, receive, send_wrapper)
 
 
+_STDLIB_RECORD_ATTRS = frozenset(logging.makeLogRecord({}).__dict__.keys())
+
+
+class JsonFormatter(logging.Formatter):
+    """Render a ``LogRecord`` as one JSON line.
+
+    The standard ``logging.Formatter`` only renders whatever fields are named
+    in its format string, so custom ``extra=`` attributes -- ``correlation_id``,
+    ``stage``, and per-call-site fields like ``tool``/``error_type``/``attempt``
+    -- never show up in actual log output even though every record carries
+    them. This serializes the standard fields (timestamp, level, logger name,
+    message) plus any such custom attributes to JSON. Records with no custom
+    attributes (plain library log lines, e.g. from ``httpx``/``uvicorn``)
+    format the same way, just without those extra keys -- never raises.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        for key, value in record.__dict__.items():
+            if key in _STDLIB_RECORD_ATTRS:
+                continue
+            payload[key] = value
+        return json.dumps(payload, default=str)
+
+
 _logging_configured = False
 
 
@@ -160,11 +193,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     logging.setLogRecordFactory(_record_factory)
 
     handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)s [correlation_id=%(correlation_id)s] %(name)s: %(message)s"
-        )
-    )
+    handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(level)

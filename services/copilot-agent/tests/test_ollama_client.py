@@ -9,6 +9,7 @@ dev-stack Ollama.
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import httpx
@@ -16,6 +17,7 @@ import pytest
 from pydantic import BaseModel
 
 from app.config import Settings
+from app.correlation import _STDLIB_RECORD_ATTRS
 from app.ollama_client import OllamaClient, OllamaError
 
 
@@ -379,6 +381,116 @@ def test_extract_http_error_propagates_immediately_without_retry():
     assert client.call_stats[0].ok is False
     assert client.call_stats[0].tokens_in is None
     assert client.call_stats[0].tokens_out is None
+
+
+# --- failure/retry outcome logging (#144) --------------------------------
+#
+# ``chat()``/``extract()`` already logged call *starts* (see the "ollama
+# chat call"/"ollama extract call" info lines above) but never logged
+# *outcomes* -- a correlation trace showed a call began, never whether it
+# failed or (for extract's malformed-output path) was retried. These pin
+# the symmetric failure/retry log lines, and that no PHI/prompt content
+# ever lands in them.
+#
+# Retry contract reminder (see extract()'s docstring): extract() retries
+# malformed/invalid JSON and schema-validation failures, but does NOT retry
+# HTTP/network errors -- those propagate immediately. So a retry log line
+# is expected only on the malformed-output path, never on the HTTP-error
+# path.
+
+
+def _all_log_text(records: list[logging.LogRecord]) -> str:
+    """Flatten every message + extra value across records into one string,
+    for a single "no PHI/prompt content anywhere" substring check."""
+    parts: list[str] = []
+    for record in records:
+        parts.append(record.getMessage())
+        for key, value in vars(record).items():
+            if key not in _STDLIB_RECORD_ATTRS:
+                parts.append(str(value))
+    return " ".join(parts)
+
+
+def test_chat_logs_failure_outcome_on_http_error(caplog):
+    caplog.set_level(logging.INFO, logger="app.ollama_client")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal stack trace detail")
+
+    client = _client(handler)
+    with pytest.raises(OllamaError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    records = [r for r in caplog.records if r.name == "app.ollama_client"]
+    failures = [r for r in records if r.levelno >= logging.WARNING]
+    assert failures, "expected a failure outcome log line from chat()"
+    failure = failures[0]
+    assert failure.error_type == "OllamaError"
+    assert "internal stack trace detail" not in _all_log_text(records)
+
+
+def test_extract_logs_retry_outcome_on_malformed_json_then_succeeds(caplog):
+    caplog.set_level(logging.INFO, logger="app.ollama_client")
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        content = "not valid json {{{" if call_count == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": content}, "done": True}),
+        )
+
+    client = _client(handler, max_retries=2)
+    result = client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    assert result.name == "cat"
+    records = [r for r in caplog.records if r.name == "app.ollama_client"]
+    retry_lines = [r for r in records if getattr(r, "attempt", None) == 1 and r.levelno >= logging.WARNING]
+    assert retry_lines, "expected a retry outcome log line on the malformed-output retry path"
+    assert retry_lines[0].attempt == 1
+
+
+def test_extract_does_not_log_retry_on_http_error_path(caplog):
+    caplog.set_level(logging.INFO, logger="app.ollama_client")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal stack trace detail")
+
+    client = _client(handler, max_retries=2)
+    with pytest.raises(OllamaError):
+        client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    records = [r for r in caplog.records if r.name == "app.ollama_client"]
+    failures = [r for r in records if r.levelno >= logging.WARNING]
+    assert failures, "expected a failure outcome log line from extract()'s HTTP-error path"
+    assert failures[0].error_type == "OllamaError"
+    assert not any("retry" in r.getMessage().lower() for r in failures)
+    assert "internal stack trace detail" not in _all_log_text(records)
+
+
+def test_extract_logs_failure_after_exhausting_retries_without_leaking_output(caplog):
+    caplog.set_level(logging.INFO, logger="app.ollama_client")
+    secret_output = "leaked-phi-like-token-xyz"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"role": "assistant", "content": f"garbage {secret_output}"}, "done": True}
+            ),
+        )
+
+    client = _client(handler, max_retries=2)
+    with pytest.raises(OllamaError):
+        client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    records = [r for r in caplog.records if r.name == "app.ollama_client"]
+    failures = [r for r in records if r.levelno >= logging.WARNING]
+    assert len(failures) == 2  # one retry outcome (attempt 1) + one final failure (attempt 2)
+    assert failures[-1].attempt == 2
+    assert secret_output not in _all_log_text(records)
 
 
 # --- live integration: real qwen3:4b -----------------------------------

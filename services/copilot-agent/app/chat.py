@@ -484,7 +484,7 @@ def _stream_chat(
     request_ok = True
     _logger.info(
         "chat invocation started",
-        extra={"conversation_id": conversation.conversation_id, "patient_id": conversation.patient_id},
+        extra={"conversation_id": conversation.conversation_id},
     )
 
     try:

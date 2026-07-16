@@ -429,6 +429,46 @@ def test_chat_endpoint_response_header_matches_the_recorded_turn_correlation_id(
     assert turn.correlation_id == header_id
 
 
+def test_chat_endpoint_logs_never_carry_patient_id(caplog):
+    """PHI guard (#144): the JSON log formatter renders every ``extra=``
+    attribute on a record, so a log call site attaching ``patient_id`` --
+    even one that predates this seam -- would now leak it into every
+    emitted log line. No log record from a ``/chat`` invocation may carry
+    a ``patient_id`` attribute; ``conversation_id``/``correlation_id`` are
+    the non-PHI identifiers used for tracing instead."""
+    from app.chat import ConversationStore, get_conversation_store, get_planner_factory, get_token_validator
+    from app.main import app as real_app
+    from app.planner import PlannerResult
+
+    configure_logging()
+    caplog.set_level(logging.INFO, logger="app.chat")
+
+    class _FakePlanner:
+        def run(self, question: str) -> PlannerResult:
+            return PlannerResult(answer="ok", trace=[], raw_results=[])
+
+    def _ok_validator(token: str) -> None:
+        return None
+
+    store = ConversationStore()
+    real_app.dependency_overrides[get_token_validator] = lambda: _ok_validator
+    real_app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: _FakePlanner())
+    real_app.dependency_overrides[get_conversation_store] = lambda: store
+    try:
+        client = TestClient(real_app)
+        client.post(
+            "/chat",
+            json={"message": "hi", "patient_id": 1},
+            headers={"Authorization": "Bearer good-token"},
+        )
+    finally:
+        real_app.dependency_overrides.clear()
+
+    records = [r for r in caplog.records if r.name == "app.chat"]
+    assert records
+    assert not any(hasattr(r, "patient_id") for r in records)
+
+
 def _iter_sse(text: str) -> list[tuple[str, str]]:
     events: list[tuple[str, str]] = []
     for block in text.strip().split("\n\n"):
