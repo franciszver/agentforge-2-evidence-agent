@@ -7522,48 +7522,13 @@ $ignoreErrors[] = [
     'path' => __DIR__ . '/../../tests/Tests/Certification/HIT1/G9_Certification/CCDADocRefGenerationTest.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
     'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
     'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 14,
     'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 5,
+    'count' => 1,
     'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
 ];
 $ignoreErrors[] = [
@@ -7577,289 +7542,34 @@ $ignoreErrors[] = [
     'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
-];
-$ignoreErrors[] = [
     'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 5,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 12,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 7,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 18,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 9,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 8,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 24,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 8,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 8,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 16,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 42,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 7,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 18,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 16,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 42,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
-    'count' => 14,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method alert\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method clear\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method click\\(\\) on mixed\\.$#',
-    'count' => 7,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method executeScript\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method filterXPath\\(\\) on mixed\\.$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
+    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Cannot call method filter\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method getElement\\(\\) on mixed\\.$#',
-    'count' => 4,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot call method isSelected\\(\\) on mixed\\.$#',
+    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
+    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Cannot call method sendKeys\\(\\) on mixed\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
+    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
+    'count' => 1,
+    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Cannot call method switchTo\\(\\) on mixed\\.$#',
+    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
     'count' => 2,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
+    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
+];
+$ignoreErrors[] = [
+    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
+    'count' => 1,
+    'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
+];
+$ignoreErrors[] = [
+    'message' => '#^Cannot call method accept\\(\\) on mixed\\.$#',
+    'count' => 2,
+    'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot call method calculate\\(\\) on mixed\\.$#',

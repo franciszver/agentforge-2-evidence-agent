@@ -513,63 +513,18 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/AaLoginTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 12,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/BbCreateStaffTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 12,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/CcCreatePatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 18,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/DdOpenPatientTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 24,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/EeCreateEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 42,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FfOpenEncounterTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/FrontPaymentCssContrastTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/GgUserMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 7,
+    'count' => 1,
     'path' => __DIR__ . '/../../tests/Tests/E2e/HhMainMenuLinksTest.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 19,
+    'count' => 1,
     'path' => __DIR__ . '/../../tests/Tests/E2e/IiPatientContextMainMenuLinksTest.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 43,
+    'count' => 1,
     'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Expression on left side of \\?\\? is not nullable\\.$#',
-    'count' => 6,
-    'path' => __DIR__ . '/../../tests/Tests/E2e/SvcCodeFinancialReportTest.php',
 ];
 
 return ['parameters' => ['ignoreErrors' => $ignoreErrors]];

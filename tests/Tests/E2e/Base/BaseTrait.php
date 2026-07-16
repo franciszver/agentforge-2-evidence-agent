@@ -20,25 +20,49 @@ use Facebook\WebDriver\Exception\Internal\UnexpectedResponseException;
 use Facebook\WebDriver\Exception\StaleElementReferenceException;
 use Facebook\WebDriver\Exception\TimeoutException;
 use Facebook\WebDriver\Exception\UnexpectedAlertOpenException;
+use Facebook\WebDriver\Exception\WebDriverException;
+use Facebook\WebDriver\JavaScriptExecutor;
 use Facebook\WebDriver\Remote\DesiredCapabilities;
+use Facebook\WebDriver\WebDriver;
 use Facebook\WebDriver\WebDriverBy;
+use Facebook\WebDriver\WebDriverElement;
 use Facebook\WebDriver\WebDriverExpectedCondition;
+use OpenEMR\Common\Database\QueryUtils;
 use OpenEMR\Tests\E2e\Xpaths\XpathsConstants;
 use Symfony\Component\Panther\Client;
+use Symfony\Component\Panther\DomCrawler\Crawler as PantherCrawler;
 
 trait BaseTrait
 {
     private Client $client;
 
+    /**
+     * Set on every navigation/interaction that returns a crawler (login,
+     * requests, refreshCrawler). Declared here so every E2E class composing
+     * this trait gets a real typed property instead of a per-class dynamic
+     * property (PHP 8.2+ deprecation) or a per-class PHPStan baseline entry.
+     *
+     * Typed as Panther's Crawler (not the base DomCrawler\Crawler) because
+     * Client::request()/refreshCrawler() both declare that narrower return
+     * type, and callers rely on Panther-only methods like getElement().
+     */
+    private PantherCrawler $crawler;
+
     private function base(): void
     {
-        $useGrid = getenv("SELENIUM_USE_GRID", true) ?? "false";
+        // getenv() returns string|false (never null), so a default is applied
+        // via an explicit false-check rather than ?? (which PHPStan flags as
+        // meaningless on a non-nullable left side).
+        $useGridEnv = getenv("SELENIUM_USE_GRID", true);
+        $useGrid = $useGridEnv !== false ? $useGridEnv : "false";
 
         if ($useGrid === "true") {
             // Use Selenium Grid (consistent testing environment with goal of stability)
-            $seleniumHost = getenv("SELENIUM_HOST", true) ?? "selenium";
+            $seleniumHostEnv = getenv("SELENIUM_HOST", true);
+            $seleniumHost = $seleniumHostEnv !== false ? $seleniumHostEnv : "selenium";
             $e2eBaseUrl = getenv("SELENIUM_BASE_URL", true) ?: "http://openemr";
-            $forceHeadless = getenv("SELENIUM_FORCE_HEADLESS", true) ?? "false";
+            $forceHeadlessEnv = getenv("SELENIUM_FORCE_HEADLESS", true);
+            $forceHeadless = $forceHeadlessEnv !== false ? $forceHeadlessEnv : "false";
             // Implicit wait must be 0 when using explicit waits (waitFor,
             // waitForVisibility, wait()->until()). A non-zero implicit wait
             // causes each findElement() call inside an explicit wait condition
@@ -96,9 +120,11 @@ trait BaseTrait
     private function waitForAppReady(int $timeout = 30): bool
     {
         try {
-            $this->client->wait($timeout)->until(fn($driver) => $driver->executeScript(
-                'return document.getElementById("mainMenu")?.children.length > 0'
-            ));
+            $this->client->wait($timeout)->until(
+                fn(WebDriver&JavaScriptExecutor $driver) => $driver->executeScript(
+                    'return document.getElementById("mainMenu")?.children.length > 0'
+                )
+            );
             // Log state on success to verify hypothesis that koAvailable
             // is always true when the menu renders successfully
             $state = $this->client->executeScript(<<<'JS_WRAP'
@@ -107,7 +133,8 @@ trait BaseTrait
                     mainMenuChildren: document.getElementById('mainMenu')?.children.length ?? 0
                 });
             JS_WRAP);
-            fwrite(STDERR, "[E2E] waitForAppReady succeeded: {$state}\n");
+            $stateText = is_string($state) ? $state : get_debug_type($state);
+            fwrite(STDERR, "[E2E] waitForAppReady succeeded: {$stateText}\n");
             return true;
         } catch (TimeoutException) {
             return false;
@@ -123,7 +150,7 @@ trait BaseTrait
     private function createAppReadyTimeoutException(): TimeoutException
     {
         try {
-            $diagnostics = (string) $this->client->executeScript(<<<'JS_WRAP'
+            $result = $this->client->executeScript(<<<'JS_WRAP'
                 return JSON.stringify({
                     url: location.href,
                     readyState: document.readyState,
@@ -134,7 +161,12 @@ trait BaseTrait
                     bodyLength: document.body?.innerHTML?.length ?? 0
                 });
             JS_WRAP);
-        } catch (\Throwable) {
+            $diagnostics = is_string($result) ? $result : get_debug_type($result);
+        } catch (WebDriverException) {
+            // executeScript() failures surface as WebDriverException.
+            // Narrow to it (rather than \Throwable or the broader
+            // \Exception, which still overlaps \ErrorException) so
+            // genuine programming errors still propagate.
             $diagnostics = 'unable to gather diagnostics (executeScript failed)';
         }
         return new TimeoutException(
@@ -183,8 +215,8 @@ trait BaseTrait
                 // Accept it and retry (the page may reload after accepting).
                 try {
                     $this->client->getWebDriver()->switchTo()->alert()->accept();
-                } catch (\Throwable) {
-                    // Alert already dismissed
+                } catch (WebDriverException) {
+                    // Alert already dismissed.
                 }
                 $lastException = $e;
                 if ($attempt < $maxRetries) {
@@ -250,6 +282,9 @@ trait BaseTrait
                     WebDriverBy::xpath($menuLink)
                 )
             );
+            if (!$element instanceof WebDriverElement) {
+                $this->fail('Expected a clickable WebDriverElement for menu link: ' . $menuLink);
+            }
             $element->click();
             $counter++;
         }
@@ -261,11 +296,12 @@ trait BaseTrait
             // after clicking to prevent the alert from blocking subsequent
             // WebDriver operations.
             try {
-                $this->client->wait(2)->until(function ($driver) {
+                $this->client->wait(2)->until(function (WebDriver $driver) {
                     try {
                         $driver->switchTo()->alert()->accept();
                         return true;
-                    } catch (\Throwable) {
+                    } catch (WebDriverException) {
+                        // No alert present.
                         return false;
                     }
                 });
@@ -284,47 +320,54 @@ trait BaseTrait
                 WebDriverBy::xpath($menuLink)
             )
         );
+        if (!$element instanceof WebDriverElement) {
+            $this->fail('Expected a clickable WebDriverElement for menu link: ' . $menuLink);
+        }
         $element->click();
         $element2 = $this->client->wait(10)->until(
             WebDriverExpectedCondition::elementToBeClickable(
                 WebDriverBy::xpath($menuLink2)
             )
         );
+        if (!$element2 instanceof WebDriverElement) {
+            $this->fail('Expected a clickable WebDriverElement for menu link: ' . $menuLink2);
+        }
         $element2->click();
     }
 
     private function isUserExist(string $username): bool
     {
-        $usernameDatabase = sqlQuery("SELECT `username` FROM `users` WHERE `username` = ?", [$username]);
-        if (($usernameDatabase['username'] ?? '') == $username) {
-            return true;
-        } else {
-            return false;
-        }
+        $usernameDatabase = QueryUtils::querySingleRow(
+            "SELECT `username` FROM `users` WHERE `username` = ?",
+            [$username]
+        );
+        return is_array($usernameDatabase) && ($usernameDatabase['username'] ?? '') === $username;
     }
 
     private function isPatientExist(string $firstname, string $lastname, string $dob, string $sex): bool
     {
-        $patientDatabase = sqlQuery("SELECT `fname` FROM `patient_data` WHERE `fname` = ? AND `lname` = ? AND `DOB` = ? AND `sex` = ?", [$firstname, $lastname, $dob, $sex]);
-        if (!empty($patientDatabase['fname']) && ($patientDatabase['fname'] == $firstname)) {
-            return true;
-        } else {
-            return false;
-        }
+        $patientDatabase = QueryUtils::querySingleRow(
+            "SELECT `fname` FROM `patient_data` WHERE `fname` = ? AND `lname` = ? AND `DOB` = ? AND `sex` = ?",
+            [$firstname, $lastname, $dob, $sex]
+        );
+        return is_array($patientDatabase)
+            && ($patientDatabase['fname'] ?? '') !== ''
+            && $patientDatabase['fname'] === $firstname;
     }
 
     private function isEncounterExist(string $firstname, string $lastname, string $dob, string $sex): bool
     {
-        $patientDatabase = sqlQuery("SELECT `patient_data`.`fname`
+        $patientDatabase = QueryUtils::querySingleRow(
+            "SELECT `patient_data`.`fname`
                                      FROM `patient_data`
                                      INNER JOIN `form_encounter`
                                      ON `patient_data`.`pid` = `form_encounter`.`pid`
-                                     WHERE `patient_data`.`fname` = ? AND `patient_data`.`lname` = ? AND `patient_data`.`DOB` = ? AND `patient_data`.`sex` = ?", [$firstname, $lastname, $dob, $sex]);
-        if (!empty($patientDatabase['fname']) && ($patientDatabase['fname'] == $firstname)) {
-            return true;
-        } else {
-            return false;
-        }
+                                     WHERE `patient_data`.`fname` = ? AND `patient_data`.`lname` = ? AND `patient_data`.`DOB` = ? AND `patient_data`.`sex` = ?",
+            [$firstname, $lastname, $dob, $sex]
+        );
+        return is_array($patientDatabase)
+            && ($patientDatabase['fname'] ?? '') !== ''
+            && $patientDatabase['fname'] === $firstname;
     }
 
     private function logOut(): void

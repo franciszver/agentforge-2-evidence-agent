@@ -34,15 +34,12 @@ use OpenEMR\Tests\E2e\Base\BaseTrait;
 use OpenEMR\Tests\E2e\Login\LoginTestData;
 use OpenEMR\Tests\E2e\Login\LoginTrait;
 use PHPUnit\Framework\Attributes\Test;
-use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\Panther\PantherTestCase;
 
 class ClinicalCopilotLiveClinicalAnswerTest extends PantherTestCase
 {
     use BaseTrait;
     use LoginTrait;
-
-    private ?Crawler $crawler = null;
 
     private const DEMO_PATIENT_PID = 1;
 

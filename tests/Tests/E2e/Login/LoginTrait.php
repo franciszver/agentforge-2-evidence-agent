@@ -20,6 +20,7 @@ use Facebook\WebDriver\Exception\TimeoutException;
 use Facebook\WebDriver\WebDriver;
 use OpenEMR\Tests\E2e\Base\BaseTrait;
 use OpenEMR\Tests\E2e\Login\LoginTestData;
+use Symfony\Component\Panther\DomCrawler\Crawler as PantherCrawler;
 
 trait LoginTrait
 {
@@ -81,7 +82,15 @@ trait LoginTrait
         $form = $this->crawler->filter('#login_form')->form();
         $form['authUser'] = $name;
         $form['clearPass'] = $password;
-        $this->crawler = $this->client->submit($form);
+        $submittedCrawler = $this->client->submit($form);
+        // Client::submit() is declared to return the base DomCrawler\Crawler
+        // (matching the parent BrowserKit contract), but Panther always
+        // constructs a Panther Crawler internally - narrow to match the
+        // trait's $crawler property type.
+        if (!$submittedCrawler instanceof PantherCrawler) {
+            $this->fail('Expected Client::submit() to return a Panther Crawler.');
+        }
+        $this->crawler = $submittedCrawler;
         if ($goalPass) {
             // The post-login redirect is asynchronous: submit() returns
             // once the POST responds, but the browser still needs to

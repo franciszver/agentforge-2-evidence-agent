@@ -46,6 +46,14 @@ class OfModuleManagerEnableClinicalCopilotTest extends PantherTestCase
     // "./Installer/manage") that resolve against the current path, so a
     // literal "/index" segment would double up to
     // ".../Installer/Installer/manage" and 404.
+    //
+    // This is an upstream OpenEMR quirk (Installer page emitting
+    // relative ajax URLs), not a Co-Pilot bug. Decision (2026-07-16,
+    // issue #115): do not file an upstream openemr/openemr issue for
+    // it - this repo is a downstream fork focused on the Co-Pilot, and
+    // the workaround here (omitting "/index") is proportionate and
+    // sufficient. Revisit only if the quirk starts affecting non-E2E
+    // code paths.
     private const MODULE_MANAGER_URL = '/interface/modules/zend_modules/public/Installer';
 
     #[Test]

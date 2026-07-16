@@ -30,8 +30,6 @@ class SvcCodeFinancialReportTest extends PantherTestCase
     use BaseTrait;
     use LoginTrait;
 
-    private $crawler;
-
     /**
      * Encounter number for test fixtures, chosen to avoid collisions.
      */
@@ -150,8 +148,12 @@ class SvcCodeFinancialReportTest extends PantherTestCase
 
             // Check the Important Codes checkbox before submitting
             $checkbox = $this->crawler->filterXPath('//input[@name="form_details"]');
-            if (!$checkbox->getElement(0)->isSelected()) {
-                $checkbox->getElement(0)->click();
+            $checkboxElement = $checkbox->getElement(0);
+            if ($checkboxElement === null) {
+                $this->fail('Expected the "Important Codes" checkbox to be present.');
+            }
+            if (!$checkboxElement->isSelected()) {
+                $checkboxElement->click();
             }
 
             $this->submitReportForm(self::TEST_DATE, self::TEST_DATE);
@@ -230,9 +232,12 @@ class SvcCodeFinancialReportTest extends PantherTestCase
     {
         // Set date fields via WebDriver (visible text inputs)
         $fromInput = $this->crawler->filter('#form_from_date')->getElement(0);
+        $toInput = $this->crawler->filter('#form_to_date')->getElement(0);
+        if ($fromInput === null || $toInput === null) {
+            $this->fail('Expected the report date fields to be present.');
+        }
         $fromInput->clear();
         $fromInput->sendKeys($fromDate);
-        $toInput = $this->crawler->filter('#form_to_date')->getElement(0);
         $toInput->clear();
         $toInput->sendKeys($toDate);
 
