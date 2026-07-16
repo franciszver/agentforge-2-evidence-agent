@@ -39,6 +39,75 @@ enforced). The dev client secret and tokens are written only to the gitignored
 `services/copilot-agent/.openemr-dev-client.json` and are never printed or
 committed.
 
+## OpenEMR OAuth (production authorization_code client) — #124 Phase 1
+
+Production does **not** use the password grant. It uses the OAuth2
+`authorization_code` grant against a confidential client that a browser drives
+through OpenEMR's authorize/callback. Phase 1 (this change) sets up only the
+**client registration**; the authorize/callback endpoints and token brokering
+land in later phases.
+
+Register the production client (runs inside the agent container, which is the
+only host that can reach OpenEMR on the internal network):
+
+```bash
+bash scripts/register-copilot-prod-client.sh
+```
+
+This posts a confidential (`application_type: private`) registration with the
+`authorization_code` + `refresh_token` grants **only** (deliberately no
+`password` grant — a confidential prod client must not accept the resource-owner
+password grant, or a leaked `client_secret` plus any clinician credential could
+mint tokens directly, bypassing the authorization_code + consent flow) and:
+
+- **Canonical `redirect_uri`** — the single source of truth in
+  `app/config.py` (`copilot_prod_client_redirect_uri`):
+  `https://localhost:9300/interface/modules/custom_modules/oe-module-clinical-copilot/public/oauth-callback.php`.
+  This is the **browser-facing** host and the module's one-file-per-route OAuth
+  callback (Phase 2 serves it). It deliberately differs from the internal
+  `openemr` docker alias used for the server-side registration call. Phase 2's
+  authorize/callback must match this URL byte-for-byte — OpenEMR enforces exact
+  `redirect_uri` matching.
+- **SMART scopes** (`copilot_prod_client_scopes`): the SMART-launch scopes
+  (`openid offline_access launch launch/patient api:oemr api:fhir fhirUser`)
+  **plus** the per-resource read scopes (`user/patient.read`,
+  `user/medication.read`, `user/allergy.read`, `user/medical_problem.read`,
+  `user/encounter.read`, `user/appointment.read`, `user/vital.read`,
+  `user/procedure.read`, `user/Observation.read` — mirroring the
+  known-accepted `copilot_dev_token_scopes`). Every scope exists in OpenEMR's
+  `ServerScopeListEntity::getAllSupportedScopesList()`; dynamic registration
+  **rejects the whole request with `invalid_scope`** on the first unrecognized
+  scope (`AuthorizationController::validateScopesAgainstServerApprovedScopes`),
+  so an unknown scope breaks registration outright rather than being silently
+  dropped. `user/*.read` is **not** used — OpenEMR has no wildcard scope entry.
+  The read scopes are **registered here, not deferred to authorize time**:
+  `ScopeRepository::finalizeScopes` only lets a token carry scopes the client
+  registered with, so an unregistered read scope requested at grant time is
+  silently dropped from the final token — the client would get
+  `api:oemr`/`api:fhir` but no resource-read authorization, and tool calls
+  would fail.
+
+**PKCE (S256):** nothing is declared at registration. PKCE is a redirect-time
+concern — the `code_challenge` travels on the Phase 2 authorize request, not in
+client-registration metadata (RFC 7591) — and OpenEMR's `CustomAuthCodeGrant`
+supports S256 at the grant level. Phase 2's authorize/callback will use PKCE
+(S256) since the code transits a browser redirect.
+
+### Admin approval (production) vs. the dev SQL shortcut
+
+OpenEMR registers every new client **disabled**. The two paths to enable it:
+
+- **Production (real step):** an OpenEMR admin approves/enables the client in
+  the admin UI — **Administration → Config → Connectors → OAuth2 Clients** —
+  and enables the `copilot-agent-prod` client. No database is touched by hand.
+- **Dev-only shortcut:** `scripts/bootstrap-copilot-dev-client.sh` runs
+  `UPDATE oauth_clients SET is_enabled=1 …` directly against the dev database.
+  This is a **dev-loop convenience only** and must never be used in production.
+
+The production client secret is written only to the container-local
+`copilot_prod_client_creds_path` (default `/data/openemr-prod-client.json`) and
+is never printed or committed.
+
 ## Container
 
 ```bash

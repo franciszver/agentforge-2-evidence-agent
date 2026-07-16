@@ -42,6 +42,7 @@ from typing import Callable, TypeGuard
 import httpx
 
 from app.config import Settings
+from app.creds_file import write_creds_securely
 from app.openemr_auth import (
     OpenEmrAuthError,
     TokenResponse,
@@ -235,9 +236,9 @@ def _register_cli() -> int:
             redirect_uris=[f"{settings.openemr_base_url}/oauth2/default/callback"],
             scope=settings.copilot_dev_token_scopes,
         )
-    Path(settings.copilot_dev_client_creds_path).write_text(
-        json.dumps({"client_id": creds.client_id, "client_secret": creds.client_secret}),
-        encoding="utf-8",
+    write_creds_securely(
+        settings.copilot_dev_client_creds_path,
+        {"client_id": creds.client_id, "client_secret": creds.client_secret},
     )
     print(f"CLIENT_ID={creds.client_id}")
     return 0

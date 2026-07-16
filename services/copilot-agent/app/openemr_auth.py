@@ -106,6 +106,7 @@ def register_client(
     client_name: str,
     redirect_uris: list[str],
     scope: str,
+    grant_types: list[str] | None = None,
 ) -> ClientCredentials:
     """Register a confidential OAuth2 client via OpenEMR dynamic registration.
 
@@ -115,8 +116,14 @@ def register_client(
     rejects the request with ``invalid_client_metadata`` ("system and user
     scopes are only allowed for confidential clients"). The
     ``token_endpoint_auth_method`` is set to ``client_secret_post`` to match.
-    Both the dev password grant and the production authorization_code grant are
-    registered so the same client serves both paths.
+
+    ``grant_types`` defaults to the dev set
+    (``["password", "refresh_token", "authorization_code"]``) so the dev
+    registration payload is unchanged. The production path passes
+    ``["authorization_code", "refresh_token"]`` *without* ``password`` — a
+    confidential prod client must not accept the resource-owner password grant,
+    or a leaked ``client_secret`` plus any clinician credential could mint
+    tokens directly, bypassing the authorization_code + consent flow.
 
     NOTE: OpenEMR registers new clients *disabled*; an admin must enable the
     client before it can obtain tokens (see ``scripts/verify-oauth-dev.sh``).
@@ -127,7 +134,11 @@ def register_client(
         "client_name": client_name,
         "redirect_uris": redirect_uris,
         "token_endpoint_auth_method": "client_secret_post",
-        "grant_types": ["password", "refresh_token", "authorization_code"],
+        "grant_types": (
+            grant_types
+            if grant_types is not None
+            else ["password", "refresh_token", "authorization_code"]
+        ),
         "response_types": ["code"],
         "scope": scope,
     }
