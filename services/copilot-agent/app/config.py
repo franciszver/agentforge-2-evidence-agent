@@ -8,6 +8,9 @@ deployment where certificate verification must be enforced.
 
 from __future__ import annotations
 
+import secrets
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -17,6 +20,17 @@ class Settings(BaseSettings):
     openemr_base_url: str = "https://openemr"
     ollama_base_url: str = "http://ollama:11434"
     trace_db_path: str = "/data/traces.db"
+    # HMAC key for TraceStore.hash_args (P4.2) -- keeps tool-call args
+    # non-reversible even though they are often low-entropy (patient ids,
+    # closed-set filter keys, date ranges); an unkeyed hash would let an
+    # attacker with read access to traces.db precompute the hash over the
+    # candidate space and recover the original args. NO hardcoded default:
+    # this repo is public, so any literal default here would be a published
+    # key -- defeating the keying entirely. Unset => a strong random key is
+    # generated per process (fail-safe). Set TRACE_ARGS_HASH_SECRET in the
+    # environment to pin a stable key when args_hash must stay comparable
+    # across restarts (e.g. the P4.5 review dashboard).
+    trace_args_hash_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     openemr_verify_ssl: bool = False
     # Per-request timeout for calls made by ``OpenEmrClient`` (app/openemr_client.py).
     openemr_api_timeout_seconds: float = 10.0

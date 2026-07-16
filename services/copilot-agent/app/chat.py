@@ -11,12 +11,23 @@ only checks the token is non-empty -- TODO: replace with real OpenEMR token
 introspection. A missing header or a validator rejection both produce a 401
 before the planner is ever constructed or invoked.
 
-Multi-turn state: an in-memory ``ConversationStore`` (TODO P4.2: replace with
-the durable trace store) keyed by ``conversation_id``, binding each
-conversation to the ``patient_id`` it was created with. Resuming with a
-``conversation_id`` bound to a different ``patient_id`` is rejected (409) --
-defense-in-depth for the patient-context binding the planner itself already
-enforces (see ``app.planner`` module docstring).
+Multi-turn state: an in-memory ``ConversationStore`` keyed by
+``conversation_id``, binding each conversation to the ``patient_id`` it was
+created with. Resuming with a ``conversation_id`` bound to a different
+``patient_id`` is rejected (409) -- defense-in-depth for the patient-context
+binding the planner itself already enforces (see ``app.planner`` module
+docstring). This in-memory store is kept as-is (P4.2 does not replace it --
+conversation *content* and durable *trace* data are different concerns; see
+``app.trace_store``): a durable, queryable ``TraceStore`` (P4.2) is wired in
+alongside it and records a **request** span (whole invocation) and a
+**verification** span (the P3.7 verdict fold) per turn, keyed by the SAME
+correlation id ``Turn`` already carries. Per-tool and per-LLM-call spans are
+NOT wired live here -- ``app.planner.ToolCallTrace`` and ``OllamaClient``
+don't currently expose per-call timestamps/token counts, so emitting those
+spans from this module would mean fabricating timing data; see
+``app.trace_store.TraceStore.record_tool_span`` /
+``.record_llm_span`` (built and tested, just not called from here yet) and
+``.record_feedback_span`` (P4.3's ``/feedback`` endpoint seam).
 
 SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
   * ``conversation`` -- first frame, carries ``{"conversation_id": str}``.
@@ -41,6 +52,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -59,7 +71,8 @@ from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer, RenderedClaim
-from app.verdict import VerdictResult
+from app.trace_store import TraceStore
+from app.verdict import VerdictResult, to_trace_record
 
 _logger = logging.getLogger(__name__)
 
@@ -291,6 +304,26 @@ def get_conversation_store() -> ConversationStore:
     return _default_store
 
 
+_default_trace_store: TraceStore | None = None
+
+
+def get_trace_store() -> TraceStore:
+    """FastAPI dependency: the process-wide ``TraceStore`` (P4.2). Override in tests.
+
+    Built lazily against ``Settings.trace_db_path`` so importing this module
+    never touches disk; every test overrides this dependency with a
+    ``TraceStore`` pointed at a ``tmp_path`` database instead (see
+    ``docs/TEST_PLAN.md`` Sec 7 -- tests never write to the configured path).
+    """
+    global _default_trace_store
+    if _default_trace_store is None:
+        settings = get_settings()
+        _default_trace_store = TraceStore(
+            db_path=settings.trace_db_path, hash_secret=settings.trace_args_hash_secret
+        )
+    return _default_trace_store
+
+
 _EMPTY_WARNINGS: dict[str, list[object]] = {
     "allergy_conflicts": [],
     "blocking_interactions": [],
@@ -381,52 +414,113 @@ def _sse(event: ChatEvent, data: dict[str, object]) -> str:
     return f"event: {event.value}\ndata: {json.dumps(data)}\n\n"
 
 
+def _record_span_best_effort(operation: str, write: Callable[[], object]) -> None:
+    """Emit one trace span, best-effort. Observability must NEVER crash the
+    /chat response: a failed span write (a root-owned ``/data`` ->
+    ``PermissionError``, a full disk, a locked DB) is logged
+    (correlation-tagged by the ``app.correlation`` logging seam; the payload
+    carries only the operation label, never PHI) and swallowed, so the
+    clinician's answer streams normally. A persistent trace-store failure
+    surfaces on ``/ready``, which already gates trace-store writability --
+    ``/chat`` degrades gracefully rather than 500ing.
+
+    Catches ``Exception`` (not ``BaseException``): a ``GeneratorExit`` raised
+    while a write runs in the ``finally`` below is a client disconnect and
+    must keep propagating, not be swallowed here.
+    """
+    try:
+        write()
+    except Exception:
+        _logger.warning(
+            "trace span write failed; continuing without it",
+            extra={"operation": operation},
+            exc_info=True,
+        )
+
+
 def _stream_chat(
     planner: PlannerProtocol,
     extractor: ClaimExtractorLike,
     conversation: Conversation,
     store: ConversationStore,
+    trace_store: TraceStore,
     message: str,
     user: str,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
+    request_start_ts = time.time()
+    request_ok = True
     _logger.info(
         "chat invocation started",
         extra={"conversation_id": conversation.conversation_id, "patient_id": conversation.patient_id},
     )
 
-    yield _sse(ChatEvent.CONVERSATION, {"conversation_id": conversation.conversation_id})
+    try:
+        yield _sse(ChatEvent.CONVERSATION, {"conversation_id": conversation.conversation_id})
 
-    result = planner.run(message)
+        result = planner.run(message)
 
-    for call in result.trace:
-        yield _sse(
-            ChatEvent.TOOL_CALL,
-            {"tool": call.tool.value, "args": call.args, "error": call.error},
+        for call in result.trace:
+            yield _sse(
+                ChatEvent.TOOL_CALL,
+                {"tool": call.tool.value, "args": call.args, "error": call.error},
+            )
+
+        yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
+
+        # Run the answer->claims extraction pipeline and populate the verification
+        # frame with the REAL verdict / citation chips / warnings for this answer.
+        # ``run_verification`` re-validates every extracted claim against the RAW
+        # records (deterministic, no LLM) and strips the unverifiable ones, so a
+        # miscited or injection-steered claim never reaches the user as fact.
+        verification_start_ts = time.time()
+        verdict_result, rendered = run_verification(extractor, result)
+        verification_end_ts = time.time()
+        verdict_trace_record = to_trace_record(verdict_result)
+        # Yield the frame before the trace write -- the client shouldn't wait
+        # on a disk write for data it already has.
+        yield _sse(ChatEvent.VERIFICATION, build_verification_payload(verdict_result, rendered))
+        _record_span_best_effort(
+            "verification_span",
+            lambda: trace_store.record_verification_span(
+                correlation_id=correlation_id,
+                start_ts=verification_start_ts,
+                end_ts=verification_end_ts,
+                ok=True,
+                verdict=verdict_trace_record["verdict"],
+                claim_count=verdict_trace_record["total_claim_count"],
+                stripped_count=verdict_trace_record["stripped_claim_count"],
+            ),
         )
 
-    yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
+        store.append_turn(
+            conversation.conversation_id,
+            Turn(
+                correlation_id=correlation_id,
+                user=user,
+                patient_id=conversation.patient_id,
+                question=message,
+                answer=result.answer,
+            ),
+        )
 
-    # Run the answer->claims extraction pipeline and populate the verification
-    # frame with the REAL verdict / citation chips / warnings for this answer.
-    # ``run_verification`` re-validates every extracted claim against the RAW
-    # records (deterministic, no LLM) and strips the unverifiable ones, so a
-    # miscited or injection-steered claim never reaches the user as fact.
-    verdict_result, rendered = run_verification(extractor, result)
-    yield _sse(ChatEvent.VERIFICATION, build_verification_payload(verdict_result, rendered))
-
-    store.append_turn(
-        conversation.conversation_id,
-        Turn(
-            correlation_id=correlation_id,
-            user=user,
-            patient_id=conversation.patient_id,
-            question=message,
-            answer=result.answer,
-        ),
-    )
-
-    yield _sse(ChatEvent.DONE, {})
+        yield _sse(ChatEvent.DONE, {})
+    except BaseException:
+        # BaseException, not Exception: an early client disconnect closes this
+        # generator via GeneratorExit (a BaseException, not an Exception), and
+        # that case must record ok=False too, not the request's default True.
+        request_ok = False
+        raise
+    finally:
+        _record_span_best_effort(
+            "request_span",
+            lambda: trace_store.record_request_span(
+                correlation_id=correlation_id,
+                start_ts=request_start_ts,
+                end_ts=time.time(),
+                ok=request_ok,
+            ),
+        )
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -443,6 +537,7 @@ async def chat_endpoint(
     planner_factory: PlannerFactory = Depends(get_planner_factory),
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
+    trace_store: TraceStore = Depends(get_trace_store),
 ) -> StreamingResponse:
     try:
         token = _extract_bearer_token(authorization)
@@ -467,6 +562,6 @@ async def chat_endpoint(
     planner = planner_factory(request.patient_id)
 
     return StreamingResponse(
-        _stream_chat(planner, extractor, conversation, store, request.message, user),
+        _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user),
         media_type="text/event-stream",
     )
