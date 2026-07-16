@@ -35,6 +35,7 @@ from fastapi import Depends
 from fastapi.responses import HTMLResponse
 
 from app.chat import get_trace_store
+from app.dashboard_alerts import Alert, evaluate_alerts
 from app.dashboard_metrics import DashboardMetrics, compute_dashboard_metrics
 from app.trace_store import TraceStore
 
@@ -106,6 +107,18 @@ def _split_bar_svg(*, label: str, up: int, down: int) -> str:
 
 _STYLE = """\
   * { box-sizing: border-box; }
+  .alert-banners { margin-bottom: 0.75rem; }
+  .alert-banner {
+    background: #fdecea;
+    border: 1px solid #c62828;
+    border-left-width: 6px;
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    color: #5f1a17;
+  }
+  .alert-banner-title { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.25rem; }
+  .alert-banner-body { font-size: 0.85rem; line-height: 1.35; }
   html, body { margin: 0; padding: 0; }
   body {
     font-family: system-ui, sans-serif;
@@ -144,9 +157,31 @@ _STYLE = """\
 """
 
 
+def _alert_banner(alert: Alert) -> str:
+    """One P4.6 alert banner. ``alert.explanation`` is a hardcoded constant
+    (see ``app.dashboard_alerts``) and the numeric values come from the
+    metrics DTO -- no user-supplied text is ever interpolated here. Values are
+    formatted per the alert's ``unit`` (set once where the alert is
+    constructed) -- ms for latency, percentage for a rate."""
+    fmt = _fmt_ms if alert.unit == "ms" else _fmt_rate
+    return f"""<div class="alert-banner" data-testid="alert-banner" role="alert">
+<div class="alert-banner-title">{alert.metric}: {fmt(alert.current_value)} (threshold {fmt(alert.threshold)})</div>
+<div class="alert-banner-body">{alert.explanation}</div>
+</div>"""
+
+
+def _alert_banners_section(alerts: list[Alert]) -> str:
+    """Zero active alerts renders nothing -- no empty section, no "all
+    healthy" clutter on the common case."""
+    if not alerts:
+        return ""
+    return f"""<section class="alert-banners">{"".join(_alert_banner(alert) for alert in alerts)}</section>"""
+
+
 def render_dashboard_html(metrics: DashboardMetrics) -> str:
     """Render the full dashboard page for ``metrics``. Pure function of the
     DTO -- no I/O, so hermetically testable with any seeded/empty metrics."""
+    alert_banners = _alert_banners_section(evaluate_alerts(metrics))
     tiles = "".join(
         [
             _stat_tile("Requests", str(metrics.request_count)),
@@ -180,6 +215,7 @@ def render_dashboard_html(metrics: DashboardMetrics) -> str:
 <body>
 <div class="page">
 <header><h1>Clinical Co-Pilot Dashboard</h1></header>
+{alert_banners}
 <main data-testid="dashboard-metrics">
 <div class="grid">
 {tiles}

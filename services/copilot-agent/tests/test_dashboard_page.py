@@ -101,3 +101,35 @@ def test_dashboard_no_external_network_reference() -> None:
     assert "http://" not in body_lower
     assert "https://" not in body_lower
     assert "cdn" not in body_lower
+
+
+def test_dashboard_no_banner_when_all_metrics_healthy(tmp_path) -> None:
+    # 1 fast, successful request -- nothing crosses any P4.6 threshold.
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret="test-secret")
+    trace_store.record_request_span(correlation_id="c1", start_ts=0.0, end_ts=0.1, ok=True)
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+
+    try:
+        response = client.get("/dashboard")
+    finally:
+        app.dependency_overrides.pop(get_trace_store, None)
+
+    assert response.status_code == 200
+    assert "data-testid=\"alert-banner\"" not in response.text
+
+
+def test_dashboard_renders_banner_for_over_threshold_error_rate(tmp_path) -> None:
+    # 2 failed requests out of 2 -> error_rate = 1.0, well over the 10% threshold.
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret="test-secret")
+    trace_store.record_request_span(correlation_id="c1", start_ts=0.0, end_ts=0.1, ok=False)
+    trace_store.record_request_span(correlation_id="c2", start_ts=0.0, end_ts=0.1, ok=False)
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+
+    try:
+        response = client.get("/dashboard")
+    finally:
+        app.dependency_overrides.pop(get_trace_store, None)
+
+    assert response.status_code == 200
+    assert 'data-testid="alert-banner"' in response.text
+    assert "error rate" in response.text.lower()
