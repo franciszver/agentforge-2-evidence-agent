@@ -34,11 +34,21 @@ class SourceRef(ToolSchemaModel):
     patient-data output item can *optionally* carry provenance once P3.1
     lands, without another schema migration. Leave it unset (``None``)
     until then.
+
+    ``asserted_value`` (P3.2) is the value the claim represents this
+    citation as supporting, as a string -- e.g. a claim's ``SourceRef`` for
+    a medication's ``dose`` field carries the dose text the claim asserts.
+    It is what ``app.verification``'s deterministic checker compares
+    against the field's actual cached value; without it there is nothing
+    to re-validate, only that the ref *resolves*. Optional (default
+    ``None``) so this stays additive to the P3.1 contract -- a ``SourceRef``
+    on a tool-output item (still unpopulated) never needs one.
     """
 
     tool_call_id: str
     record_id: str
     field: str
+    asserted_value: str | None = None
 
 
 class Sex(StrEnum):

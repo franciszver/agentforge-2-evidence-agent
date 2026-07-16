@@ -66,6 +66,7 @@ services/copilot-agent/.venv/
 __pycache__/
 .pytest_cache/
 *.egg-info/
+.coverage
 
 # Dev-only OpenEMR OAuth client credentials + tokens (NEVER commit secrets)
 services/copilot-agent/.openemr-dev-client.json

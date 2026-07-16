@@ -45,7 +45,7 @@ from __future__ import annotations
 import datetime
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.authz import PatientBindingViolation, enforce_patient_binding
@@ -99,9 +99,13 @@ class ToolSpec:
 class ToolCallTrace:
     """One completed tool dispatch: what was called, with what, and the outcome.
 
-    Exactly one of ``result``/``error`` is set. This is the ordered record
-    the caller gets back alongside the final answer -- feeds P2.10's SSE
-    stream, P3's verification layer, and P4's observability traces.
+    Exactly one of ``result``/``error`` is set. ``result`` is the
+    *quarantined* (post-``app.quarantine``) tool output -- free-text fields
+    are already redacted here. This is the ordered record the caller gets
+    back alongside the final answer, and it is the CLIENT-FACING channel:
+    it feeds P2.10's SSE stream and P4's observability traces. Raw record
+    free-text must NEVER land here -- see ``PlannerResult.raw_results`` for
+    the separate verifier-only channel that carries the un-redacted values.
     """
 
     tool: ToolName
@@ -112,8 +116,25 @@ class ToolCallTrace:
 
 @dataclass(frozen=True)
 class PlannerResult:
+    """The planner's per-run output.
+
+    ``trace`` is client-facing (quarantined; see ``ToolCallTrace``).
+    ``raw_results`` is a VERIFIER-ONLY channel: the un-redacted
+    ``model_dump`` of each tool call's raw output, positionally aligned 1:1
+    with ``trace`` (``None`` for entries that produced no output -- a binding
+    violation or an API error). It exists so the deterministic citation
+    checker (``app.verification``, P3.2) can re-validate cited free-text
+    values (a drug name, a lab value) against what the record actually said,
+    NOT against the quarantine-redacted skeleton. Because that checker is
+    fully deterministic (no LLM anywhere in its path), feeding it raw
+    record text is safe -- injection text cannot steer an equality
+    comparison. This field must never be forwarded into an LLM prompt or the
+    SSE trace; only the verification layer reads it.
+    """
+
     answer: str
     trace: list[ToolCallTrace]
+    raw_results: list[dict[str, Any] | None] = field(default_factory=list)
 
 
 TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
@@ -344,13 +365,15 @@ class Planner:
             {"role": "user", "content": question},
         ]
         trace: list[ToolCallTrace] = []
+        # Verifier-only channel, aligned 1:1 with ``trace``. See PlannerResult.
+        raw_results: list[dict[str, Any] | None] = []
 
         for _ in range(self._max_turns):
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
                 final = self._finalize_answer(messages)
-                return PlannerResult(answer=final.answer, trace=trace)
+                return PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results)
 
             messages.append({"role": "assistant", "content": decision.model_dump_json()})
 
@@ -365,6 +388,7 @@ class Planner:
                 enforce_patient_binding(bound_patient_id=self._patient_id, tool_args=decision.tool_args)
             except PatientBindingViolation:
                 trace.append(ToolCallTrace(tool=decision.tool, args={}, result=None, error="patient_binding_violation"))
+                raw_results.append(None)
                 messages.append(
                     {
                         "role": "user",
@@ -382,14 +406,19 @@ class Planner:
                 output = spec.func(self._openemr, self._token, self._patient_id, **call_kwargs)
             except OpenEmrApiError as exc:
                 trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=None, error=exc.category.value))
+                raw_results.append(None)
                 messages.append({"role": "user", "content": f"[tool result] {decision.tool.value} failed: {exc.category.value}"})
                 continue
 
+            # Capture the RAW output for the verifier-only channel BEFORE
+            # quarantining. The planner's message context (below) and the
+            # client-facing trace still only ever see the quarantined summary.
+            raw_results.append(output.model_dump(mode="json"))
             summary = quarantine_tool_result(self._summarizer, decision.tool, output)
             trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=summary, error=None))
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
-        return PlannerResult(answer=_best_effort_answer(trace, self._max_turns), trace=trace)
+        return PlannerResult(answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results)
 
     def _finalize_answer(self, messages: list[dict[str, str]]) -> FinalAnswer:
         """Produce the final answer via the two-call pattern (P2.9).

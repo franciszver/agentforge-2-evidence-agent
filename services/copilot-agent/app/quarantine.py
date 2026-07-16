@@ -59,8 +59,12 @@ from app.schemas.planner import ToolName
 
 # Sentinel marking a redacted free-text leaf in the safe skeleton. The raw
 # string never appears in the skeleton -- only this label -- so the planner
-# cannot read the original note text from the structured part.
-_REDACTED = "[free-text summarized separately]"
+# cannot read the original note text from the structured part. Public (not
+# ``_``-prefixed): ``app.verification``'s citation checker (P3.2) needs the
+# exact same sentinel to recognize a cached field as unverifiable rather
+# than comparing a citation's asserted value against redacted placeholder
+# text.
+REDACTED_SENTINEL = "[free-text summarized separately]"
 
 
 class QuarantineSummary(BaseModel):
@@ -174,7 +178,7 @@ def _redact_free_text(value: Any, path: str, sink: list[tuple[str, str]]) -> Any
     if isinstance(value, str):
         if value:
             sink.append((path or "value", value))
-        return _REDACTED
+        return REDACTED_SENTINEL
     if isinstance(value, BaseModel):
         return {
             name: _redact_free_text(getattr(value, name), f"{path}.{name}" if path else name, sink)
@@ -184,4 +188,4 @@ def _redact_free_text(value: Any, path: str, sink: list[tuple[str, str]]) -> Any
         return [_redact_free_text(item, f"{path}[{i}]", sink) for i, item in enumerate(value)]
     # Unknown leaf type: treat conservatively as untrusted free-text.
     sink.append((path or "value", str(value)))
-    return _REDACTED
+    return REDACTED_SENTINEL

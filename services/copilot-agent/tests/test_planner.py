@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 from app.openemr_client import ErrorCategory, OpenEmrApiError
 from app.planner import Planner, ToolSpec
-from app.quarantine import QuarantineSummary
+from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
     GetMedicationsInput,
@@ -269,3 +269,59 @@ def test_system_prompt_sent_to_ollama_includes_no_think_and_every_registered_too
     assert "/no_think" in system_message
     assert ToolName.GET_MEDICATIONS.value in system_message
     assert str(BOUND_PATIENT_ID) in system_message
+
+
+# --- verifier-only raw channel + safety boundary (P3.2 / #130) -----------------
+
+
+def test_raw_results_carry_unredacted_values_while_trace_stays_quarantined():
+    """The hard safety boundary: the RAW (un-redacted) tool output travels
+    ONLY on ``PlannerResult.raw_results`` (the verifier-only channel the P3.2
+    citation checker reads). The client-facing ``ToolCallTrace.result`` -- which
+    feeds the SSE stream + observability -- still only ever sees the
+    quarantined skeleton, so raw record free-text never leaks there."""
+    medications_fn = MagicMock(
+        return_value=MedicationsOutput(items=[MedicationItem(name="Lisinopril", dose="10mg", route="oral", status="active")])
+    )
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(action=PlannerAction.CALL_TOOL, tool=ToolName.GET_MEDICATIONS, reason="meds"),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="She is on Lisinopril.", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    # raw_results is aligned 1:1 with the trace and carries the un-redacted name.
+    assert len(result.raw_results) == len(result.trace) == 1
+    assert result.raw_results[0]["items"][0]["name"] == "Lisinopril"
+    # The client-facing trace has the name REDACTED, never the raw value.
+    trace_result = result.trace[0].result
+    assert trace_result["data"]["items"][0]["name"] == REDACTED_SENTINEL
+    assert "Lisinopril" not in str(trace_result)
+
+
+def test_raw_results_hold_none_for_a_refused_call_keeping_positional_alignment():
+    """A binding-violation refusal produces a trace entry but no output; the
+    raw channel carries ``None`` at the same position so call_N still lines up."""
+    medications_fn = MagicMock(return_value=MedicationsOutput(items=[]))
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(
+            action=PlannerAction.CALL_TOOL,
+            tool=ToolName.GET_MEDICATIONS,
+            tool_args={"patient_id": "999999"},
+            reason="cross-patient",
+        ),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    medications_fn.assert_not_called()
+    assert len(result.raw_results) == len(result.trace) == 1
+    assert result.raw_results[0] is None
+    assert result.trace[0].error == "patient_binding_violation"
