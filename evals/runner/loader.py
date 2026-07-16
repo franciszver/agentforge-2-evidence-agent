@@ -10,9 +10,21 @@ from pydantic import ValidationError
 from runner.schema import EvalCase, EvalCaseError
 
 
-def discover_case_files(root: Path) -> list[Path]:
-    """Every ``*.yaml`` file under ``root``, sorted for deterministic order."""
-    return sorted(root.rglob("*.yaml"))
+def discover_case_files(*roots: Path) -> list[Path]:
+    """Every ``*.yaml`` file under any of ``roots``, sorted for deterministic
+    order.
+
+    Accepts one or more roots (P4.9) so callers can combine hand-authored
+    cases (``evals/cases/``) with promoted regression cases
+    (``evals/regressions/``) in one discovery pass -- see
+    ``evals/test_cases.py``. A root that does not exist yet (e.g. a fresh
+    checkout with no promoted cases) is silently skipped rather than raising.
+    """
+    files: list[Path] = []
+    for root in roots:
+        if root.exists():
+            files.extend(root.rglob("*.yaml"))
+    return sorted(files)
 
 
 def load_case(path: Path) -> EvalCase:

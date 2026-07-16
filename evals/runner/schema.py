@@ -145,6 +145,14 @@ class EvalCase(BaseModel):
     id: str = Field(min_length=1)
     category: _CATEGORIES
     failure_mode: str | None = None
+    source: str | None = Field(
+        default=None,
+        description=(
+            "The P4.2 trace-store correlation id this case was promoted from "
+            "(P4.9's promote-to-eval generator, app.review_queue). Absent for "
+            "hand-authored cases under evals/cases/."
+        ),
+    )
     question: str = Field(min_length=1)
     patient_id: int = Field(gt=0)
     tool_data: dict[ToolName, dict[str, Any]] = Field(default_factory=dict)

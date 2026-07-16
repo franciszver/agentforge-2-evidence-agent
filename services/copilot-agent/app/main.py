@@ -8,6 +8,7 @@ from app.correlation import CorrelationIdMiddleware, configure_logging
 from app.dashboard import dashboard_endpoint
 from app.feedback import feedback_endpoint
 from app.readiness import ReadinessReport, compute_readiness
+from app.review_page import promote_endpoint, review_queue_endpoint
 
 configure_logging()
 
@@ -114,6 +115,8 @@ def create_app() -> FastAPI:
         return HTMLResponse(content=CHAT_SHELL_HTML)
 
     app.add_api_route("/dashboard", dashboard_endpoint, methods=["GET"])
+    app.add_api_route("/review", review_queue_endpoint, methods=["GET"])
+    app.add_api_route("/review/promote", promote_endpoint, methods=["GET"])
     app.add_api_route("/chat", chat_endpoint, methods=["POST"])
     app.add_api_route("/feedback", feedback_endpoint, methods=["POST"], status_code=201)
 

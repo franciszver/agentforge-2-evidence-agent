@@ -39,14 +39,15 @@ from runner.ollama_replay import RecordingOllamaClient, recording_path, save_rec
 from runner.pipeline import run_case  # noqa: E402
 
 _CASES_DIR = _EVALS_ROOT / "cases"
+_REGRESSIONS_DIR = _EVALS_ROOT / "regressions"
 _RECORDINGS_DIR = _EVALS_ROOT / "recordings"
 
 
 def _find_case_file(case_id: str) -> Path:
-    for path in discover_case_files(_CASES_DIR):
+    for path in discover_case_files(_CASES_DIR, _REGRESSIONS_DIR):
         if load_case(path).id == case_id:
             return path
-    raise SystemExit(f"no case with id {case_id!r} under {_CASES_DIR}")
+    raise SystemExit(f"no case with id {case_id!r} under {_CASES_DIR} or {_REGRESSIONS_DIR}")
 
 
 def record_case(case_id: str, ollama_base_url: str) -> None:
@@ -70,12 +71,18 @@ def record_case(case_id: str, ollama_base_url: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("case_ids", nargs="*", help="case id(s) to record")
-    parser.add_argument("--all", action="store_true", help="record every case under evals/cases/")
+    parser.add_argument(
+        "--all", action="store_true", help="record every case under evals/cases/ and evals/regressions/"
+    )
     args = parser.parse_args()
 
     ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
-    case_ids = [load_case(p).id for p in discover_case_files(_CASES_DIR)] if args.all else args.case_ids
+    case_ids = (
+        [load_case(p).id for p in discover_case_files(_CASES_DIR, _REGRESSIONS_DIR)]
+        if args.all
+        else args.case_ids
+    )
     if not case_ids:
         parser.error("pass one or more case ids, or --all")
 
