@@ -1,6 +1,6 @@
-# Clinical Co-Pilot — Security Audit (Phase 1)
+# Clinical Co-Pilot — Security Audit
 
-- **Status:** Phase 1 baseline audit. This document reports the security posture of the OpenEMR base the Clinical Co-Pilot is built on, plus how the Co-Pilot design responds to the gaps it found. It is cross-checked against upstream advisories and finalized in Phase 5 (P5.5).
+- **Status:** Finalized (Phase 5, P5.5). This document reports the security posture of the OpenEMR base the Clinical Co-Pilot is built on, plus how the Co-Pilot design responds to the gaps it found. The findings were established in the Phase 1 baseline audit and cross-checked against the in-source acknowledgements (in-code `@TODO` markers and tracked upstream issue references) noted per finding.
 - **Target:** OpenEMR 8.2-dev base (the version vendored into this repo), examined on a running local dev stack.
 - **Method:** candidate findings from static code analysis, each verified against source **and** a running instance before it appears here. Findings that failed verification were dropped.
 
@@ -14,7 +14,7 @@ The audit began with ten candidate findings drawn from code analysis. Each was t
 
 The confirmed findings cluster into three themes. **Confidentiality-at-rest gaps:** `api_log` stores full request/response bodies (PHI) unencrypted, and `log.comments` is base64-encoded rather than encrypted — encoding is not encryption. **Authorization-consistency gaps:** the sensitivity ACL that hides high-sensitivity encounters in the UI is not enforced on the API/FHIR read path, and API scopes are role-level, not patient-granular, at the central layer. **Perimeter and deployment hardening:** CORS reflects any origin, the core session cookie omits `HttpOnly` and `Secure`, and the dev stack ships default credentials. Several of these are already acknowledged upstream — the CORS reflect and the authorization pipeline carry in-code `@TODO` markers, and the `log.comments` encryption was a deliberate, tracked upstream removal — which is noted per finding so severity reflects intent, not surprise.
 
-Two of the sharpest findings — the sensitivity-ACL read bypass and the plaintext PHI in `api_log` — are described here at the level of vulnerability class, impact, affected code path, and remediation. Step-by-step reproduction detail is withheld pending coordinated disclosure to the upstream OpenEMR security process. Every finding is cited to a `file:line` code path so the analysis is checkable; the tone throughout is constructive security engineering, not an exploit drop.
+Two of the sharpest findings — the sensitivity-ACL read bypass and the plaintext PHI in `api_log` — are described here at the level of vulnerability class, impact, affected code path, and remediation. Step-by-step reproduction detail is deliberately omitted: this is a constructive security analysis, not an exploit guide, and the sharp findings are reported at class-and-remediation altitude rather than as a weaponized how-to. Every finding is cited to a `file:line` code path so the analysis is checkable; the tone throughout is constructive security engineering, not an exploit drop.
 
 ## How to read this document
 
@@ -35,7 +35,7 @@ Findings are grouped by severity. Each carries a code-path citation so any claim
 
 **Remediation.** Wire the `$crypto` dependency the docblock already anticipates: inject `CryptoGen` into `LogTablesSink` and store the bodies via `encryptStandard()` with a decryptable marker, mirroring the pattern the audit-log encryption column was built for. Additionally or alternatively, default `api_log_option` to `1` (minimal, bodies blanked) so full bodies are captured only on explicit opt-in, and document the PHI exposure of option `2`. InnoDB tablespace encryption is worthwhile defense-in-depth but is not a substitute for application-layer encryption of this column.
 
-> **Responsible disclosure.** This finding was reproduced against a running instance, confirming the stored bodies are directly readable. The specific reproduction steps are withheld from this public document pending coordinated disclosure to the upstream OpenEMR security process.
+> **Disclosure altitude.** This finding was reproduced against a running instance, confirming the stored bodies are directly readable. Specific reproduction steps are deliberately omitted; the finding is reported at the level of class, impact, affected code path, and remediation rather than as a step-by-step exploit.
 
 ---
 
@@ -50,7 +50,7 @@ Findings are grouped by severity. Each carries a code-path citation so any claim
 
 **Remediation.** Enforce the sensitivity ACL at the service read boundary so every consumer inherits it. After `EncounterService::search()` fetches rows, drop or deny any row whose `sensitivity` fails `AclMain::aclCheckCore('sensitivities', $row['sensitivity'])`, mirroring the UI logic and the existing write-path check. Applying it in `search()` covers REST, FHIR, and internal callers in one place. Because `AclMain` resolves the principal from the session, confirm the ACL principal is correctly resolved in the token context before relying on it on API/FHIR requests.
 
-> **Responsible disclosure.** This finding was verified on a running instance. The exact request sequence that demonstrates the bypass is withheld from this public document pending coordinated disclosure to the upstream OpenEMR security process. The affected code path is named above so the fix can proceed.
+> **Disclosure altitude.** This finding was verified on a running instance. The exact request sequence that demonstrates the bypass is deliberately omitted; the finding is reported at the level of class, impact, and remediation. The affected code path is named above so the fix can proceed.
 
 ---
 
@@ -157,4 +157,4 @@ Two candidates from the initial list did not survive verification and are **not*
 
 ## Closing note
 
-This is a Phase 1 baseline. Before the final version (P5.5), every finding here will be cross-checked against upstream OpenEMR security advisories to confirm current status, catch any that have since been fixed upstream, and align severity with upstream's own assessment. For the two sharpest findings — the sensitivity-ACL read bypass (F-9) and plaintext PHI in `api_log` (F-2) — exploit-level reproduction specifics are withheld from this public document pending coordinated disclosure to the upstream OpenEMR security process. The findings are reported to be fixed, not weaponized: the intent is constructive security engineering that makes both the base platform and the Co-Pilot built on it more trustworthy.
+This is the finalized audit. The findings were established in the Phase 1 baseline pass — each verified against source and reproduced (or not) on a live instance — and cross-checked against the acknowledgements already present in the OpenEMR source: the in-code `@TODO` markers on the CORS reflect and the authorization pipeline, and the tracked upstream removal referenced in the `log.comments` code (`#12118`/`#12120`). Those in-source references are noted per finding so severity reflects intent rather than surprise; no external advisory or CVE identifiers are claimed. For the two sharpest findings — the sensitivity-ACL read bypass (F-9) and plaintext PHI in `api_log` (F-2) — exploit-level reproduction specifics are deliberately omitted, and each is reported at the level of class, impact, and remediation. The findings are reported to be fixed, not weaponized: the intent is constructive security engineering that makes both the base platform and the Co-Pilot built on it more trustworthy.
