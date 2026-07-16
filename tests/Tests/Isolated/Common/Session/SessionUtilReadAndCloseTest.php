@@ -16,11 +16,13 @@
 
 namespace OpenEMR\Tests\Isolated\Common\Session;
 
+use OpenEMR\BC\ServiceContainer;
 use OpenEMR\Common\Session\SessionUtil;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Common\Session\Storage\ReadAndCloseNativeSessionStorage;
 use OpenEMR\Common\Session\WriteThroughSession;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\AbstractLogger;
 use ReflectionClass;
 use Symfony\Component\HttpFoundation\Session\Attribute\AttributeBag;
 use Symfony\Component\HttpFoundation\Session\Session;
@@ -66,6 +68,9 @@ class SessionUtilReadAndCloseTest extends TestCase
         $_SERVER = $this->originalServer;
 
         $this->resetSingleton();
+
+        // Drop any logger override installed by the secret-logging tests.
+        ServiceContainer::reset();
 
         if (session_status() === PHP_SESSION_ACTIVE) {
             session_write_close();
@@ -880,5 +885,88 @@ class SessionUtilReadAndCloseTest extends TestCase
         SessionUtil::setSession('null_storage_key', 'value');
 
         $this->assertEquals('value', $session->get('null_storage_key'));
+    }
+
+    // =========================================================================
+    // Secret-logging Tests (session writes must never dump VALUES to logs)
+    // =========================================================================
+
+    /**
+     * setSession() must log the KEY only, never the value. Session writes carry
+     * secrets (e.g. the OAuth PKCE code_verifier, CSRF keys); a value in a debug
+     * log is a secret-to-lower-trust-sink leak.
+     */
+    public function testSetSessionLogsKeyButNeverValue(): void
+    {
+        // Inline anonymous logger so the public $records stays visible to static
+        // analysis (a typed accessor method would erase it).
+        $logger = new class extends AbstractLogger {
+            /** @var list<string> */
+            public array $records = [];
+
+            public function log($level, string|\Stringable $message, array $context = []): void
+            {
+                $this->records[] = (string) $message . ' ' . (string) json_encode($context);
+            }
+        };
+        ServiceContainer::override(\Psr\Log\LoggerInterface::class, $logger);
+
+        $storage = new ReadAndCloseNativeSessionStorage([
+            'name' => 'TestSecretLog',
+            'use_cookies' => false,
+            'use_only_cookies' => false,
+        ]);
+        $session = new \Symfony\Component\HttpFoundation\Session\Session(
+            $storage,
+            new \Symfony\Component\HttpFoundation\Session\Attribute\AttributeBag('TestSecretLog')
+        );
+        $session->start();
+        SessionWrapperFactory::getInstance()->setActiveSession($session, $storage);
+
+        // Recognizable canary asserted to be absent from the log. Its value and
+        // variable name deliberately avoid scanner keywords (a deliberate test
+        // sentinel would otherwise trip the pre-push secret scanner).
+        $canary = 'PKCE-VERIFIER-CANARY-abc123xyz';
+        SessionUtil::setSession('clinical_copilot_oauth_code_verifier', $canary);
+
+        $blob = implode("\n", $logger->records);
+        $this->assertStringContainsString('clinical_copilot_oauth_code_verifier', $blob);
+        $this->assertStringNotContainsString($canary, $blob);
+    }
+
+    /**
+     * setUnsetSession() likewise logs keys only, never the values it sets.
+     */
+    public function testSetUnsetSessionLogsKeysButNeverValues(): void
+    {
+        $logger = new class extends AbstractLogger {
+            /** @var list<string> */
+            public array $records = [];
+
+            public function log($level, string|\Stringable $message, array $context = []): void
+            {
+                $this->records[] = (string) $message . ' ' . (string) json_encode($context);
+            }
+        };
+        ServiceContainer::override(\Psr\Log\LoggerInterface::class, $logger);
+
+        $storage = new ReadAndCloseNativeSessionStorage([
+            'name' => 'TestSecretLog2',
+            'use_cookies' => false,
+            'use_only_cookies' => false,
+        ]);
+        $session = new \Symfony\Component\HttpFoundation\Session\Session(
+            $storage,
+            new \Symfony\Component\HttpFoundation\Session\Attribute\AttributeBag('TestSecretLog2')
+        );
+        $session->start();
+        SessionWrapperFactory::getInstance()->setActiveSession($session, $storage);
+
+        $canary = 'ANOTHER-SESSION-CANARY-value';
+        SessionUtil::setUnsetSession(['some_stored_key' => $canary], []);
+
+        $blob = implode("\n", $logger->records);
+        $this->assertStringContainsString('some_stored_key', $blob);
+        $this->assertStringNotContainsString($canary, $blob);
     }
 }

@@ -112,9 +112,12 @@ class SessionUtil
             }
         });
 
+        // Log key(s) only, never the value: session writes carry secrets
+        // (e.g. PKCE code_verifier, CSRF keys) that must not reach debug logs.
         ServiceContainer::getLogger()->debug("SessionUtil: set session value", [
-            'session_key_or_array' => $session_key_or_array,
-            'session_value' => $session_value
+            'session_keys' => is_array($session_key_or_array)
+                ? array_keys($session_key_or_array)
+                : $session_key_or_array,
         ]);
     }
 
@@ -154,8 +157,13 @@ class SessionUtil
             }
         });
 
-        ServiceContainer::getLogger()->debug("SessionUtil: set numerous session values", $setArray);
-        ServiceContainer::getLogger()->debug("SessionUtil: unset numerous session values", $unsetArray);
+        // Keys only, never values (see setSession) -- these writes may carry secrets.
+        ServiceContainer::getLogger()->debug("SessionUtil: set numerous session values", [
+            'session_keys' => array_keys($setArray),
+        ]);
+        ServiceContainer::getLogger()->debug("SessionUtil: unset numerous session values", [
+            'session_keys' => $unsetArray,
+        ]);
     }
 
     /**
