@@ -158,6 +158,27 @@ def test_new_conversation_returns_a_fresh_conversation_id():
     assert conversation_id  # non-empty conversation_id present in the frame
 
 
+def test_conversation_frame_carries_the_response_correlation_id():
+    # P4.4: the feedback-button UI's only way to learn a response's
+    # correlation id is this frame -- it must match the SAME id the P4.1
+    # middleware stamped on the response's X-Correlation-ID header, so a
+    # POST /feedback call posted with it lands on the right spans.
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    data = next(data for name, data in _iter_sse_events(response.text) if name == "conversation")
+    correlation_id = json.loads(data)["correlation_id"]
+    assert correlation_id  # non-empty
+    assert correlation_id == response.headers["X-Correlation-ID"]
+
+
 def test_resume_with_same_conversation_id_continues_history():
     fake_planner = FakePlanner(trace=[], answer="first answer")
     _override_ok_validator()

@@ -20,6 +20,11 @@
  * Security: assistant/user text is always rendered via `textContent`
  * (appendMessage below), never `innerHTML` -- model output and patient
  * record text can carry adversarial content and must render as inert text.
+ *
+ * P4.4: a thumbs up/down feedback widget renders under each assistant
+ * response, tied to that response's P4.1 correlation id (delivered on the
+ * `conversation` frame) and posted to the same-origin feedback proxy
+ * (public/feedback-proxy.php) -- see attachFeedbackHandlers below.
  */
 (function (window, document) {
     'use strict';
@@ -346,6 +351,173 @@
     }
 
     // -------------------------------------------------------------------
+    // P4.4 feedback buttons: thumbs up/down per assistant response, tied to
+    // that response's P4.1 correlation id (delivered on the `conversation`
+    // frame -- see app/chat.py's SSE frame contract, and the `feedbackUrl`
+    // proxy request in createChatController below). Real <button> elements
+    // (>=44px tap target, no hover dependence -- see copilot.css), and
+    // guarded against double-submit: both buttons disable the instant either
+    // is clicked, and a click is a no-op while a submission is already
+    // pending or done.
+    // -------------------------------------------------------------------
+
+    // Pure: the exact JSON body posted to public/feedback-proxy.php.
+    function buildFeedbackPayload(context, token, correlationId, thumb, comment) {
+        var payload = {
+            csrf_token_form: context.csrfToken,
+            token: token,
+            correlation_id: correlationId,
+            thumb: thumb
+        };
+        if (comment) {
+            payload.comment = comment;
+        }
+        return payload;
+    }
+
+    // Pure: builds the (unattached) feedback widget DOM for one response.
+    function renderFeedbackWidget(container, correlationId) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'copilot-feedback';
+        wrapper.setAttribute('data-correlation-id', correlationId || '');
+
+        var upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.className = 'copilot-feedback-btn copilot-feedback-up';
+        upBtn.setAttribute('aria-label', 'Helpful');
+        upBtn.setAttribute('data-thumb', 'up');
+        upBtn.textContent = '👍';
+
+        var downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.className = 'copilot-feedback-btn copilot-feedback-down';
+        downBtn.setAttribute('aria-label', 'Not helpful');
+        downBtn.setAttribute('data-thumb', 'down');
+        downBtn.textContent = '👎';
+
+        var status = document.createElement('span');
+        status.className = 'copilot-feedback-status';
+        status.setAttribute('aria-live', 'polite');
+
+        var commentWrap = document.createElement('div');
+        commentWrap.className = 'copilot-feedback-comment copilot-hidden';
+        var commentInput = document.createElement('textarea');
+        commentInput.className = 'copilot-feedback-comment-input';
+        commentInput.setAttribute('placeholder', 'What went wrong? (optional)');
+        commentInput.setAttribute('maxlength', '2000');
+        commentInput.setAttribute('aria-label', 'Feedback comment');
+        var commentSendBtn = document.createElement('button');
+        commentSendBtn.type = 'button';
+        commentSendBtn.className = 'copilot-feedback-comment-send';
+        commentSendBtn.textContent = 'Send';
+        commentWrap.appendChild(commentInput);
+        commentWrap.appendChild(commentSendBtn);
+
+        wrapper.appendChild(upBtn);
+        wrapper.appendChild(downBtn);
+        wrapper.appendChild(status);
+        wrapper.appendChild(commentWrap);
+        container.appendChild(wrapper);
+
+        return {
+            wrapper: wrapper,
+            upBtn: upBtn,
+            downBtn: downBtn,
+            status: status,
+            commentWrap: commentWrap,
+            commentInput: commentInput,
+            commentSendBtn: commentSendBtn
+        };
+    }
+
+    // Pure DOM mutators: the three states a feedback widget can be in.
+    function applyFeedbackPendingState(widget) {
+        widget.upBtn.disabled = true;
+        widget.downBtn.disabled = true;
+    }
+
+    function applyFeedbackSuccessState(widget, thumb) {
+        applyFeedbackPendingState(widget);
+        widget.wrapper.classList.add('copilot-feedback-submitted');
+        var selectedBtn = thumb === 'up' ? widget.upBtn : widget.downBtn;
+        selectedBtn.classList.add('copilot-feedback-selected');
+        widget.status.textContent = 'Thanks for your feedback';
+    }
+
+    function applyFeedbackErrorState(widget) {
+        widget.upBtn.disabled = false;
+        widget.downBtn.disabled = false;
+        widget.status.textContent = 'Could not send feedback. Try again.';
+    }
+
+    // Orchestration: wires the widget's buttons to POST public/feedback-proxy.php.
+    // `options` needs `context`, `ensureToken` (the chat controller's cached
+    // bearer-token seam), `fetchImpl`, and `feedbackUrl`.
+    function attachFeedbackHandlers(widget, correlationId, options) {
+        var state = 'idle'; // idle | pending | done -- the no-double-submit guard
+
+        function post(thumb, comment) {
+            return options.ensureToken().then(function (token) {
+                var payload = buildFeedbackPayload(options.context, token, correlationId, thumb, comment);
+                return options.fetchImpl(options.feedbackUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            }).then(function (resp) {
+                if (!resp.ok) {
+                    throw new Error('feedback request failed');
+                }
+            });
+        }
+
+        function submitThumb(thumb) {
+            if (state !== 'idle') {
+                return Promise.resolve();
+            }
+            state = 'pending';
+            applyFeedbackPendingState(widget);
+
+            return post(thumb, null).then(function () {
+                state = 'done';
+                applyFeedbackSuccessState(widget, thumb);
+                if (thumb === 'down') {
+                    widget.commentWrap.classList.remove('copilot-hidden');
+                }
+            }).catch(function () {
+                state = 'idle';
+                applyFeedbackErrorState(widget);
+            });
+        }
+
+        function submitComment() {
+            var comment = widget.commentInput.value.trim();
+            if (!comment || widget.commentSendBtn.disabled) {
+                return Promise.resolve();
+            }
+            widget.commentSendBtn.disabled = true;
+
+            return post('down', comment).then(function () {
+                widget.commentWrap.classList.add('copilot-hidden');
+                widget.status.textContent = 'Thanks for the detail';
+            }).catch(function () {
+                widget.commentSendBtn.disabled = false;
+                widget.status.textContent = 'Could not send comment. Try again.';
+            });
+        }
+
+        widget.upBtn.addEventListener('click', function () {
+            submitThumb('up');
+        });
+        widget.downBtn.addEventListener('click', function () {
+            submitThumb('down');
+        });
+        widget.commentSendBtn.addEventListener('click', submitComment);
+
+        return { submitThumb: submitThumb, submitComment: submitComment };
+    }
+
+    // -------------------------------------------------------------------
     // Orchestration.
     // -------------------------------------------------------------------
     var UNAVAILABLE_MESSAGE = 'Sorry, the Co-Pilot is unavailable right now.';
@@ -375,6 +547,11 @@
 
         function sendMessage(text) {
             appendMessage(options.messagesEl, 'user', text);
+            // Per-turn, not per-conversation (unlike conversationId above): a
+            // fresh P4.1 correlation id arrives on every `conversation` frame,
+            // one per response, so the feedback widget below is tied to THIS
+            // answer specifically.
+            var responseCorrelationId = null;
 
             return ensureToken().then(function (token) {
                 return options.fetchImpl(options.proxyUrl, {
@@ -395,8 +572,13 @@
                 var verificationData = null;
                 var hadError = false;
                 return consumeSSEStream(resp.body.getReader(), function (frame) {
-                    if (frame.event === 'conversation' && frame.data && typeof frame.data.conversation_id === 'string') {
-                        conversationId = frame.data.conversation_id;
+                    if (frame.event === 'conversation' && frame.data) {
+                        if (typeof frame.data.conversation_id === 'string') {
+                            conversationId = frame.data.conversation_id;
+                        }
+                        if (typeof frame.data.correlation_id === 'string') {
+                            responseCorrelationId = frame.data.correlation_id;
+                        }
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
                     } else if (frame.event === 'verification' && frame.data) {
@@ -410,6 +592,15 @@
                         // Pending verification payloads (verdict null) render
                         // nothing; a populated one adds the badge/chips/banner.
                         renderVerification(options.messagesEl, verificationData);
+                        if (responseCorrelationId) {
+                            var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
+                            attachFeedbackHandlers(widget, responseCorrelationId, {
+                                context: options.context,
+                                ensureToken: ensureToken,
+                                fetchImpl: options.fetchImpl,
+                                feedbackUrl: options.feedbackUrl
+                            });
+                        }
                     } else if (hadError) {
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                     }
@@ -457,6 +648,7 @@
             context: window.CopilotContext,
             brokerUrl: baseUrl + '/ajax.php',
             proxyUrl: baseUrl + '/chat-proxy.php',
+            feedbackUrl: baseUrl + '/feedback-proxy.php',
             fetchImpl: window.fetch.bind(window)
         });
         controller.init();
@@ -476,6 +668,12 @@
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,
         renderWarningBanner: renderWarningBanner,
-        renderVerification: renderVerification
+        renderVerification: renderVerification,
+        buildFeedbackPayload: buildFeedbackPayload,
+        renderFeedbackWidget: renderFeedbackWidget,
+        applyFeedbackPendingState: applyFeedbackPendingState,
+        applyFeedbackSuccessState: applyFeedbackSuccessState,
+        applyFeedbackErrorState: applyFeedbackErrorState,
+        attachFeedbackHandlers: attachFeedbackHandlers
     };
 })(window, document);

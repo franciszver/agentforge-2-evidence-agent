@@ -30,7 +30,12 @@ spans from this module would mean fabricating timing data; see
 ``.record_feedback_span`` (P4.3's ``/feedback`` endpoint seam).
 
 SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
-  * ``conversation`` -- first frame, carries ``{"conversation_id": str}``.
+  * ``conversation`` -- first frame, carries ``{"conversation_id": str,
+                         "correlation_id": str}``. ``correlation_id`` is the
+                         P4.1 id for THIS turn (``app.correlation.
+                         get_correlation_id()``) -- the P4.4 UI's only way to
+                         learn it, so a thumbs up/down on this response can be
+                         posted to ``POST /feedback`` (P4.3) linked to it.
   * ``tool_call``    -- one per planner tool dispatch, in order, carrying
                          ``{"tool": str, "args": dict, "error": str | None}``.
   * ``answer``        -- the final answer, ``{"answer": str}``.
@@ -456,7 +461,10 @@ def _stream_chat(
     )
 
     try:
-        yield _sse(ChatEvent.CONVERSATION, {"conversation_id": conversation.conversation_id})
+        yield _sse(
+            ChatEvent.CONVERSATION,
+            {"conversation_id": conversation.conversation_id, "correlation_id": correlation_id},
+        )
 
         result = planner.run(message)
 
