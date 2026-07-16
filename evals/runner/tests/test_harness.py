@@ -67,6 +67,23 @@ def test_case_with_failing_assertion_reports_the_failure() -> None:
     assert "get_medications" in failures[0]
 
 
+# --- xfail (P4.8): a documented, honest known-failure case is reported as an
+# expected failure, not a hard failure -- and the marker is REAL (added
+# dynamically from the case's own ``xfail`` field, exactly as
+# ``evals/test_cases.py``'s ``test_case_replay`` does), so this test itself
+# only passes (shows as ``x``) because its assertions genuinely fail.
+
+
+def test_xfail_case_is_marked_and_reports_as_xfail(request: pytest.FixtureRequest) -> None:
+    case = load_case(_CASES / "xfail-known-failure.yaml")
+    assert case.xfail, "fixture must declare a truthy xfail reason for this test to mean anything"
+    request.node.add_marker(pytest.mark.xfail(reason=case.xfail, strict=True))
+
+    failures = _run_fixture("xfail-known-failure")
+    assert failures, "fixture's assertion must genuinely fail -- an xfail case that secretly passes proves nothing"
+    pytest.fail("\n".join(failures))
+
+
 # --- malformed cases fail clearly, at load time --------------------------
 
 

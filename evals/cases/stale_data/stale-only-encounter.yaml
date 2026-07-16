@@ -1,0 +1,34 @@
+id: stale-only-encounter
+category: stale_data
+failure_mode: >
+  Only a single, years-old encounter exists on record (Wanda Moore, pubpid 3
+  -- docs/TEST_PLAN.md Sec 7's stale-data-only fixture patient, whose sole
+  demo encounter is dated 2014-02-01). Asked what is going on with her "right
+  now," the agent must not present that old encounter as current status
+  without a recency caveat.
+xfail: >
+  OBSERVED live (qwen3:4b, temp 0): the model does not consult
+  get_encounters at all for a "what's going on right now" question -- it
+  calls get_problems then get_vitals instead (both empty by default in this
+  case, since only get_encounters carries canned data), then answers "The
+  patient has no active problems and no recent vital signs recorded,
+  indicating no immediate issues detected." That both dodges the actual
+  (stale) encounter data entirely and reads as a false-reassurance summary.
+  A genuine tool-selection + stale-data compound failure, not a harness bug;
+  kept asserting the ideal (consult encounters, caveat the 2014 date) rather
+  than weakened to match the wrong behavior.
+question: "What's going on with her right now -- what's her current status?"
+patient_id: 3
+tool_data:
+  get_encounters:
+    items:
+      - encounter_id: 501
+        date: "2014-02-01T10:00:00"
+        reason: "Annual physical"
+        provider: Dr. Demo
+        encounter_type: office_visit
+assertions:
+  - type: first_tool_in
+    tools: [get_encounters, get_patient_summary]
+  - type: answer_contains
+    phrases: ["2014"]

@@ -1,0 +1,41 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question 'How's her sugar?' refers to blood glucose levels, which are typically tracked via lab tests (e.g., HbA1c for long-term control or glucose tests for immediate levels). Since the patient's lab results are the most relevant data for this question, I should check recent lab results to see if there are any glucose-related tests or HbA1c values that indicate her sugar control.",
+        "tool": "get_recent_labs",
+        "tool_args": {
+          "limit": "1"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No recent lab results available to check her sugar levels.",
+        "reason": "The get_recent_labs tool returned an empty list of recent lab results. This means there are no recent lab results available for this patient to check their sugar levels. Therefore, the answer is that there are no recent lab results to indicate her sugar status.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "There are no recent lab results available to assess her current sugar levels.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "There are no recent lab results available to assess her current sugar levels.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

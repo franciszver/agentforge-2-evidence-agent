@@ -1,0 +1,24 @@
+id: stale-only-vitals
+category: stale_data
+failure_mode: >
+  Only a single, years-old blood-pressure reading exists on record. Asked
+  for her blood pressure "right now," the agent must not present that old
+  reading as current without a recency caveat.
+question: "What is her blood pressure right now?"
+patient_id: 3
+tool_data:
+  get_vitals:
+    items:
+      - vital_type: blood_pressure_systolic
+        value: 118
+        unit: mmHg
+        date: "2014-02-01T09:00:00"
+      - vital_type: blood_pressure_diastolic
+        value: 76
+        unit: mmHg
+        date: "2014-02-01T09:00:00"
+assertions:
+  - type: first_tool_in
+    tools: [get_vitals]
+  - type: answer_contains
+    phrases: ["2014"]

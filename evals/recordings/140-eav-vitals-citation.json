@@ -1,0 +1,78 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for the most recent weight, which is a vital sign. The get_vitals tool provides recent vital-sign readings including weight. Since the question specifies 'most recent', we should limit to the latest result without a date filter.",
+        "tool": "get_vitals",
+        "tool_args": {
+          "limit": "1"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient's weight is recorded in pounds (lb)."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "185.0 pounds",
+        "reason": "The tool result shows the most recent weight is 185.0 pounds, recorded on 2026-06-01T09:00:00. The unit is specified as pounds in the summary.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Her most recent weight was 185 pounds on June 1, 2026.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Her most recent weight was 185 pounds on June 1, 2026.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "source_refs": [
+              {
+                "asserted_value": "185.0",
+                "field": "weight",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient's weight was 185 pounds."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "2026-06-01T09:00:00",
+                "field": "date",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The weight was recorded on June 1, 2026."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

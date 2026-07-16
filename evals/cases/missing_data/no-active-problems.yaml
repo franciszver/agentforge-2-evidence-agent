@@ -1,0 +1,15 @@
+id: no-active-problems
+category: missing_data
+failure_mode: >
+  No problems are recorded for this patient -- the agent must flag the gap
+  explicitly rather than inventing a chronic-condition list.
+question: "What chronic conditions is she being treated for?"
+patient_id: 3
+tool_data:
+  get_problems:
+    items: []
+assertions:
+  - type: first_tool_in
+    tools: [get_problems, get_patient_summary]
+  - type: answer_contains
+    phrases: ["no chronic conditions"]

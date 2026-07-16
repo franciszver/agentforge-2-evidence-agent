@@ -1,0 +1,48 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for current blood pressure, which is a vital sign. The get_vitals tool provides recent vital-sign readings, including blood pressure. Since the question specifies 'right now', we need the most recent vital sign reading. The get_vitals tool can be used with a limit of 1 to get the latest reading.",
+        "tool": "get_vitals",
+        "tool_args": {
+          "limit": "1"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient's blood pressure readings are recorded in millimeters of mercury (mmHg)."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Her most recent blood pressure reading is 118/76 mmHg, recorded on February 1, 2014 at 9:00 AM.",
+        "reason": "The get_vitals tool returned the most recent blood pressure reading (limit=1). The systolic is 118.0 and diastolic is 76.0, both recorded on 2014-02-01T09:00:00. Since the question asks for 'right now', but the data shows an older reading, I should clarify that this is the most recent available reading, not necessarily current. However, the question specifies 'right now', but the system only has historical data. I'll answer with the most recent reading and note the date.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Her current blood pressure is 118/76 mmHg, recorded on February 1, 2014.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Her current blood pressure is 118/76 mmHg, recorded on February 1, 2014.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

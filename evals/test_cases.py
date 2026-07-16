@@ -13,7 +13,12 @@ Two checks per case, run independently so their failures are distinguishable:
   * ``test_case_replay`` -- the case's recording replays through the real
     pipeline and every assertion passes. A case with no committed recording
     fails here (not skipped -- see ``runner.ollama_replay``'s module
-    docstring).
+    docstring). A case with a truthy ``xfail`` (P4.8) is marked via a
+    dynamically-added ``pytest.mark.xfail(strict=True)`` -- it still runs for
+    real every time; the suite stays green while the documented failure
+    stays visible in the report, and ``strict=True`` turns an unexpected
+    PASS into a failure so a fixed model behavior can't leave a stale xfail
+    behind unnoticed.
 """
 
 from __future__ import annotations
@@ -39,8 +44,10 @@ def test_case_schema_is_valid(case_file: Path) -> None:
 
 
 @pytest.mark.parametrize("case_file", _CASE_FILES, ids=[p.stem for p in _CASE_FILES])
-def test_case_replay(case_file: Path) -> None:
+def test_case_replay(case_file: Path, request: pytest.FixtureRequest) -> None:
     case = load_case(case_file)
+    if case.xfail:
+        request.node.add_marker(pytest.mark.xfail(reason=case.xfail, strict=True))
     calls = load_recording(recording_path(_RECORDINGS_DIR, case.id))
     client = ReplayOllamaClient(calls)
 

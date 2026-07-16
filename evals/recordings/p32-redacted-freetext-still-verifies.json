@@ -1,0 +1,93 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks about blood pressure medications and their doses, so I need to get the medication list to find which drugs are used for blood pressure and their doses.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking lisinopril 10mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "She is taking lisinopril 10mg orally for blood pressure.",
+        "reason": "The tool result shows that the patient is currently taking lisinopril 10mg orally. This directly answers the question about what she is taking for blood pressure and the dose.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient is currently taking lisinopril 10mg orally for blood pressure.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient is currently taking lisinopril 10mg orally for blood pressure.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Lisinopril",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking lisinopril."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "10mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is taking lisinop: 10mg orally."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The lisinopril regimen is active."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

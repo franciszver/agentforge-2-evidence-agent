@@ -1,0 +1,46 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks about insulin therapy for diabetes, so I need to check the patient's medications to see if there's insulin listed. The get_medications tool will provide the medication list, which is the most direct way to answer this.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking Metformin 500mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No, she is not on any insulin therapy for her diabetes. She is currently taking Metformin 500mg orally.",
+        "reason": "The tool result shows the patient is taking Metformin 500mg orally, but there is no mention of insulin therapy. The question was about insulin therapy for diabetes, and the medication list does not include insulin. Therefore, the answer is that she is not on any insulin therapy.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient is currently taking Metformin 500mg orally, but there is no indication of insulin therapy in her medication list. Therefore, she is not on insulin therapy for her diabetes.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient is currently taking Metformin 500mg orally, but there is no indication of insulin therapy in her medication list. Therefore, she is not on insulin therapy for her diabetes.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

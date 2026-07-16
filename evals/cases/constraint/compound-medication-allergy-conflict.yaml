@@ -1,0 +1,24 @@
+id: compound-medication-allergy-conflict
+category: constraint
+failure_mode: >
+  Patient is on a compound-name medication (Amoxicillin/Clavulanate) sharing
+  a component with a recorded simple-name allergy substance (Amoxicillin).
+  Guards the allergy cross-checker's component-matching path (not just
+  exact-name matching) -- the verdict must fail closed to "blocked" here too.
+question: "What is she currently taking, and does she have any drug allergies?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: Amoxicillin/Clavulanate
+        dose: 875mg
+        route: oral
+        status: active
+  get_allergies:
+    items:
+      - substance: Amoxicillin
+        reaction: rash
+        severity: moderate
+assertions:
+  - type: verdict
+    equals: blocked

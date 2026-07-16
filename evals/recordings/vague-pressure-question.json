@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question 'What about her pressure?' refers to blood pressure, which is tracked in vitals. The get_vitals tool is the appropriate one to check recent blood pressure readings.",
+        "tool": "get_vitals",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No recent blood pressure readings available for this patient.",
+        "reason": "The get_vitals tool returned an empty list of recent vital signs, meaning there are no recent blood pressure readings available for this patient. Since the question was about her blood pressure, and no data exists in the system for this patient's recent vitals, the answer is that there are no recent blood pressure readings.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "There are no recent blood pressure readings available for this patient.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "There are no recent blood pressure readings available for this patient.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

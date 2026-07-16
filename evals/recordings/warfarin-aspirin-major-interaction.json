@@ -1,0 +1,110 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for current medications, so get_medications is the right tool.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking Warfarin 5mg orally and Aspirin 81mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "The patient is currently taking Warfarin 5mg orally and Aspirin 81mg orally.",
+        "reason": "The get_medications tool returned a summary stating the patient is currently taking Warfarin 5mg orally and Aspirin 81mg orally. This directly answers the question about current medications.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient is currently taking Warfarin 5mg orally and Aspirin 81mg orally.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient is currently taking Warfarin 5mg orally and Aspirin 81mg orally.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Warfarin",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking Warfarin."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "5mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking Warfar: 5mg orally."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Aspirin",
+                "field": "name",
+                "record_id": "1",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking Aspirin."
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "81mg",
+                "field": "dose",
+                "record_id": "1",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "1",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking Aspirin: 81mg orally."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

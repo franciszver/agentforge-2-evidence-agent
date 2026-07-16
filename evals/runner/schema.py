@@ -149,6 +149,17 @@ class EvalCase(BaseModel):
     patient_id: int = Field(gt=0)
     tool_data: dict[ToolName, dict[str, Any]] = Field(default_factory=dict)
     assertions: list[Assertion] = Field(min_length=1)
+    xfail: str | None = Field(
+        default=None,
+        description=(
+            "Set when this case documents a KNOWN, honest failure (e.g. the "
+            "4B model guesses instead of disambiguating) rather than a "
+            "regression to catch. The value is the rationale, surfaced by "
+            "the runner as a strict pytest xfail -- the case still runs for "
+            "real every time; an unexpected PASS fails the suite loudly so a "
+            "stale xfail can't rot silently (docs/TEST_PLAN.md Sec 5)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_tool_data_against_output_schemas(self) -> EvalCase:

@@ -1,0 +1,22 @@
+id: p32-redacted-freetext-still-verifies
+category: regression
+failure_mode: >
+  Regression guard for the P3.2 raw-vs-quarantine fix: a claim about a
+  medication name/dose is a free-text field that the P2.9 quarantine
+  redacts from the PLANNER's context (replaced with a summary), but the
+  P3.2 extraction/verification layer is fed the RAW tool result, not the
+  quarantined one. A claim naming that medication must still verify
+  (verdict: verified) -- guards a regression where redaction accidentally
+  caused legitimate, well-cited claims to fail citation and fail closed.
+question: "What is she taking for blood pressure, and what dose?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: Lisinopril
+        dose: 10mg
+        route: oral
+        status: active
+assertions:
+  - type: verdict
+    equals: verified

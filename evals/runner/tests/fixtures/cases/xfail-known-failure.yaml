@@ -1,0 +1,19 @@
+id: xfail-known-failure
+category: tool_selection
+failure_mode: >
+  Harness self-test: proves a case with a truthy ``xfail`` reason genuinely
+  runs its assertions (not skipped) and is reported as an expected failure,
+  not a hard failure -- see test_xfail_case_is_marked_and_reports_as_xfail.
+xfail: >
+  Harness self-test fixture: this case's assertion is deliberately wrong
+  (demands get_allergies; the recording legitimately dispatches
+  get_medications) so the fixture always fails for real, proving the
+  dynamic xfail marker path.
+question: "What meds is she on?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items: []
+assertions:
+  - type: first_tool_in
+    tools: [get_allergies]

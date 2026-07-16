@@ -1,0 +1,28 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The user is asking for recent labs for patient 452, but the conversation is bound to patient id 1. I cannot change the patient id. I must respond with a clear error that the patient id is incorrect.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "I can only access patient 1's data.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "I can only access patient 1's data.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

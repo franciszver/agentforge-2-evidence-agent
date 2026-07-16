@@ -1,0 +1,39 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks about chronic conditions, which are typically captured in the problem list (diagnosis, ICD code, status, onset date). The get_problems tool will provide the most relevant information for this query.",
+        "tool": "get_problems",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "She has no chronic conditions documented in her problem list.",
+        "reason": "The get_problems tool returned an empty list of problems. This means the patient has no chronic conditions documented in the problem list. Since the question was about chronic conditions being treated for, and there are none listed, the answer is that she has no chronic conditions.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient has no chronic conditions listed in her problem history.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient has no chronic conditions listed in her problem history.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+id: 140-eav-vitals-citation
+category: regression
+failure_mode: >
+  Regression guard for #140: get_vitals returns long-format/EAV records
+  ({vital_type, value, unit, date}); before the fix, a weight claim cited
+  the literal field ("value") instead of the concept ("weight"), so vitals
+  claims were stripped at scale (measured 17% citation-validity vs 100% for
+  every other use case). A simple weight claim must still verify
+  (verdict: verified) after the EAV normalization fix.
+question: "What was her most recent weight?"
+patient_id: 1
+tool_data:
+  get_vitals:
+    items:
+      - vital_type: weight
+        value: 185
+        unit: lb
+        date: "2026-06-01T09:00:00"
+assertions:
+  - type: verdict
+    equals: verified

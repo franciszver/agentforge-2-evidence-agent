@@ -1,0 +1,48 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for the current A1c value, which is a lab result. The get_recent_labs tool can retrieve recent lab results, and since A1c is a common lab test, this tool will provide the most recent A1c value. We'll use the default limit of 1 to get the most recent result.",
+        "tool": "get_recent_labs",
+        "tool_args": {
+          "limit": "1"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient's most recent A1c test result is 7.2%."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Her current A1c is 7.2% (high).",
+        "reason": "The tool result shows the most recent A1c test result is 7.2% with an abnormal flag (high). This directly answers the question about her current A1c.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Her current A1c is 7.2%, which is high.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Her current A1c is 7.2%, which is high.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

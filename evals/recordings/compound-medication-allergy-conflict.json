@@ -1,0 +1,117 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for two things: current medications and drug allergies. I need to get both pieces of information. I'll start by calling get_medications to get the current medications, then get_allergies for the allergies.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking amoxicillin/clavulanate 875mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks for two things: current medications and drug allergies. I have already called get_medications and got the result that the patient is currently taking amoxicillin/clavulanate 875mg orally. Now I need to get the allergies to answer the second part of the question.",
+        "tool": "get_allergies",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient reports an allergy to Amoxicillin, which causes a rash."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "She is currently taking amoxicillin/clavulanate 875mg orally, and has an allergy to Amoxicillin which causes a rash.",
+        "reason": "The question asks for two things: current medications and drug allergies. I have called get_medications and get_allergies, and both tools returned results. The patient is currently taking amoxicillin/clavulanate 875mg orally, and has an allergy to Amoxicillin which causes a rash.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "She is currently taking amoxicillin/clavulanate 875mg orally, and she has an allergy to Amoxicillin, which causes a rash.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "She is currently taking amoxicillin/clavulanate 875mg orally, and she has an allergy to Amoxicillin, which causes a rash.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Amoxicillin/Clavulanate",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "875mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "She is currently taking amoxicillin/clavulanate 875mg orally"
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "Amoxicillin",
+                "field": "substance",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              }
+            ],
+            "text": "She has an allergy to Amoxicillin"
+          },
+          {
+            "source_refs": [
+              {
+                "asserted_value": "rash",
+                "field": "reaction",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              }
+            ],
+            "text": "This allergy causes a rash"
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

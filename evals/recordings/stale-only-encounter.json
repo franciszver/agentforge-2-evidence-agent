@@ -1,0 +1,50 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question 'what's her current status' is vague but likely refers to the patient's active problems or recent vital signs. Since the patient's current status could be related to active problems (e.g., acute conditions) or recent vital signs (e.g., unstable vitals), I'll start by checking the problem list to see if there are any active problems that might indicate her current status.",
+        "tool": "get_problems",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The get_problems tool returned an empty list of active problems. Since the question was about the patient's current status, and there are no active problems, I should check if there are any recent vital signs that might indicate her current status (e.g., unstable vitals).",
+        "tool": "get_vitals",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "The patient has no active problems and no recent vital signs recorded, indicating a stable status with no immediate issues.",
+        "reason": "Both get_problems and get_vitals returned empty lists. This means the patient has no active problems and no recent vital signs recorded. Therefore, her current status is stable with no immediate issues detected.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient has no active problems and no recent vital signs recorded, indicating no immediate issues detected.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient has no active problems and no recent vital signs recorded, indicating no immediate issues detected.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

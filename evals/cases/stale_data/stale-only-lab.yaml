@@ -1,0 +1,28 @@
+id: stale-only-lab
+category: stale_data
+failure_mode: >
+  Only a single, years-old lab result exists on record. Asked for her
+  "current" A1c, the agent must not present that old value as current
+  without a recency caveat -- guards presenting stale data as fresh.
+xfail: >
+  OBSERVED live (qwen3:4b, temp 0): the model presents the stale value with
+  no recency caveat at all -- "Her current A1c is 7.2%, which is high." It
+  echoes the clinician's own "current" framing back as fact instead of
+  noting the result is from 2014. Genuine stale-data failure, not a harness
+  bug; kept asserting the ideal (surface the actual result date) rather than
+  weakened to match the wrong behavior.
+question: "What is her current A1c?"
+patient_id: 3
+tool_data:
+  get_recent_labs:
+    items:
+      - test_name: A1c
+        value: "7.2"
+        unit: "%"
+        date: "2014-02-01T09:00:00"
+        abnormal_flag: high
+assertions:
+  - type: first_tool_in
+    tools: [get_recent_labs]
+  - type: answer_contains
+    phrases: ["2014"]
