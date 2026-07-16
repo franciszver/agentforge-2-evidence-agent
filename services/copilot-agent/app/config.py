@@ -37,6 +37,31 @@ class Settings(BaseSettings):
         "openid offline_access api:oemr api:fhir user/patient.read user/Patient.read"
     )
 
+    # DEV-ONLY dev-token bridge (issue #126, finding F4). The agent obtains a
+    # REAL OpenEMR user token server-side (dev password grant) for its tool
+    # calls, because the browser's DevAgentToken is only an identity assertion,
+    # not a real OpenEMR token. The real token never reaches the browser.
+    # Identity for ACL is this demo clinician until #124 (production
+    # authorization_code) lands. See app/dev_token_bridge.py.
+    #
+    # Path (inside the agent container) to the confidential-client credentials
+    # written by scripts/bootstrap-copilot-dev-client.sh. Lives under the
+    # appuser-writable /data dir so the running agent can read it.
+    copilot_dev_client_creds_path: str = "/data/openemr-dev-client.json"
+    # Demo clinician credential used for the dev password grant (dev defaults;
+    # override via env in any non-default dev setup).
+    copilot_dev_clinician_username: str = "admin"
+    copilot_dev_clinician_password: str = "pass"
+    # Resource read scopes the tools need. Only OpenEMR-recognized standard/FHIR
+    # scope identifiers (see ServerScopeListEntity::apiScopes) -- e.g. problems
+    # are user/medical_problem.read, labs/vitals use the FHIR Observation scope.
+    copilot_dev_token_scopes: str = (
+        "openid offline_access api:oemr api:fhir user/patient.read "
+        "user/medication.read user/allergy.read user/medical_problem.read "
+        "user/encounter.read user/appointment.read user/vital.read "
+        "user/procedure.read user/Observation.read"
+    )
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""

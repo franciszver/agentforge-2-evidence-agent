@@ -8,9 +8,15 @@
  * no browser-reachable URL -- see docker-compose.copilot.yml) so the browser
  * cannot call it directly. This controller streams the agent's
  * `POST /chat` SSE response through the OpenEMR origin instead: the browser
- * talks only to OpenEMR (no CORS, no new attack surface on the agent), and
- * this session+CSRF gate adds defense-in-depth on top of the agent's own
- * (still dev-stub) token check.
+ * talks only to OpenEMR (no CORS, no new attack surface on the agent).
+ *
+ * Load-bearing runtime controls (NOT redundant "defense-in-depth"): with the
+ * dev-token bridge the agent holds a powerful OpenEMR token and its own
+ * `/chat` validator is only a non-empty dev-stub, so this session+CSRF gate
+ * and the server-anchored `patient_id` below -- together with the planner's
+ * patient-context binding -- keep a request scoped to the authenticated user
+ * and the patient their panel was opened on. Agent-side DevAgentToken HMAC +
+ * pid validation is the tracked hardening (issue #127).
  *
  * The forwarded `patient_id` is never taken from client input -- read from
  * the session via PatientSessionUtil, same as the rest of this module (see

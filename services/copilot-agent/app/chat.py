@@ -41,6 +41,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.dev_token_bridge import DevTokenBridge
 from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
@@ -105,33 +106,35 @@ def get_token_validator() -> TokenValidator:
     return _default_token_validator
 
 
-def _bearer_token_or_empty(authorization: str | None) -> str:
-    """Extract the bearer token if present, else "" -- never raises.
+_dev_token_bridge: DevTokenBridge | None = None
 
-    Used only to build the production planner factory's closure. The 401
-    decision for a missing/invalid token is made by ``validator`` in
-    ``chat_endpoint`` (via the raising ``_extract_bearer_token``); that check
-    always runs, and always runs first, so a closure built here with an
-    empty token is never actually invoked on the reject path.
+
+def get_dev_token_bridge() -> DevTokenBridge:
+    """FastAPI dependency: the process-wide ``DevTokenBridge``. Override in tests.
+
+    Built lazily and reused so the real OpenEMR token is cached across
+    requests (the bridge holds the in-memory TTL cache).
     """
-    prefix = "Bearer "
-    if authorization and authorization.startswith(prefix):
-        return authorization[len(prefix) :]
-    return ""
+    global _dev_token_bridge
+    if _dev_token_bridge is None:
+        _dev_token_bridge = DevTokenBridge.from_settings(get_settings())
+    return _dev_token_bridge
 
 
 def _default_planner_factory(token: str) -> PlannerFactory:
-    """Build the production planner factory for one request's bearer token.
+    """Build the production planner factory bound to one real OpenEMR ``token``.
 
-    Wires real ``OllamaClient``/``OpenEmrClient`` instances from ``Settings``
-    (P0.5/P2.2's ``from_settings`` constructors) and passes the request's
-    bearer token straight through to ``Planner`` -- the same token flows
-    browser -> agent -> OpenEMR API tool calls, per the trust-boundary design
-    (plan §5). The token's real-OAuth-token replacement for the current
-    dev-only identity assertion is a documented, separate carry-forward
-    (see ``TokenBrokerController``); tool calls against OpenEMR made with an
-    invalid token fail per-call (caught as ``OpenEmrApiError`` in the planner
-    loop) without crashing the conversation.
+    ``token`` is a REAL OpenEMR token obtained server-side by the
+    ``DevTokenBridge`` (finding F4 / issue #126) -- NOT the browser's
+    ``DevAgentToken`` (an HMAC identity assertion), which never reaches tool
+    calls: this factory chain has no access to it at all. The browser token
+    still gates the request and carries the pid for patient-context binding
+    upstream in ``chat_endpoint``.
+
+    Identity for ACL is the bridge's configured demo clinician until #124
+    (production ``authorization_code``, per-user tokens) lands. A tool call
+    made with an expired/rejected token still fails per-call (caught as
+    ``OpenEmrApiError`` in the planner loop) without crashing the conversation.
     """
     settings = get_settings()
 
@@ -146,9 +149,17 @@ def _default_planner_factory(token: str) -> PlannerFactory:
     return factory
 
 
-def get_planner_factory(authorization: str | None = Header(default=None)) -> PlannerFactory:
-    """FastAPI dependency: builds a ``PlannerProtocol`` for a patient_id. Override in tests."""
-    return _default_planner_factory(_bearer_token_or_empty(authorization))
+def get_planner_factory(
+    dev_token_bridge: DevTokenBridge = Depends(get_dev_token_bridge),
+) -> PlannerFactory:
+    """FastAPI dependency: builds a ``PlannerProtocol`` for a patient_id. Override in tests.
+
+    The bridge's (potentially blocking, on a cache miss) token fetch happens
+    here, in a sync dependency FastAPI runs in its worker-thread pool -- not in
+    the ``async`` ``chat_endpoint`` body, so a token refresh never blocks the
+    event loop.
+    """
+    return _default_planner_factory(dev_token_bridge.get_token())
 
 
 UNKNOWN_USER = "unknown"
