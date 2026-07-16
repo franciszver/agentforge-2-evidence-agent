@@ -110,6 +110,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto
+from typing import TypedDict, assert_never
 
 from app.allergy_check import AllergyConflict
 from app.schemas.common import InteractionSeverity
@@ -176,6 +177,8 @@ def _is_blocking_severity(severity: InteractionSeverity) -> bool:
             return True
         case InteractionSeverity.MINOR | InteractionSeverity.MODERATE:
             return False
+        case _:
+            assert_never(severity)
 
 
 def _safety_state(
@@ -193,26 +196,44 @@ def _safety_state(
 def _decide(citation_state: _CitationState, safety_state: _SafetyState) -> Verdict:
     """The 9-cell decision table -- see module docstring for the table and
     its justification. Exhaustive `match`, no default: every
-    (citation_state, safety_state) pair is enumerated explicitly."""
-    match (citation_state, safety_state):
-        case (_CitationState.ALL_VERIFIED, _SafetyState.NO_VIOLATION):
-            return Verdict.VERIFIED
-        case (_CitationState.ALL_VERIFIED, _SafetyState.WARNING):
-            return Verdict.PARTIALLY_VERIFIED
-        case (_CitationState.ALL_VERIFIED, _SafetyState.BLOCKING):
-            return Verdict.BLOCKED
-        case (_CitationState.SOME_VERIFIED, _SafetyState.NO_VIOLATION):
-            return Verdict.PARTIALLY_VERIFIED
-        case (_CitationState.SOME_VERIFIED, _SafetyState.WARNING):
-            return Verdict.PARTIALLY_VERIFIED
-        case (_CitationState.SOME_VERIFIED, _SafetyState.BLOCKING):
-            return Verdict.BLOCKED
-        case (_CitationState.NONE_VERIFIED, _SafetyState.NO_VIOLATION):
-            return Verdict.BLOCKED
-        case (_CitationState.NONE_VERIFIED, _SafetyState.WARNING):
-            return Verdict.BLOCKED
-        case (_CitationState.NONE_VERIFIED, _SafetyState.BLOCKING):
-            return Verdict.BLOCKED
+    (citation_state, safety_state) pair is enumerated explicitly. Nested
+    (rather than a single match on the ``(citation_state, safety_state)``
+    tuple) so mypy can narrow each enum to `Never` on its own fall-through
+    and prove exhaustiveness via ``assert_never`` -- a tuple match can't be
+    narrowed to `Never` as a whole."""
+    match citation_state:
+        case _CitationState.ALL_VERIFIED:
+            match safety_state:
+                case _SafetyState.NO_VIOLATION:
+                    return Verdict.VERIFIED
+                case _SafetyState.WARNING:
+                    return Verdict.PARTIALLY_VERIFIED
+                case _SafetyState.BLOCKING:
+                    return Verdict.BLOCKED
+                case _:
+                    assert_never(safety_state)
+        case _CitationState.SOME_VERIFIED:
+            match safety_state:
+                case _SafetyState.NO_VIOLATION:
+                    return Verdict.PARTIALLY_VERIFIED
+                case _SafetyState.WARNING:
+                    return Verdict.PARTIALLY_VERIFIED
+                case _SafetyState.BLOCKING:
+                    return Verdict.BLOCKED
+                case _:
+                    assert_never(safety_state)
+        case _CitationState.NONE_VERIFIED:
+            match safety_state:
+                case _SafetyState.NO_VIOLATION:
+                    return Verdict.BLOCKED
+                case _SafetyState.WARNING:
+                    return Verdict.BLOCKED
+                case _SafetyState.BLOCKING:
+                    return Verdict.BLOCKED
+                case _:
+                    assert_never(safety_state)
+        case _:
+            assert_never(citation_state)
 
 
 def compute_verdict(
@@ -242,7 +263,19 @@ def compute_verdict(
     )
 
 
-def to_trace_record(result: VerdictResult) -> dict[str, object]:
+class VerdictTraceRecord(TypedDict):
+    """The JSON-serializable shape ``to_trace_record`` produces -- typed so
+    callers (``app.chat``) get precise per-key types instead of ``object``."""
+
+    verdict: str
+    total_claim_count: int
+    stripped_claim_count: int
+    allergy_conflict_count: int
+    blocking_interaction_count: int
+    warning_interaction_count: int
+
+
+def to_trace_record(result: VerdictResult) -> VerdictTraceRecord:
     """The JSON-serializable record a per-turn trace mechanism would persist
     for this verdict -- see module docstring, "Trace logging," for what is
     and is not wired here."""

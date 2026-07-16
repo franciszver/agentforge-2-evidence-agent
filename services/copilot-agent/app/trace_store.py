@@ -259,7 +259,10 @@ class TraceStore:
         try:
             cursor = connection.execute(sql, [row[c] for c in columns])
             connection.commit()
-            return int(cursor.lastrowid)
+            last_row_id = cursor.lastrowid
+            if last_row_id is None:
+                raise RuntimeError("INSERT into spans did not return a lastrowid")
+            return last_row_id
         finally:
             connection.close()
 

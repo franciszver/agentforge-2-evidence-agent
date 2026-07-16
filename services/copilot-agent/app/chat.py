@@ -77,7 +77,7 @@ from app.dev_token_bridge import DevTokenBridge
 from app.extraction import ClaimExtractor, ClaimExtractorLike, run_verification
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_client import OpenEmrClient
-from app.planner import Planner, PlannerResult
+from app.planner import Planner, PlannerResult, ToolCallTrace
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.trace_store import TraceStore
 from app.verdict import VerdictResult, to_trace_record
@@ -456,9 +456,9 @@ def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: lis
     trace store here.
     """
     for llm_call in llm_calls:
-        _record_span_best_effort(
-            "llm_span",
-            lambda llm_call=llm_call: trace_store.record_llm_span(
+
+        def _write_llm_span(llm_call: LlmCallStats = llm_call) -> int:
+            return trace_store.record_llm_span(
                 correlation_id=correlation_id,
                 start_ts=llm_call.start_ts,
                 end_ts=llm_call.end_ts,
@@ -466,8 +466,9 @@ def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: lis
                 model=llm_call.model,
                 tokens_in=llm_call.tokens_in,
                 tokens_out=llm_call.tokens_out,
-            ),
-        )
+            )
+
+        _record_span_best_effort("llm_span", _write_llm_span)
 
 
 def _stream_chat(
@@ -500,9 +501,9 @@ def _stream_chat(
                 ChatEvent.TOOL_CALL,
                 {"tool": call.tool.value, "args": call.args, "error": call.error},
             )
-            _record_span_best_effort(
-                "tool_span",
-                lambda call=call: trace_store.record_tool_span(
+
+            def _write_tool_span(call: ToolCallTrace = call) -> int:
+                return trace_store.record_tool_span(
                     correlation_id=correlation_id,
                     start_ts=call.start_ts,
                     end_ts=call.end_ts,
@@ -510,8 +511,9 @@ def _stream_chat(
                     tool_name=call.tool.value,
                     args=call.args,
                     error_category=call.error,
-                ),
-            )
+                )
+
+            _record_span_best_effort("tool_span", _write_tool_span)
 
         _emit_llm_spans(trace_store, correlation_id, result.llm_calls)
 
