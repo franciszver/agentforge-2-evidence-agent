@@ -119,17 +119,76 @@ False``; the per-citation ``CitationStatus`` is there for a richer notice
 than a bare "not found in record" if P3.3 wants one (e.g. distinguishing a
 wrong value from an unresolvable citation). This module does not touch
 ``Claim.text`` and inserts no notices -- that's entirely P3.3.
+
+**Recency notices (issue #153) -- an additive, separate concern from
+citation re-validation above, not a change to it.**
+
+The rule (also deterministic, no LLM): the record types the model may
+present as "current" -- labs, vitals, encounters -- carry a ``date`` field.
+``recency_notices`` scans every record actually returned in this turn's tool
+results (``PlannerResult.raw_results``) and, for any record whose ``date``
+is older than that tool's staleness threshold relative to an injected
+``now``, produces a notice string naming the record's date -- so stale data
+is never presented as current without its age.
+
+**Why this scans every returned record, not per-claim citations** (a
+deliberate deviation from the "for a VALID claim" framing this feature was
+scoped under). The natural design would key this off ``ClaimCheckResult``
+the same way citation checking does -- a notice only for records a VALID
+claim actually cites. That is NOT what is implemented below: claim
+extraction is itself an LLM call (``ClaimExtractor.extract_claims``), and
+both the eval harness (``runner.pipeline.needs_verification``) and this
+module's own citation-checking path only reach it for turns whose assertions
+need a verdict. A recency check gated on claim extraction would never fire
+for a turn whose recording has no extraction call -- exactly the #153
+stale-data eval cases (``stale-only-lab``, ``stale-only-vitals``), whose
+recordings only ever exercise ``Planner.run()``. Nor can the eval be made to
+always extract: offline replay (``runner.ollama_replay.ReplayOllamaClient``)
+pops exactly the calls recorded, in order; one unrecorded extra call raises
+``RecordingExhaustedError`` rather than degrading gracefully. Scanning every
+returned record instead needs nothing but ``Planner.run()``'s own output --
+no new LLM call, ever -- so it is exactly as available against an
+already-recorded run as against the live model. This is also a sound
+approximation of the planner's own contract: ``app.planner``'s system prompt
+already requires "Answer only from tool results already returned in this
+conversation", so every record returned this turn is, by construction, in
+scope for that turn's answer.
+
+**The one clock exception.** The sections above advertise "NO model call, NO
+clock, NO I/O" for citation re-validation -- that remains true for
+``check_source_ref``/``check_claim``/``check_claims``, untouched by this
+addition. ``recency_notices`` (and ``stale_record_date``) is the one
+deliberate exception: staleness is inherently relative to "now", so it takes
+``now: datetime`` as an explicit parameter and never reads the wall clock
+itself -- callers own sourcing it (a fixed constant for the eval harness so
+replay stays deterministic; the real wall clock read once at whatever
+production call site applies it). This keeps the function itself pure and
+hermetically testable with a fixed clock.
+
+**Thresholds** (``_RECENCY_THRESHOLDS``, one clinical-cadence rationale
+each): labs and vitals are expected to be re-measured at every visit, or at
+least annually for chronic-disease monitoring (e.g. A1c) -- a reading over a
+year old should not be presented as "current" -- so both get a 365-day
+threshold. Encounter/visit history has a longer natural cadence (e.g. annual
+physicals), so a visit record gets a longer, 730-day (2-year) bar for "not
+current". Tools with no natural "current value" reading (medications,
+allergies, problems, appointments, patient summary) have no threshold and
+are never flagged, regardless of date.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
 
 from app.quarantine import REDACTED_SENTINEL
 from app.schemas.common import SourceRef
+from app.schemas.planner import ToolName
 from app.schemas.verification import Claim
+from app.tools._common import parse_fhir_datetime
 
 
 class CitationStatus(StrEnum):
@@ -274,3 +333,109 @@ def check_claim(claim: Claim, index: CacheIndex) -> ClaimCheckResult:
 def check_claims(claims: list[Claim], index: CacheIndex) -> list[ClaimCheckResult]:
     """Re-validate a list of claims (the P3.3 entry point)."""
     return [check_claim(claim, index) for claim in claims]
+
+
+# ---------------------------------------------------------------------------
+# Recency notices (#153) -- see module docstring, "Recency notices", for the
+# full rationale (why every returned record, not per-claim citations; the
+# one deliberate clock exception; the threshold rationale).
+# ---------------------------------------------------------------------------
+
+LAB_RECENCY_THRESHOLD = timedelta(days=365)
+VITALS_RECENCY_THRESHOLD = timedelta(days=365)
+ENCOUNTER_RECENCY_THRESHOLD = timedelta(days=730)
+
+_RECENCY_THRESHOLDS: dict[ToolName, timedelta] = {
+    ToolName.GET_RECENT_LABS: LAB_RECENCY_THRESHOLD,
+    ToolName.GET_VITALS: VITALS_RECENCY_THRESHOLD,
+    ToolName.GET_ENCOUNTERS: ENCOUNTER_RECENCY_THRESHOLD,
+}
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC for comparison.
+
+    Real OpenEMR/FHIR record dates can be tz-AWARE (offset-qualified) while an
+    injected ``now`` may be naive (the eval's fixed clock) or aware
+    (production ``datetime.now(timezone.utc)``) -- and subtracting a naive from
+    an aware datetime raises ``TypeError``, which would crash a live ``/chat``
+    on the first stale record. A naive datetime is interpreted as UTC (the
+    zone OpenEMR stores in, and the zone production's ``now`` uses); an aware
+    one is converted to UTC. Used only to make the staleness COMPARISON
+    tz-safe -- never to alter a value returned to callers."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def stale_record_date(tool: ToolName, record: dict[str, Any], now: datetime) -> datetime | None:
+    """The record's ``date`` field if ``tool`` has a recency threshold, the
+    field parses (``app.tools._common.parse_fhir_datetime`` -- the same
+    ISO-datetime parser ``get_recent_labs``/``get_vitals``/``get_encounters``
+    already use for this exact field), and that date is older than the
+    threshold relative to ``now`` -- else ``None``. Pure and clock-injected:
+    ``now`` is always the caller's own value, never read internally (see
+    module docstring, "The one clock exception").
+
+    The staleness comparison is tz-safe: both ``now`` and the record date are
+    normalized to aware-UTC (``_as_aware_utc``, naive treated as UTC) before
+    subtraction, so a tz-aware record date and a naive ``now`` (or vice versa)
+    compare cleanly instead of raising ``TypeError``. The datetime RETURNED is
+    the raw parsed value (aware stays aware, naive stays naive) -- only the
+    comparison is normalized."""
+    threshold = _RECENCY_THRESHOLDS.get(tool)
+    if threshold is None:
+        return None
+    record_date = parse_fhir_datetime(record.get("date"))
+    if record_date is None:
+        return None
+    if _as_aware_utc(now) - _as_aware_utc(record_date) > threshold:
+        return record_date
+    return None
+
+
+# Clinician-facing labels for the reading tools that carry a recency
+# threshold -- surfaced in the notice instead of the raw snake_case enum
+# value (``get_recent_labs``). MUST stay in sync with ``_RECENCY_THRESHOLDS``:
+# ``_recency_notice_text`` is only ever reached for a tool that produced a
+# stale date, which by construction has a threshold, so every key here that
+# matters is present (a direct lookup, not ``.get``, keeps this total and the
+# absence of a runtime fallback keeps the branch fully covered).
+_TOOL_LABELS: dict[ToolName, str] = {
+    ToolName.GET_RECENT_LABS: "lab results",
+    ToolName.GET_VITALS: "vital signs",
+    ToolName.GET_ENCOUNTERS: "encounter records",
+}
+
+
+def _recency_notice_text(tool: ToolName, record_date: datetime) -> str:
+    # Wording deliberately does NOT assert the record is discussed in the
+    # answer ("...data above..."): in a multi-tool turn the planner may fetch
+    # a stale reading tool whose data the answer never mentions, so an
+    # in-answer-placement claim would be misleading. The date stays ISO
+    # (``YYYY-MM-DD``) so the year is present for the eval's
+    # ``answer_contains`` check, and the phrase "may not reflect the patient's
+    # current status" is kept verbatim (tests + eval semantics depend on it).
+    return (
+        f"Note: {_TOOL_LABELS[tool]} from {record_date.date().isoformat()} "
+        "may not reflect the patient's current status."
+    )
+
+
+def recency_notices(
+    tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None], now: datetime
+) -> list[str]:
+    """One notice per distinct stale (tool, date) actually returned this
+    turn -- see module docstring, "Why this scans every returned record",
+    for why this is keyed off every record ``Planner.run()`` returned rather
+    than only claim-cited ones. Deduplicated (in first-seen order) so
+    multiple records sharing one stale date (e.g. a systolic + diastolic
+    reading from the same stale vitals check) produce one notice, not one
+    per record."""
+    notices: list[str] = []
+    for tool, result in zip(tools, raw_results):
+        for record in _extract_records(result):
+            record_date = stale_record_date(tool, record, now)
+            if record_date is not None:
+                notices.append(_recency_notice_text(tool, record_date))
+    return list(dict.fromkeys(notices))

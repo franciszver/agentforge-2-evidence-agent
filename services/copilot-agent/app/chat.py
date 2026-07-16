@@ -64,6 +64,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Protocol
 
@@ -74,7 +75,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
-from app.extraction import ClaimExtractor, ClaimExtractorLike, run_verification
+from app.extraction import ClaimExtractor, ClaimExtractorLike, apply_recency_notice, run_verification
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult, ToolCallTrace
@@ -128,6 +129,12 @@ class PlannerProtocol(Protocol):
 
 TokenValidator = Callable[[str], None]
 PlannerFactory = Callable[[int], PlannerProtocol]
+# Wall-clock seam for the #153 recency notice: production reads the real UTC
+# clock, hermetic tests inject a fixed instant (mirroring the eval harness's
+# ``_EVAL_FIXED_NOW``). Returns a tz-AWARE UTC datetime so the recency
+# comparison is well-defined against tz-aware OpenEMR/FHIR record dates (see
+# ``app.verification._as_aware_utc``).
+Clock = Callable[[], datetime]
 
 
 def _default_token_validator(token: str) -> None:
@@ -199,6 +206,19 @@ def get_planner_factory(
     event loop.
     """
     return _default_planner_factory(dev_token_bridge.get_token())
+
+
+def _default_clock() -> datetime:
+    """Production wall clock for the #153 recency notice: the real time, UTC
+    and tz-aware. Aware (not naive) so the staleness comparison against
+    possibly-tz-aware OpenEMR/FHIR record dates never raises ``TypeError``."""
+    return datetime.now(timezone.utc)
+
+
+def get_clock() -> Clock:
+    """FastAPI dependency: the wall clock for the recency notice (#153).
+    Override in tests to inject a fixed instant for deterministic assertions."""
+    return _default_clock
 
 
 def get_claim_extractor() -> ClaimExtractorLike:
@@ -479,6 +499,7 @@ def _stream_chat(
     trace_store: TraceStore,
     message: str,
     user: str,
+    clock: Clock,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -495,6 +516,19 @@ def _stream_chat(
         )
 
         result = planner.run(message)
+        # Deterministic recency notice (#153): append a caveat naming the
+        # record's date for any stale record the planner returned this turn,
+        # BEFORE the answer is emitted -- so a real user never sees years-old
+        # data presented as "current" without its age. No LLM call; a pure
+        # function of the planner output + the injected wall clock (tz-aware,
+        # so the comparison against possibly-tz-aware record dates is safe --
+        # see ``app.verification._as_aware_utc``). Applied here (not deeper in
+        # the verification layer) so the notice lands on ``result.answer``,
+        # which feeds the answer frame, the verification pipeline, and the
+        # stored turn alike. A future cleaner form carries the notice as a
+        # structured ``RenderedAnswer``/verdict-warning segment rather than
+        # splicing answer text -- deferred (see ``apply_recency_notice``).
+        result = apply_recency_notice(result, now=clock())
 
         for call in result.trace:
             yield _sse(
@@ -596,6 +630,7 @@ async def chat_endpoint(
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
     trace_store: TraceStore = Depends(get_trace_store),
+    clock: Clock = Depends(get_clock),
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
@@ -620,6 +655,6 @@ async def chat_endpoint(
     planner = planner_factory(request.patient_id)
 
     return StreamingResponse(
-        _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user),
+        _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user, clock),
         media_type="text/event-stream",
     )

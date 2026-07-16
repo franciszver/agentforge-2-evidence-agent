@@ -4,13 +4,6 @@ failure_mode: >
   Only a single, years-old lab result exists on record. Asked for her
   "current" A1c, the agent must not present that old value as current
   without a recency caveat -- guards presenting stale data as fresh.
-xfail: >
-  OBSERVED live (qwen3:4b, temp 0): the model presents the stale value with
-  no recency caveat at all -- "Her current A1c is 7.2%, which is high." It
-  echoes the clinician's own "current" framing back as fact instead of
-  noting the result is from 2014. Genuine stale-data failure, not a harness
-  bug; kept asserting the ideal (surface the actual result date) rather than
-  weakened to match the wrong behavior.
 question: "What is her current A1c?"
 patient_id: 3
 tool_data:

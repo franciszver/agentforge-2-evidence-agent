@@ -15,8 +15,11 @@ Hermetic and fully deterministic: no fixtures touch a real Ollama/OpenEMR.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.quarantine import REDACTED_SENTINEL
 from app.schemas.common import SourceRef
+from app.schemas.planner import ToolName
 from app.schemas.verification import Claim
 from app.verification import (
     CacheIndex,
@@ -24,6 +27,8 @@ from app.verification import (
     check_claim,
     check_claims,
     check_source_ref,
+    recency_notices,
+    stale_record_date,
 )
 
 # ---------------------------------------------------------------------------
@@ -467,3 +472,192 @@ def test_check_claims_reports_mixed_pass_fail_for_multiple_claims():
     results = check_claims([passing, failing], index)
 
     assert [r.passed for r in results] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# stale_record_date / recency_notices (#153) -- deterministic recency check
+#
+# See the module docstring's "Recency notices" section for why this scans
+# every record actually returned this turn (``PlannerResult.raw_results``)
+# rather than only claim-cited ones: claim extraction is an LLM call the eval
+# harness only makes lazily, so a citation-gated check could never fire for a
+# turn whose recorded run has no extraction call -- exactly the stale_data
+# cases this feature targets.
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 7, 15)  # fixed clock for every hermetic test below
+
+
+def test_stale_record_date_fires_for_a_lab_result_older_than_threshold():
+    record = {"date": "2014-02-01T09:00:00"}
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result == datetime(2014, 2, 1, 9, 0, 0)
+
+
+def test_stale_record_date_fires_for_a_vitals_reading_older_than_threshold():
+    record = {"date": "2014-02-01T09:00:00"}
+
+    result = stale_record_date(ToolName.GET_VITALS, record, _NOW)
+
+    assert result == datetime(2014, 2, 1, 9, 0, 0)
+
+
+def test_stale_record_date_fires_for_an_encounter_older_than_threshold():
+    record = {"date": "2014-02-01T10:00:00"}
+
+    result = stale_record_date(ToolName.GET_ENCOUNTERS, record, _NOW)
+
+    assert result == datetime(2014, 2, 1, 10, 0, 0)
+
+
+def test_stale_record_date_does_not_fire_for_a_fresh_record():
+    record = {"date": "2026-06-01T09:00:00"}
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result is None
+
+
+def test_stale_record_date_does_not_fire_for_a_tool_with_no_threshold():
+    # get_medications has no recency threshold -- a stale-looking date on an
+    # unmonitored tool is not a claim this checker makes.
+    record = {"date": "2014-02-01T09:00:00"}
+
+    result = stale_record_date(ToolName.GET_MEDICATIONS, record, _NOW)
+
+    assert result is None
+
+
+def test_stale_record_date_does_not_fire_for_a_missing_date_field():
+    record = {"test_name": "A1c"}
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result is None
+
+
+def test_stale_record_date_does_not_fire_for_an_unparseable_date():
+    record = {"date": "not-a-date"}
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result is None
+
+
+def test_stale_record_date_does_not_fire_for_a_non_string_date():
+    record = {"date": 12345}
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result is None
+
+
+def test_recency_notices_includes_the_stale_records_date():
+    tools = [ToolName.GET_RECENT_LABS]
+    raw_results = [{"items": [{"test_name": "A1c", "value": "7.2", "date": "2014-02-01T09:00:00"}]}]
+
+    notices = recency_notices(tools, raw_results, _NOW)
+
+    assert len(notices) == 1
+    assert "2014-02-01" in notices[0]
+    # Clinician-facing label, not the raw snake_case enum value.
+    assert "lab results" in notices[0]
+    assert "get_recent_labs" not in notices[0]
+    assert "may not reflect the patient's current status" in notices[0]
+
+
+def test_recency_notices_empty_for_all_fresh_records():
+    tools = [ToolName.GET_VITALS]
+    raw_results = [{"items": [{"vital_type": "weight", "value": 150, "date": "2026-06-01T09:00:00"}]}]
+
+    assert recency_notices(tools, raw_results, _NOW) == []
+
+
+def test_recency_notices_empty_for_no_tool_calls():
+    assert recency_notices([], [], _NOW) == []
+
+
+def test_recency_notices_skips_a_call_with_no_output():
+    # A trace entry that produced no output (binding violation / API error)
+    # is ``None`` in raw_results -- zero records, zero notices.
+    assert recency_notices([ToolName.GET_RECENT_LABS], [None], _NOW) == []
+
+
+def test_recency_notices_dedupes_multiple_records_with_the_same_stale_date():
+    # stale-only-vitals.yaml's real shape: two vitals readings (systolic,
+    # diastolic) sharing one stale date -- one notice, not two.
+    tools = [ToolName.GET_VITALS]
+    raw_results = [
+        {
+            "items": [
+                {"vital_type": "blood_pressure_systolic", "value": 118, "date": "2014-02-01T09:00:00"},
+                {"vital_type": "blood_pressure_diastolic", "value": 76, "date": "2014-02-01T09:00:00"},
+            ]
+        }
+    ]
+
+    notices = recency_notices(tools, raw_results, _NOW)
+
+    assert len(notices) == 1
+
+
+# ---------------------------------------------------------------------------
+# Timezone safety (#153): real OpenEMR/FHIR record dates can be tz-AWARE
+# (offset-qualified), while an injected ``now`` may be naive (the eval's fixed
+# clock) or aware (production ``datetime.now(timezone.utc)``). Comparing a
+# naive against an aware datetime raises ``TypeError`` -- which would crash a
+# live ``/chat`` on the first stale record -- so the comparison must normalize
+# both sides. Naive datetimes are treated as UTC. The returned date is the raw
+# parsed value (aware stays aware, naive stays naive) -- only the staleness
+# COMPARISON is normalized.
+# ---------------------------------------------------------------------------
+
+
+def test_stale_record_date_tz_aware_record_against_naive_now():
+    record = {"date": "2014-02-01T09:00:00+00:00"}  # aware
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)  # _NOW naive
+
+    assert result == datetime(2014, 2, 1, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_stale_record_date_naive_record_against_tz_aware_now():
+    record = {"date": "2014-02-01T09:00:00"}  # naive
+    now_aware = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, now_aware)
+
+    assert result == datetime(2014, 2, 1, 9, 0, 0)
+
+
+def test_stale_record_date_fresh_tz_aware_record_against_naive_now_does_not_fire():
+    record = {"date": "2026-06-01T09:00:00+00:00"}  # aware, recent
+
+    result = stale_record_date(ToolName.GET_RECENT_LABS, record, _NOW)
+
+    assert result is None
+
+
+def test_recency_notices_tz_aware_records_do_not_raise():
+    tools = [ToolName.GET_VITALS]
+    raw_results = [
+        {"items": [{"vital_type": "weight", "value": 150, "date": "2014-02-01T09:00:00+00:00"}]}
+    ]
+
+    notices = recency_notices(tools, raw_results, _NOW)  # naive now, aware record
+
+    assert len(notices) == 1
+    assert "2014-02-01" in notices[0]
+
+
+def test_recency_notice_uses_clinician_friendly_labels_per_tool():
+    # The label mapping surfaces clinician-facing wording, never the raw
+    # snake_case enum, for every reading tool that carries a threshold.
+    stale = "2014-02-01T09:00:00"
+    vitals = recency_notices([ToolName.GET_VITALS], [{"items": [{"date": stale}]}], _NOW)
+    encounters = recency_notices([ToolName.GET_ENCOUNTERS], [{"items": [{"date": stale}]}], _NOW)
+
+    assert "vital signs" in vitals[0] and "get_vitals" not in vitals[0]
+    assert "encounter records" in encounters[0] and "get_encounters" not in encounters[0]

@@ -17,6 +17,18 @@ xfail: >
   A genuine tool-selection + stale-data compound failure, not a harness bug;
   kept asserting the ideal (consult encounters, caveat the 2014 date) rather
   than weakened to match the wrong behavior.
+
+  #153 update: the deterministic recency notice (app.verification
+  .recency_notices / app.extraction.apply_recency_notice) now exists and
+  DOES fire for a stale get_encounters record -- see stale-only-lab and
+  stale-only-vitals, which this same mechanism fixes/keeps passing. It scans
+  every tool result the planner actually returned this turn, so it would
+  surface "2014" here too the moment the planner consults get_encounters.
+  The residual failure is therefore ISOLATED to planner tool selection (the
+  model never calls get_encounters at all, so there is no get_encounters
+  result for the recency check to scan) -- a separate concern this
+  deterministic, offline-replay-only fix cannot reach, since it cannot
+  change which tool the model chooses to call.
 question: "What's going on with her right now -- what's her current status?"
 patient_id: 3
 tool_data:

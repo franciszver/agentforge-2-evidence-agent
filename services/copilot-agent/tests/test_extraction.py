@@ -28,6 +28,7 @@ from typing import Any
 
 from app.extraction import (
     ClaimExtractor,
+    apply_recency_notice,
     collect_allergies,
     collect_medications,
     mentioned_interactions,
@@ -399,3 +400,38 @@ def test_run_verification_normalizes_vitals_before_checking():
     # the vitals result before building the checker index.
     assert verdict_result.verdict is Verdict.VERIFIED
     assert isinstance(rendered.segments[0], RenderedClaim)
+
+
+# --------------------------------------------------------------------------
+# 6. apply_recency_notice (#153) -- deterministic, no LLM, no claims needed
+# --------------------------------------------------------------------------
+
+_NOW = datetime.datetime(2026, 7, 15)
+
+
+def test_apply_recency_notice_appends_the_stale_records_date_to_the_answer():
+    result = _planner_result(
+        "Her current A1c is 7.2%, which is high.",
+        ToolName.GET_RECENT_LABS,
+        {"items": [{"test_name": "A1c", "value": "7.2", "date": "2014-02-01T09:00:00"}]},
+    )
+
+    updated = apply_recency_notice(result, now=_NOW)
+
+    assert "2014-02-01" in updated.answer
+    assert updated.answer.startswith("Her current A1c is 7.2%, which is high.")
+    # Everything else about the result is untouched.
+    assert updated.trace == result.trace
+    assert updated.raw_results == result.raw_results
+
+
+def test_apply_recency_notice_does_not_fire_for_a_fresh_record():
+    result = _planner_result(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        {"items": [{"vital_type": "weight", "value": 220, "date": "2026-06-01T09:00:00"}]},
+    )
+
+    updated = apply_recency_notice(result, now=_NOW)
+
+    assert updated is result

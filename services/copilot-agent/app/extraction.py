@@ -14,6 +14,11 @@ into one ``VerdictResult`` + ``RenderedAnswer`` for the P3.8 SSE frame:
       -> app.verdict.compute_verdict   (+ allergy + interaction folds)
       -> (VerdictResult, RenderedAnswer)
 
+``apply_recency_notice`` (#153) is a separate, deterministic step over the
+same ``PlannerResult`` -- see its own docstring and ``app.verification``'s
+"Recency notices" section for why it is NOT wired into the pipeline above:
+it must not depend on the (LLM, lazily-invoked) extraction stage.
+
 **The security boundary (refined #130).** #130's invariant was originally
 stated as "raw values never reach ANY LLM prompt." That is imprecise, and
 this module resolves it. The REASON quarantine (#130 / P2.9) exists is to
@@ -68,6 +73,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.allergy_check import check_allergy_conflicts
@@ -86,7 +92,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.verdict import VerdictResult, compute_verdict
-from app.verification import CacheIndex, check_claims
+from app.verification import CacheIndex, check_claims, recency_notices
 
 _logger = logging.getLogger(__name__)
 
@@ -358,3 +364,53 @@ def run_verification(
         extra={"verdict": verdict_result.verdict.value, "claim_count": len(claim_results)},
     )
     return verdict_result, rendered
+
+
+def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResult:
+    """Append deterministic recency notices (``app.verification
+    .recency_notices``, #153) to ``result.answer`` for every stale record
+    returned this turn.
+
+    Deliberately independent of ``run_verification``/claim extraction -- see
+    ``app.verification``'s "Recency notices" section for why. Returns
+    ``result`` unchanged (same object) when nothing is stale, so callers can
+    call this unconditionally with no cost on the common case.
+
+    Reads ``result.raw_results`` -- the verifier-only, un-redacted channel
+    (``app.planner.PlannerResult``'s docstring: "must never be forwarded
+    into an LLM prompt or the SSE trace") -- but only ever extracts a
+    ``date``, never free text, and only to append it to the answer text
+    that already reaches the SSE ``answer`` frame. This is not a new
+    exposure: ``app.quarantine`` already passes ``datetime``/``date``/
+    ``time`` values through the CLIENT-FACING (quarantined) channel
+    verbatim -- only free-text *strings* are redacted -- so the model (and
+    the client) already sees this same date today via the quarantined tool
+    result (e.g. ``stale-only-vitals.yaml``'s recorded answer already names
+    "February 1, 2014" from that channel, unprompted).
+
+    Wired into BOTH the live ``app.chat._stream_chat`` SSE path (production
+    passes ``now = datetime.now(timezone.utc)`` via the ``get_clock`` seam,
+    applied right after ``planner.run`` and before the answer frame is
+    emitted) and the offline eval harness (``runner.pipeline.run_case``, with
+    a fixed ``now`` for deterministic replay) -- so a green eval reflects real
+    user-facing behavior, the only legitimate difference being the injected
+    clock. The tz-aware vs naive comparison hazard (real OpenEMR/FHIR record
+    dates may be offset-qualified while ``now`` may be naive or aware) is
+    handled in ``app.verification.stale_record_date`` via ``_as_aware_utc``,
+    so this is safe against a live stream regardless of the record date's
+    tzinfo.
+
+    FOLLOW-UP (deliberately deferred, not this PR): the notice is spliced onto
+    ``result.answer`` as text rather than carried as a structured
+    ``app.rendering.RenderedAnswer`` segment / ``VerdictResult`` warning
+    alongside the allergy/interaction checks. Text-append is chosen here
+    because that is what the eval's ``answer_contains`` assertion inspects and
+    what the SSE ``answer`` frame carries today; a structured representation
+    is the cleaner future form and would let the P3.8 UI render recency as its
+    own badge rather than inline prose."""
+    tools = [entry.tool for entry in result.trace]
+    notices = recency_notices(tools, result.raw_results, now)
+    if not notices:
+        return result
+    answer = result.answer + "\n\n" + "\n".join(notices)
+    return PlannerResult(answer=answer, trace=result.trace, raw_results=result.raw_results, llm_calls=result.llm_calls)
