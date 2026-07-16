@@ -1,6 +1,6 @@
 # Clinical Co-Pilot — Security Audit
 
-- **Status:** Finalized (Phase 5, P5.5). This document reports the security posture of the OpenEMR base the Clinical Co-Pilot is built on, plus how the Co-Pilot design responds to the gaps it found. The findings were established in the Phase 1 baseline audit and cross-checked against the in-source acknowledgements (in-code `@TODO` markers and tracked upstream issue references) noted per finding.
+- **Status:** Finalized (Phase 5, P5.5). This document reports the security posture of the OpenEMR base the Clinical Co-Pilot is built on, plus how the Co-Pilot design responds to the gaps it found. The findings were established in the Phase 1 baseline audit and cross-checked against the in-source acknowledgements (in-code `@TODO` markers and tracked upstream issue references) noted per finding. Phase 6 live end-to-end verification of the #124 per-user OAuth flow later appended two Co-Pilot *integration* findings (F4, F5) in a dedicated section below; the base-platform audit itself is unchanged.
 - **Target:** OpenEMR 8.2-dev base (the version vendored into this repo), examined on a running local dev stack.
 - **Method:** candidate findings from static code analysis, each verified against source **and** a running instance before it appears here. Findings that failed verification were dropped.
 
@@ -104,7 +104,7 @@ Findings are grouped by severity. Each carries a code-path citation so any claim
 
 **Impact.** A valid provider token with `user/<Resource>.read` scope can read *any* patient's records; access is gated by role and resource type, not by a provider-to-patient relationship. This is standard OpenEMR behavior — its trust model treats an authenticated provider as authorized to the whole clinic — so it is a platform baseline, not a bug to patch in OpenEMR core. The consequence for this project is concrete: **the base platform provides no central patient-context binding for the Co-Pilot to rely on.**
 
-**Co-Pilot response.** This finding directly substantiates the Co-Pilot's patient-context-binding control (implementation plan §4.2). Because role ACLs alone are not patient-granular, the agent enforces minimum-necessary scope itself: every conversation is anchored to the `pid` the panel was opened on, and the tool layer refuses any request for a different patient id. This is defense-in-depth narrowing layered on top of OpenEMR's role enforcement, not a second RBAC — role enforcement stays in OpenEMR. The documented production path (ARCHITECTURE.md) is SMART patient-context tokens so the token itself carries the patient boundary, replacing reliance on the always-`true` core stub with a real boundary at the Co-Pilot layer.
+**Co-Pilot response.** This finding directly substantiates the Co-Pilot's patient-context-binding control (implementation plan §4.2). Because role ACLs alone are not patient-granular, the agent enforces minimum-necessary scope itself: every conversation is anchored to the `pid` the panel was opened on, and the tool layer refuses any request for a different patient id. This is defense-in-depth narrowing layered on top of OpenEMR's role enforcement, not a second RBAC — role enforcement stays in OpenEMR. The documented production path (ARCHITECTURE.md) is SMART patient-context tokens so the token itself carries the patient boundary, replacing reliance on the always-`true` core stub with a real boundary at the Co-Pilot layer. As of #124 Phase 6 that per-user path — `authorization_code` + PKCE + SMART launch + introspection — is built and **proven live end-to-end** (restricted role 403 vs admin 200 on the same endpoint), behind `copilot_per_user_token_enabled` (default OFF); see Co-Pilot integration finding **F4** below.
 
 ---
 
@@ -140,6 +140,40 @@ Two candidates from the initial list did not survive verification and are **not*
 
 - **Rate limiting / brute-force lockout on login — NOT a finding.** The premise (unlimited unthrottled guessing) is contradicted by the code. `src/Common/Auth/AuthUtils.php` implements a two-tier failed-login counter — per-username and per-IP — wired into both interactive login (`library/auth.inc.php:62`) and the OAuth password grant (`UserRepository.php:92`), and it ships enabled with non-zero defaults (`password_max_failed_logins` = 20, `ip_max_failed_logins` = 100 in `globals.inc.php`). Genuine residual nuances exist (counter-based rather than backoff-based; a distributed-IP attacker dilutes the per-IP tier; a targeted account-lockout DoS is possible), but the finding as originally worded is incorrect and was dropped.
 - **ACL cache staleness on role change — NOT reproduced.** The phpGACL `Cache_Lite` result cache is disabled by default (`src/Gacl/Gacl.php:68`, `_caching = FALSE`; `AclMain` constructs `Gacl` with no options), so its read/write helpers are hard no-ops and every `acl_query()` hits a live DB read. The other caching layer holds only the DB connection object for one PHP request, not query results, and is torn down at end of request. Under shipped defaults, a permission change is reflected on the very next request. The stale-permission risk is latent only under a non-default `caching => true` and is not an exploitable default-config issue.
+
+---
+
+## Co-Pilot integration findings (Phase 6 live verification)
+
+The findings above audit the OpenEMR **base**. The two below are the Co-Pilot project's **own** findings — the `F<n>` series tracked in `prd/DECISIONS.md`, distinct from the base `F-<n>` series above (note the hyphen: base `F-5` is the session cookie; project `F5` is the live-E2E defect here). Both were established by the #124 Phase 6 **live end-to-end** verification against the running stack, and both bear directly on this audit's central authorization claim.
+
+### F4 — Per-user ACL enforcement: PROVEN LIVE, flag-gated, default OFF
+
+- **Status:** Capability built and proven live end-to-end; **open in practice by owner decision** (the default flag is OFF).
+- **Relation to the base audit:** the agent-layer counterpart to base finding **F-10** (role-level, not patient-granular, central ACL). F-10 is a property of the OpenEMR base; F4 is whether *this agent* exercises OpenEMR's per-user ACL end-to-end at all.
+
+**What it was.** Through Phase 2b the agent reached OpenEMR via a dev token bridge: the agent itself held one shared demo-clinician password-grant token and used it for every user's tool calls, so OpenEMR's ACL always saw the same identity. Per-user ACL was therefore *simulated* by the agent's patient-context binding, not *exercised* by OpenEMR. A live 5-user × 9-endpoint matrix (P2.18) confirmed the dev password grant never even reaches the role-ACL tier: OpenEMR strips the `api:oemr` / `api:fhir` scopes from a ROPC token for every role, so all clinical endpoints return a uniform 401 at the OAuth **scope wall** before any role ACL is consulted — no reachable case where a scoped role gets 403 while admin gets 200.
+
+**What changed (built + proven live).** The #124 `authorization_code` + PKCE + SMART-launch flow is now implemented and verified end-to-end against the running stack (2026-07-16): a real OpenEMR consent issues a *per-user* token, stored **encrypted** (CryptoGen AES-256-GCM, `007`-prefixed ciphertext, plaintext absent at rest, decrypts back); the agent **introspects** that token (`active:true`, RFC 7662, client_secret_post) and forwards it — not a shared credential — on every tool call. With the per-user token now carrying the api scopes, OpenEMR's own `gacl` ACL is finally the enforcement point, and the role-differentiated result the whole trust boundary rests on is real: on the identical `GET /apis/default/api/patient/1/medication`, a restricted role (`accountant`) is denied **HTTP 403** while `admin` gets **HTTP 200**. This supersedes **#127** — the agent validates a real OpenEMR token via introspection rather than the dev HMAC `DevAgentToken`.
+
+**Why it is still open in practice.** The capability is gated behind `copilot_per_user_token_enabled`, which **defaults OFF** — a deliberate owner decision to keep the demo's out-of-box UX free of a per-user consent step (the dev bridge stays the default, gated-off local fallback). So the per-user ACL is *genuinely enforceable and proven live*, closeable by a documented **one-line flag flip** the owner controls — not closed today, and not because the capability is missing, but because the default is off by choice. Framed precisely: **proven live, flag-gated, default off** — not "F4 closed."
+
+**To close.** Flip `copilot_per_user_token_enabled` on (and complete the documented prod-client-creds → module-globals wiring), accepting the per-user consent step in the demo UX. Nothing else in the flow needs to change; the path is built and exercised.
+
+### F5 — Live-E2E-caught external-contract bugs in the server-side OAuth exchange (RESOLVED, #190)
+
+- **Status:** Resolved (#190).
+- **Class:** External-contract mismatch invisible to isolated / mocked tests.
+
+**What it was.** The first time the browser-consent → server-side token-exchange chain ran together live (Phase 6), three external-contract bugs surfaced that every isolated and mocked test had passed straight through:
+
+1. **Server-side token-exchange URL.** The module's `authorization_code` → token exchange POSTed to the ServerConfig-derived **browser** origin (`localhost:9300`), which is unreachable from inside the openemr container (apache listens on 443 internally; 9300 is only a host port map) — the exchange failed, no token was stored, the callback 400'd. The `redirect_uri` is legitimately pinned to the browser-facing `localhost:9300` (it must match the registered value), so this was not fixable by dev config alone. The **agent** side already solved this exact internal-vs-browser split (`https://openemr` for server-to-server vs a browser-facing `redirect_uri`); the module did not.
+2. **Authorize-leg `aud` / audience validation** on the browser authorize request.
+3. **Introspection auth method.** The agent must present its client credentials via **client_secret_post** (form body), not HTTP Basic — OpenEMR's introspection endpoint ignores Basic creds there and returns a spurious `active:false`.
+
+All three were fixed in **#190** (internal token URL decoupled from the browser-facing authorize / redirect / `aud`; introspection switched to client_secret_post), and the full flow then re-ran green live.
+
+**The lesson.** The isolated tests and the pre-merge gates mocked OpenEMR's OAuth and introspection endpoints, so they validated the agent and module against a *model* of OpenEMR's contract — and passed while the real external contract was violated three ways. Live end-to-end verification caught what no hermetic test could, precisely because the bugs lived at the boundary the mocks stood in for. This is the same pattern as project findings **F1** (container-boot `httpx` gap) and **F2** (demo-import schema downgrade): a live/integration step catching what unit tests structurally cannot. The standing mitigation is that the authorization story now carries a **live-integration regression seat** (`evals/authorization/test_acl_scoping_e2e.py`, kept out of the CI hermetic gate) that asserts the real per-role 403-vs-200 result against the running stack.
 
 ---
 

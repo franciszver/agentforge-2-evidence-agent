@@ -286,6 +286,88 @@ def test_introspector_missing_creds_returns_invalid_without_logging_token(tmp_pa
     assert _TOK not in caplog.text
 
 
+def test_introspector_caches_active_result_with_no_exp(tmp_path):
+    # A positive result carrying NO exp is still cached (deadline stays at the
+    # full now + ttl cap -- there is no token exp to clamp it sooner).
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True})  # no exp claim
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+
+    first = introspector.introspect(_TOK)
+    second = introspector.introspect(_TOK)
+
+    assert first.active and second.active
+    assert first.exp is None
+    assert len(calls) == 1  # second served from cache despite the absent exp
+
+
+def test_introspector_non_dict_creds_returns_invalid(tmp_path):
+    # A creds file that parses but is not a JSON object (e.g. a bare array) is
+    # rejected fail-closed, never reaching the network.
+    creds = tmp_path / "prod-creds.json"
+    creds.write_text('["not", "an", "object"]', encoding="utf-8")
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - never reached
+        calls.append(1)
+        return httpx.Response(200, json={"active": True})
+
+    introspector = TokenIntrospector(
+        base_url="https://openemr",
+        introspect_path="/oauth2/default/introspect",
+        creds_path=str(creds),
+        client_factory=lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+        cache_ttl_seconds=60.0,
+    )
+
+    result = introspector.introspect(_TOK)
+
+    assert not result.active
+    assert len(calls) == 0
+
+
+def test_introspector_blank_creds_fields_returns_invalid(tmp_path):
+    # A well-formed object whose client_id/client_secret are blank is rejected
+    # fail-closed -- blank creds cannot authenticate the introspection call.
+    creds = tmp_path / "prod-creds.json"
+    creds.write_text('{"client_id": "", "client_secret": ""}', encoding="utf-8")
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - never reached
+        calls.append(1)
+        return httpx.Response(200, json={"active": True})
+
+    introspector = TokenIntrospector(
+        base_url="https://openemr",
+        introspect_path="/oauth2/default/introspect",
+        creds_path=str(creds),
+        client_factory=lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+        cache_ttl_seconds=60.0,
+    )
+
+    result = introspector.introspect(_TOK)
+
+    assert not result.active
+    assert len(calls) == 0
+
+
+def test_from_settings_builds_a_real_client_factory():
+    # from_settings wires a production client_factory from Settings; invoking it
+    # yields a live httpx.Client configured from the settings (no network here).
+    from app.config import Settings
+
+    introspector = TokenIntrospector.from_settings(Settings())
+
+    client = introspector._client_factory()
+    try:
+        assert isinstance(client, httpx.Client)
+    finally:
+        client.close()
+
+
 # --- introspection-based validator ----------------------------------------
 
 

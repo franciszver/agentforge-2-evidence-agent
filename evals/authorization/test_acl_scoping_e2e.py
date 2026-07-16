@@ -1,8 +1,8 @@
 """ACL / authorization scoping proven end-to-end against the LIVE stack (P2.18).
 
-Two capstone integration cases that prove the authorization story built across
-P2.13-P2.17 holds against the real OpenEMR + real qwen3:4b, not just in
-hermetic mocks:
+Three capstone integration cases that prove the authorization story built
+across P2.13-P2.17 -- and completed by the #124 ``authorization_code`` flow --
+holds against the real OpenEMR + real qwen3:4b, not just in hermetic mocks:
 
   (a) A real, per-user OpenEMR bearer token for a genuinely SCOPED demo user
       (``receptionist`` -- OpenEMR "Front Office" role) physically cannot pull
@@ -10,30 +10,45 @@ hermetic mocks:
       ``OpenEmrApiError`` carrying ZERO PHI -- the whole point of token
       pass-through: the agent can only reach what its user's token permits.
 
-      Honest scope of what this proves (verified empirically against the live
-      stack, 2026-07-15): the enforcement layer REACHABLE in this phase is the
-      OAuth scope wall, not per-user gacl ACL. The dev-only password grant
-      (``app.openemr_auth.fetch_token_password_grant``) only ever grants
-      demographics scope (``user/patient.read``) -- OpenEMR strips ``api:oemr``
-      / ``api:fhir`` / every non-Patient resource scope from a ROPC token for
-      ALL roles, so every clinical category returns 401 uniformly before role
-      ACL is consulted. The token still enforces the real invariant under test
-      here: a valid per-user token reaches ONLY the demographics it is scoped
-      for and is denied clinical PHI, with zero leak on denial. The
-      role-DIFFERENTIATED gacl-ACL 403 (Front Office 403 where admin gets 200)
-      needs the OAuth2 authorization_code token, which plan §4.2 defers to
-      before Phase 5; this test is the regression seat it will slot into then.
+      What layer this case exercises (verified empirically against the live
+      stack, 2026-07-15): the OAuth SCOPE wall, not per-user gacl ACL. The
+      dev-only password grant (``app.openemr_auth.fetch_token_password_grant``)
+      only ever grants demographics scope (``user/patient.read``) -- OpenEMR
+      strips ``api:oemr`` / ``api:fhir`` / every non-Patient resource scope
+      from a ROPC token for ALL roles, so every clinical category returns 401
+      uniformly at the scope wall, before role ACL is consulted. This case
+      proves that wall: a valid per-user token reaches ONLY the demographics it
+      is scoped for and is denied clinical PHI, with zero leak on denial. The
+      role-DIFFERENTIATED gacl-ACL decision (403 for a role lacking the ACL,
+      200 for admin) needs the ``authorization_code`` token that carries the
+      api scopes -- proven separately in case (c).
 
   (b) A physician whose token could open any chart is BOUND to one patient and
       asks about a DIFFERENT one. The P2.16 binding refuses (no cross-patient
       fetch, zero cross-patient PHI), and the P2.17 audit trail records the
       attempt (who asked, on which bound chart, what they asked).
 
+  (c) Genuine per-ROLE differentiation on the SAME clinical endpoint, proven
+      live end-to-end via the #124 ``authorization_code`` + PKCE + SMART-launch
+      + introspection flow: a restricted role (``accountant``) is denied with a
+      hard HTTP 403 while ``admin`` gets HTTP 200 on the identical
+      ``GET /apis/default/api/patient/1/medication`` request. This is the real
+      per-user gacl-ACL enforcement (not the coarse OAuth scope wall of case
+      (a)); it closes AUDIT.md F-10 in principle. Because the prod
+      authorization_code client requires interactive browser CONSENT and the
+      password grant was dropped from it, the two role tokens cannot be minted
+      non-interactively -- they are supplied via env
+      (``COPILOT_ACL_RESTRICTED_TOKEN`` / ``COPILOT_ACL_ADMIN_TOKEN``) after a
+      human runs the consent flow, and the case skips cleanly when absent.
+      Live-proven 2026-07-16: accountant -> 403, admin -> 200.
+
 Skipped by default (``pytest -m "not integration"``). Case (a) needs the live
 OpenEMR stack + the dev OAuth client creds file (produced by
 ``scripts/verify-oauth-dev.sh``) and skips with a clear message when either is
 absent; case (b) needs a reachable Ollama at ``OLLAMA_BASE_URL`` (it exercises
-the real model, so an unreachable Ollama surfaces as a hard error, not a skip).
+the real model, so an unreachable Ollama surfaces as a hard error, not a skip);
+case (c) needs the two env-supplied per-role authorization_code tokens and
+skips when either is absent.
 """
 
 from __future__ import annotations
@@ -137,11 +152,12 @@ def test_scoped_user_token_cannot_reach_clinical_phi_and_leaks_none() -> None:
 
     error = excinfo.value
 
-    # The reachable enforcement layer this phase is the OAuth scope wall (401);
-    # a per-user gacl-ACL 403 becomes reachable with the Phase-5
-    # authorization_code token (see module docstring). Accept either denial
-    # category so this test survives that upgrade unchanged -- both are the
-    # tool layer refusing out-of-scope clinical PHI.
+    # This case exercises the OAuth SCOPE wall: the password-grant token carries
+    # demographics scope only, so clinical PHI is denied at 401 before role ACL
+    # is consulted. The role-DIFFERENTIATED gacl-ACL 403 (a role lacking the ACL
+    # where admin gets 200) is proven separately in case (c) with the
+    # authorization_code token that carries the api scopes. Accept either denial
+    # category -- both are the tool layer refusing out-of-scope clinical PHI.
     assert error.category in (ErrorCategory.UNAUTHORIZED, ErrorCategory.FORBIDDEN)
 
     # ZERO PHI on refusal: the raised message is the fixed, log-safe label only
@@ -259,3 +275,80 @@ def test_physician_cross_patient_ask_is_refused_and_audited() -> None:
     print(f"\n[p2.18 case b] final answer: {result.answer}")
     print("[p2.18 case b] tools/outcomes: " + ", ".join(f"{c.tool.value}:{c.error or 'ok'}" for c in result.trace))
     print(f"[p2.18 case b] binding-violation refusals (model-dependent): {len(violations)}")
+
+
+# --------------------------------------------------------------------------- #
+# Case (c): genuine per-ROLE ACL differentiation via authorization_code tokens.
+# --------------------------------------------------------------------------- #
+# Real per-user authorization_code access tokens captured from the LIVE browser
+# consent flow. The prod authorization_code client dropped the password grant
+# and requires interactive consent, so these cannot be minted non-interactively
+# in a plain test -- a human runs the consent flow and exports them. The case
+# skips cleanly when either is absent (a live-integration prerequisite, not an
+# assertion). See module docstring.
+_RESTRICTED_TOKEN_ENV = "COPILOT_ACL_RESTRICTED_TOKEN"
+_ADMIN_TOKEN_ENV = "COPILOT_ACL_ADMIN_TOKEN"
+
+# The one clinical endpoint the live per-role proof was run against: the
+# restricted role is denied here (403) while admin is allowed (200).
+_MEDICATION_PATH = f"/apis/default/api/patient/{_DEMO_PATIENT_ID}/medication"
+
+
+def test_per_role_authorization_code_acl_is_role_differentiated() -> None:
+    """Two REAL per-user ``authorization_code`` tokens, differing only in the
+    user's ROLE, produce a role-DIFFERENTIATED result on the identical clinical
+    request: a restricted role (``accountant``) is FORBIDDEN (HTTP 403) while
+    ``admin`` is allowed (HTTP 200) on ``GET .../patient/1/medication``.
+
+    This is the genuine per-user gacl-ACL enforcement -- distinct from case
+    (a)'s OAuth scope wall -- and closes AUDIT.md F-10 in principle. The admin
+    200 is the CONTROL: it proves the accountant 403 is a role decision on a
+    valid endpoint/patient, not a broken request or an expired token.
+
+    Live-proven end-to-end 2026-07-16 against the running dev stack via the
+    #124 authorization_code + PKCE + SMART-launch + introspection flow:
+    accountant -> HTTP 403, admin -> HTTP 200 on this exact endpoint. Because
+    minting these tokens needs interactive browser consent (the prod client has
+    no password grant), the tokens are supplied via env and the test skips when
+    they are absent -- it is a live-integration regression seat, never part of
+    the CI hermetic gate (the whole module is ``pytest.mark.integration``).
+    """
+    restricted_token = os.environ.get(_RESTRICTED_TOKEN_ENV)
+    admin_token = os.environ.get(_ADMIN_TOKEN_ENV)
+    if not restricted_token or not admin_token:
+        pytest.skip(
+            f"per-role authorization_code tokens not supplied "
+            f"({_RESTRICTED_TOKEN_ENV} / {_ADMIN_TOKEN_ENV}); run the live "
+            "browser-consent flow for a restricted role and admin, then export "
+            "both to assert the role-differentiated 403-vs-200 result"
+        )
+
+    url = f"{_OPENEMR_BASE_URL}{_MEDICATION_PATH}"
+    # verify=False: the dev stack uses a self-signed certificate (see app.config).
+    with httpx.Client(verify=False, timeout=20.0) as http_client:
+        restricted_resp = http_client.get(
+            url, headers={"Authorization": f"Bearer {restricted_token}"}
+        )
+        admin_resp = http_client.get(
+            url, headers={"Authorization": f"Bearer {admin_token}"}
+        )
+
+    # Restricted role: a HARD 403 -- the token is valid and carries the api
+    # scope (so it clears the scope wall of case (a)), but the ROLE lacks the
+    # gacl ACL, so OpenEMR denies at the authorization tier.
+    assert restricted_resp.status_code == 403, (
+        f"restricted role expected 403, got {restricted_resp.status_code}"
+    )
+    # Admin CONTROL on the SAME endpoint: 200 proves the 403 above is a
+    # role-differentiated decision, not a broken request or dead token.
+    assert admin_resp.status_code == 200, (
+        f"admin control expected 200, got {admin_resp.status_code}"
+    )
+
+    # ZERO PHI on the restricted denial: an ACL refusal must not echo record
+    # content back to a caller the role forbids.
+    denial_body = restricted_resp.text
+    for phi_fragment in ("Lisinopril", "Norvasc", "Phil", "Belford"):
+        assert phi_fragment not in denial_body, (
+            f"PHI leaked into the 403 denial body: {phi_fragment!r}"
+        )

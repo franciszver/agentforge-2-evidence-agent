@@ -287,7 +287,7 @@ built and independently reviewed:
 flowchart LR
     B1["1 — Browser ↔ OpenEMR<br/>session + CSRF"]
     B2["2 — Panel/PWA ↔ Agent<br/>DevAgentToken (dev-only identity assertion)"]
-    B3["3 — Agent ↔ OpenEMR API<br/>dev token bridge (agent-side); per-user ACL not yet exercised"]
+    B3["3 — Agent ↔ OpenEMR API<br/>dev token bridge (default); per-user OAuth flow built + proven-live, flag-gated OFF"]
     B4["4 — Agent ↔ Ollama<br/>internal network only"]
     B5["5 — Everything ↔ Internet<br/>NO egress; Tailscale-only remote access"]
 ```
@@ -301,9 +301,12 @@ flowchart LR
    by OpenEMR after session + CSRF authentication, carrying
    `{sub, username, pid, iat, exp}`. It is **not** an OpenEMR OAuth token —
    it identifies the user and binds the conversation's patient id, but it
-   cannot itself authorize an OpenEMR API call. The agent's `TokenValidator`
-   (`chat.py`) is currently a stub that only checks the header is non-empty;
-   real token introspection is a stated TODO, not yet built.
+   cannot itself authorize an OpenEMR API call. In the **default** dev
+   configuration the agent's `TokenValidator` (`chat.py`) is a stub that only
+   checks the header is non-empty; the production validator — RFC 7662
+   introspection of a real OpenEMR token against OpenEMR's own token state — is
+   now **built and proven live** (#124) and is selected when the per-user flow
+   (boundary 3) is enabled.
 3. **Agent ↔ OpenEMR API** — this is the boundary that most diverges from
    the original design, and the divergence is load-bearing to disclose. The
    plan's target was *user-token pass-through*: every tool call carries the
@@ -317,8 +320,16 @@ flowchart LR
    browser, and patient-context binding (below) still restricts which
    patient any given conversation's tool calls can target — but the
    *identity* OpenEMR's ACL sees for every conversation is the same demo
-   clinician, not the actual logged-in user. **Per-user ACL differentiation
-   is therefore not exercised end-to-end today** — see Path to Production.
+   clinician, not the actual logged-in user — **in the default configuration**.
+   As of #124 (Phase 6) the plan's original target is also built: an
+   `authorization_code` + PKCE + SMART-launch flow issues a real *per-user*
+   token, stored encrypted, that the agent introspects and forwards, making
+   OpenEMR's own ACL the enforcement point. It is **proven live end-to-end**
+   (restricted `accountant` role → 403 vs `admin` → 200 on the same endpoint)
+   but sits behind `copilot_per_user_token_enabled`, which **defaults OFF** so
+   the demo ships without a per-user consent step. Per-user ACL differentiation
+   is therefore *demonstrated and one flag-flip away*, not merely reachable —
+   see Path to Production.
 4. **Agent ↔ Ollama** — inference is reachable only from inside the Docker
    network; nothing outside the agent container can reach the model.
 5. **Everything ↔ Internet** — the agent and Ollama containers have no
@@ -363,34 +374,42 @@ trace store per turn); demo data only.
 
 Stated plainly, in order of what would need to change:
 
-1. **Real per-user auth at the agent boundary.** The dev token bridge
-   (boundary 3, above) is the single biggest gap between what's demonstrated
-   and a real deployment. The production path is the OAuth2
-   `authorization_code` grant: first-open consent, OpenEMR issues a
-   *per-user* token, the agent forwards that token — not a shared demo
-   credential — on every tool call, and OpenEMR's own ACL then differentiates
-   what a nurse's token can fetch from what a physician's can. This is
-   tracked (issue #124), scoped, and deliberately *not* built in this phase —
-   the plan always sequenced it "before Phase 5," and an interim decision
-   pulled the dev bridge forward instead so a genuine end-to-end clinical
-   answer could be demonstrated through the real UI sooner. A live 5-user ×
-   9-endpoint matrix (P2.18) confirmed the underlying finding this defers:
-   under the *current* dev password-grant flow, every role hits the same
-   OAuth scope wall before OpenEMR's per-user `gacl` ACL is ever consulted —
-   the ACL differentiation this architecture leans on is real in OpenEMR,
-   but not yet reachable by this agent.
-2. **Real token introspection at `/chat`.** `TokenValidator` is a stub. The
-   production version validates the `DevAgentToken` (or its `authorization_code`-flow
-   successor) against OpenEMR's token/session state rather than
-   checking for a non-empty string.
+1. **Real per-user auth at the agent boundary — built, proven live, default
+   OFF.** Through Phase 2b the dev token bridge (boundary 3, above) was the
+   single biggest gap between what's demonstrated and a real deployment. The
+   production path — the OAuth2 `authorization_code` grant (with PKCE + SMART
+   launch context): first-open consent, OpenEMR issues a *per-user* token, the
+   agent forwards that token — not a shared demo credential — on every tool
+   call, and OpenEMR's own ACL then differentiates what a restricted role's
+   token can fetch from what an admin's can — is now **built and verified live
+   end-to-end** (issue #124, Phase 6). A live 5-user × 9-endpoint matrix
+   (P2.18) had confirmed the gap it closes: under the dev password-grant flow
+   every role hits the same OAuth scope wall before OpenEMR's per-user `gacl`
+   ACL is ever consulted. The authorization_code flow reaches that ACL —
+   proven on the identical `GET .../patient/1/medication`, a restricted
+   `accountant` role gets **403** while `admin` gets **200**. It is gated
+   behind `copilot_per_user_token_enabled`, which **defaults OFF**: the demo
+   ships with the dev bridge (no per-user consent step) as a deliberate owner
+   UX choice, and enabling the real per-user path is a documented, **one-line
+   flag flip** the owner controls. Framed precisely: proven live, flag-gated,
+   default off — not shipped-on-by-default.
+2. **Real token introspection at `/chat` — built.** In the default dev
+   configuration `TokenValidator` is a stub. The production validator — RFC
+   7662 introspection of the forwarded `authorization_code`-flow token against
+   OpenEMR's own token state (client_secret_post, fail-closed, short-TTL
+   hash-keyed cache) — is now built and exercised live; it is selected when the
+   per-user flow above is enabled, and it supersedes the earlier
+   `DevAgentToken`-validation plan (#127).
 3. **Patient-context binding upgrade.** The current binding (every
    conversation anchored to the `pid` the panel was opened on; the tool
    layer refuses any other patient id, logging the attempt) is
    defense-in-depth on top of role enforcement, not a replacement for it —
    and it already holds under active testing (P2.16's authorization-probe
    eval: zero cross-patient fetches, marker value never leaked). The
-   production upgrade is SMART `patient/*.read` launch-context tokens, where
-   the token itself — not agent-side logic — carries the patient scope.
+   production upgrade — SMART `patient/*.read` launch-context tokens, where
+   the token itself, not agent-side logic, carries the patient scope — is part
+   of the #124 flow now built and proven live (default OFF, item 1); until the
+   flag is flipped, the agent-side binding remains the active guard.
 4. **BAA-covered hosting, VPC, TLS everywhere, HA.** This deployment is a
    single node on a developer's LAN, reachable only via Tailscale. A real
    deployment needs a hosting environment covered by a Business Associate
@@ -645,14 +664,18 @@ vendor entirely, at the cost of a smaller model's raw reasoning ability,
 which is what the verification layer exists to compensate for — and, per
 spike #140, does so successfully for structured-data claims.
 
-**Dev-shortcut auth, honestly scoped.** The agent obtains OpenEMR access via
-a dev token bridge rather than true per-user token pass-through (Trust
-Boundaries, boundary 3, above). This was a deliberate, disclosed
-resequencing to get one use case answering genuinely end-to-end through the
-real browser UI sooner, not an oversight discovered later — but it means the
-per-user ACL story this architecture's security narrative leans on is
-demonstrated as *reachable in OpenEMR*, not as *exercised by this agent
-today*.
+**Dev-shortcut auth, honestly scoped — with the real path now built.** By
+default the agent obtains OpenEMR access via a dev token bridge rather than
+true per-user token pass-through (Trust Boundaries, boundary 3, above). This
+was a deliberate, disclosed resequencing to get one use case answering
+genuinely end-to-end through the real browser UI sooner, not an oversight
+discovered later. As of #124 (Phase 6) the true per-user path *is* built and
+**proven live end-to-end** (`authorization_code` + PKCE + SMART launch +
+introspection; restricted `accountant` role → 403 vs `admin` → 200), but it
+stays behind `copilot_per_user_token_enabled` (default OFF) by owner choice —
+so in the shipped demo the per-user ACL story is *proven live and one flag
+away*, not exercised out of the box. `docs/AUDIT.md` finding **F4** tracks
+this precisely.
 
 **Patient-context binding.** `docs/AUDIT.md` establishes that OpenEMR's
 central REST/FHIR authorization is role- and resource-scoped, not

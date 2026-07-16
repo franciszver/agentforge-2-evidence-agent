@@ -41,6 +41,7 @@ jobs:
           pytest -m "not browser and not integration" \
             --cov=app.verification --cov=app.rendering --cov=app.allergy_check \
             --cov=app.check_drug_interactions --cov=app.verdict \
+            --cov=app.introspection --cov=app.launch_binding \
             --cov-branch --cov-report=term-missing --cov-fail-under=99
 
       - name: Eval replay (offline, no model inference)
