@@ -133,6 +133,219 @@
     }
 
     // -------------------------------------------------------------------
+    // P3.8 verification layer: verdict badge, citation chips, warning banner.
+    //
+    // Renders the `verification` SSE frame (app/chat.py
+    // build_verification_payload). Every text field here derives from the
+    // patient record / model output, so -- exactly like appendMessage -- it is
+    // rendered via textContent only, never innerHTML: a `<script>` or
+    // `<img onerror>` payload in a claim, citation, or warning renders inert.
+    // No hover-dependent interaction: a citation chip is a real <button> the
+    // user taps to reveal the underlying record.
+    // -------------------------------------------------------------------
+    var VERDICT_BADGES = {
+        verified: { label: 'Verified', icon: '✓', className: 'copilot-verdict-verified' },
+        partially_verified: { label: 'Partially verified', icon: '⚠', className: 'copilot-verdict-partial' },
+        blocked: { label: 'Blocked', icon: '✕', className: 'copilot-verdict-blocked' }
+    };
+
+    function verdictBadgeInfo(verdict) {
+        if (typeof verdict !== 'string' || !Object.prototype.hasOwnProperty.call(VERDICT_BADGES, verdict)) {
+            return null;
+        }
+        return VERDICT_BADGES[verdict];
+    }
+
+    function renderVerdictBadge(verdict) {
+        var info = verdictBadgeInfo(verdict);
+        if (!info) {
+            return null;
+        }
+        var badge = document.createElement('span');
+        badge.className = 'copilot-verdict-badge ' + info.className;
+        badge.setAttribute('role', 'status');
+
+        var icon = document.createElement('span');
+        icon.className = 'copilot-verdict-badge-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = info.icon;
+        badge.appendChild(icon);
+
+        // The accessible signal is the text label, not the colour alone.
+        var label = document.createElement('span');
+        label.className = 'copilot-verdict-badge-label';
+        label.textContent = info.label;
+        badge.appendChild(label);
+
+        return badge;
+    }
+
+    function appendRecordField(record, label, value) {
+        if (value === null || value === undefined || value === '') {
+            return;
+        }
+        var row = document.createElement('div');
+        row.className = 'copilot-citation-record-row';
+
+        var key = document.createElement('span');
+        key.className = 'copilot-citation-record-key';
+        key.textContent = label;
+        row.appendChild(key);
+
+        var val = document.createElement('span');
+        val.className = 'copilot-citation-record-value';
+        val.textContent = String(value);
+        row.appendChild(val);
+
+        record.appendChild(row);
+    }
+
+    function buildCitationChip(citation) {
+        citation = citation || {};
+
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'copilot-citation-chip';
+        chip.textContent = citation.field ? String(citation.field) : 'source';
+        chip.setAttribute('aria-expanded', 'false');
+
+        var record = document.createElement('div');
+        record.className = 'copilot-citation-record copilot-hidden';
+        appendRecordField(record, 'Field', citation.field);
+        appendRecordField(record, 'Value', citation.value);
+        appendRecordField(record, 'Record', citation.record_id);
+        appendRecordField(record, 'Source', citation.tool_call_id);
+
+        chip.addEventListener('click', function () {
+            var nowHidden = record.classList.toggle('copilot-hidden');
+            chip.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+        });
+
+        return { chip: chip, record: record };
+    }
+
+    function renderClaimSegment(segment) {
+        var claim = document.createElement('div');
+        claim.className = 'copilot-claim';
+
+        var text = document.createElement('div');
+        text.className = 'copilot-claim-text';
+        text.textContent = segment.text ? String(segment.text) : '';
+        claim.appendChild(text);
+
+        var citations = Array.isArray(segment.citations) ? segment.citations : [];
+        if (citations.length > 0) {
+            var chips = document.createElement('div');
+            chips.className = 'copilot-claim-chips';
+            var records = document.createElement('div');
+            records.className = 'copilot-claim-records';
+
+            for (var i = 0; i < citations.length; i++) {
+                var built = buildCitationChip(citations[i]);
+                chips.appendChild(built.chip);
+                records.appendChild(built.record);
+            }
+            claim.appendChild(chips);
+            claim.appendChild(records);
+        }
+        return claim;
+    }
+
+    function renderNoticeSegment(segment) {
+        var notice = document.createElement('div');
+        notice.className = 'copilot-claim copilot-notice';
+        notice.textContent = segment.text ? String(segment.text) : '';
+        return notice;
+    }
+
+    function renderWarningBanner(warnings) {
+        warnings = warnings || {};
+        var allergies = Array.isArray(warnings.allergy_conflicts) ? warnings.allergy_conflicts : [];
+        var blocking = Array.isArray(warnings.blocking_interactions) ? warnings.blocking_interactions : [];
+        if (allergies.length === 0 && blocking.length === 0) {
+            return null;
+        }
+
+        var banner = document.createElement('div');
+        banner.className = 'copilot-warning-banner';
+        banner.setAttribute('role', 'alert');
+
+        var heading = document.createElement('div');
+        heading.className = 'copilot-warning-banner-heading';
+        var icon = document.createElement('span');
+        icon.className = 'copilot-warning-banner-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = '⚠';
+        heading.appendChild(icon);
+        var headingText = document.createElement('span');
+        headingText.textContent = 'Safety warning';
+        heading.appendChild(headingText);
+        banner.appendChild(heading);
+
+        var list = document.createElement('ul');
+        list.className = 'copilot-warning-banner-list';
+        for (var i = 0; i < allergies.length; i++) {
+            var conflict = allergies[i] || {};
+            var allergyItem = document.createElement('li');
+            allergyItem.textContent =
+                'Allergy conflict: ' + conflict.medication_name + ' vs recorded allergy to ' + conflict.allergy_substance;
+            list.appendChild(allergyItem);
+        }
+        for (var j = 0; j < blocking.length; j++) {
+            var interaction = blocking[j] || {};
+            var interactionItem = document.createElement('li');
+            interactionItem.textContent =
+                'Interaction (' + interaction.severity + '): ' +
+                interaction.drug_a + ' + ' + interaction.drug_b + ' — ' + interaction.description;
+            list.appendChild(interactionItem);
+        }
+        banner.appendChild(list);
+
+        return banner;
+    }
+
+    // Assembles the full verification block (banner + badge + claims) and
+    // appends it to `container`. Returns the block element, or null for the
+    // pending/degenerate payload (verdict absent) -- nothing to render yet.
+    function renderVerification(container, data) {
+        if (!data || !data.verdict) {
+            return null;
+        }
+
+        var block = document.createElement('div');
+        block.className = 'copilot-verification';
+
+        var banner = renderWarningBanner(data.warnings);
+        if (banner) {
+            block.appendChild(banner);
+        }
+
+        var badge = renderVerdictBadge(data.verdict);
+        if (badge) {
+            block.appendChild(badge);
+        }
+
+        var segments = Array.isArray(data.segments) ? data.segments : [];
+        if (segments.length > 0) {
+            var claims = document.createElement('div');
+            claims.className = 'copilot-claims';
+            for (var i = 0; i < segments.length; i++) {
+                var segment = segments[i];
+                if (segment && segment.type === 'claim') {
+                    claims.appendChild(renderClaimSegment(segment));
+                } else if (segment && segment.type === 'notice') {
+                    claims.appendChild(renderNoticeSegment(segment));
+                }
+            }
+            block.appendChild(claims);
+        }
+
+        container.appendChild(block);
+        container.scrollTop = container.scrollHeight;
+        return block;
+    }
+
+    // -------------------------------------------------------------------
     // Orchestration.
     // -------------------------------------------------------------------
     var UNAVAILABLE_MESSAGE = 'Sorry, the Co-Pilot is unavailable right now.';
@@ -179,18 +392,24 @@
                     throw new Error('chat proxy request failed');
                 }
                 var answerText = '';
+                var verificationData = null;
                 var hadError = false;
                 return consumeSSEStream(resp.body.getReader(), function (frame) {
                     if (frame.event === 'conversation' && frame.data && typeof frame.data.conversation_id === 'string') {
                         conversationId = frame.data.conversation_id;
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
+                    } else if (frame.event === 'verification' && frame.data) {
+                        verificationData = frame.data;
                     } else if (frame.event === 'error') {
                         hadError = true;
                     }
                 }).then(function () {
                     if (answerText) {
                         appendMessage(options.messagesEl, 'assistant', answerText);
+                        // Pending verification payloads (verdict null) render
+                        // nothing; a populated one adds the badge/chips/banner.
+                        renderVerification(options.messagesEl, verificationData);
                     } else if (hadError) {
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                     }
@@ -253,6 +472,10 @@
         createSSEFrameParser: createSSEFrameParser,
         consumeSSEStream: consumeSSEStream,
         appendMessage: appendMessage,
-        createChatController: createChatController
+        createChatController: createChatController,
+        verdictBadgeInfo: verdictBadgeInfo,
+        renderVerdictBadge: renderVerdictBadge,
+        renderWarningBanner: renderWarningBanner,
+        renderVerification: renderVerification
     };
 })(window, document);

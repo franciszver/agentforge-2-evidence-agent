@@ -136,3 +136,172 @@
     text-align: center;
     color: #495057;
 }
+
+/**
+ * P3.8 verification layer -- the trust story made visible. Rendered under the
+ * assistant response (see copilot-chat.js renderVerification). Hierarchy,
+ * strongest first: a safety warning banner the user cannot miss, then the
+ * scannable verdict badge, then subordinate citation chips. 360px-first;
+ * every interactive element is tap-sized with no hover dependence.
+ */
+.copilot-verification {
+    margin: 0 0 0.5rem;
+    margin-right: auto;
+    max-width: 85%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* Verdict badge: colour + icon + text (never colour alone). */
+.copilot-verdict-badge {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.copilot-verdict-badge-icon {
+    font-size: 0.85rem;
+    line-height: 1;
+}
+
+.copilot-verdict-verified {
+    background: #e6f4ea;
+    color: #12683f;
+    border-color: #a3cfbb;
+}
+
+.copilot-verdict-partial {
+    background: #fdf3e3;
+    color: #8a5a00;
+    border-color: #efce93;
+}
+
+.copilot-verdict-blocked {
+    background: #fce8e6;
+    color: #a5261f;
+    border-color: #f0aca6;
+}
+
+/* Warning banner: the most prominent element -- allergy/interaction conflicts. */
+.copilot-warning-banner {
+    padding: 0.6rem 0.75rem;
+    background: #fff3f2;
+    border: 1px solid #f0aca6;
+    border-left: 4px solid #a5261f;
+    border-radius: 0.25rem;
+    color: #611a15;
+    font-size: 0.85rem;
+}
+
+.copilot-warning-banner-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 700;
+    color: #842029;
+}
+
+.copilot-warning-banner-icon {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.copilot-warning-banner-list {
+    margin: 0.35rem 0 0;
+    padding-left: 1.1rem;
+}
+
+.copilot-warning-banner-list li + li {
+    margin-top: 0.25rem;
+}
+
+/* Verified-claim breakdown with tappable citation chips. */
+.copilot-claims {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.copilot-claim {
+    padding: 0.5rem 0.6rem;
+    background: #f8f9fa;
+    border: 1px solid #e3e6ea;
+    border-radius: 0.5rem;
+    font-size: 0.85rem;
+    color: #1a1a1a;
+}
+
+.copilot-claim-text {
+    line-height: 1.35;
+}
+
+.copilot-notice {
+    background: #fdf3e3;
+    border-color: #efce93;
+    color: #8a5a00;
+    font-style: italic;
+}
+
+.copilot-claim-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+}
+
+.copilot-citation-chip {
+    display: inline-flex;
+    align-items: center;
+    /* >=44px tap target so a citation is reachable one-handed at 360px with
+       no hover state to discover it (matches the send button's rationale). */
+    min-height: 2.75rem;
+    padding: 0.25rem 0.75rem;
+    background: #e7f0f6;
+    color: #0b5a8a;
+    border: 1px solid #a9cbe0;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.copilot-claim-records {
+    margin-top: 0.4rem;
+}
+
+.copilot-citation-record {
+    margin-top: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    background: var(--white, #fff);
+    border: 1px solid #dee2e6;
+    border-radius: 0.35rem;
+    font-size: 0.8rem;
+}
+
+.copilot-citation-record-row {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.copilot-citation-record-row + .copilot-citation-record-row {
+    margin-top: 0.2rem;
+}
+
+.copilot-citation-record-key {
+    flex: 0 0 3.5rem;
+    color: #6c757d;
+    font-weight: 600;
+}
+
+.copilot-citation-record-value {
+    color: #1a1a1a;
+    word-break: break-word;
+}

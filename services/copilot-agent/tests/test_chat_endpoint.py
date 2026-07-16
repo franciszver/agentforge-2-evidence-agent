@@ -331,4 +331,40 @@ def test_chat_event_enum_matches_frame_names():
     assert ChatEvent.CONVERSATION.value == "conversation"
     assert ChatEvent.TOOL_CALL.value == "tool_call"
     assert ChatEvent.ANSWER.value == "answer"
+    assert ChatEvent.VERIFICATION.value == "verification"
     assert ChatEvent.DONE.value == "done"
+
+
+def test_stream_emits_pending_verification_frame_after_answer_before_done():
+    # P3.8: every response carries a verification frame (verdict badge /
+    # citation chips / warning banner contract). The answer->claims/meds
+    # extraction pipeline is not built yet, so the live frame is the *pending*
+    # payload (verdict null, no segments, no warnings); the frame's position
+    # in the stream and its contract shape are pinned here.
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    events = _iter_sse_events(response.text)
+    event_names = [name for name, _ in events]
+
+    assert "verification" in event_names
+    assert event_names.index("answer") < event_names.index("verification")
+    assert event_names.index("verification") < event_names.index("done")
+
+    verification_data = json.loads(
+        next(data for name, data in events if name == "verification")
+    )
+    assert verification_data["verdict"] is None
+    assert verification_data["segments"] == []
+    assert verification_data["warnings"] == {
+        "allergy_conflicts": [],
+        "blocking_interactions": [],
+        "warning_interactions": [],
+    }

@@ -18,11 +18,23 @@ conversation to the ``patient_id`` it was created with. Resuming with a
 defense-in-depth for the patient-context binding the planner itself already
 enforces (see ``app.planner`` module docstring).
 
-SSE frame contract (``ChatEvent`` -- the P2.14 UI's source of truth):
+SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
   * ``conversation`` -- first frame, carries ``{"conversation_id": str}``.
   * ``tool_call``    -- one per planner tool dispatch, in order, carrying
                          ``{"tool": str, "args": dict, "error": str | None}``.
   * ``answer``        -- the final answer, ``{"answer": str}``.
+  * ``verification`` -- the P3.8 verification result for this response (verdict
+                         badge, citation chips, warning banner). See
+                         ``build_verification_payload`` for the payload shape.
+                         **Under-populated today**: the answer->claims/meds
+                         extraction pipeline that would produce a real
+                         ``VerdictResult``/``RenderedAnswer`` from the planner's
+                         free-text answer is not built yet (the same seam gap
+                         called out in ``app.verdict`` / ``app.rendering`` /
+                         ``app.allergy_check``), so this frame currently carries
+                         the *pending* payload (``verdict: null``, no segments,
+                         no warnings). TODO(extraction): feed real verification
+                         data here once that pipeline lands.
   * ``done``           -- terminal frame, ``{}``.
 """
 
@@ -45,6 +57,8 @@ from app.dev_token_bridge import DevTokenBridge
 from app.ollama_client import OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
+from app.rendering import RenderedAnswer, RenderedClaim
+from app.verdict import VerdictResult
 
 
 class ChatEvent(StrEnum):
@@ -53,6 +67,7 @@ class ChatEvent(StrEnum):
     CONVERSATION = "conversation"
     TOOL_CALL = "tool_call"
     ANSWER = "answer"
+    VERIFICATION = "verification"
     DONE = "done"
 
 
@@ -258,6 +273,93 @@ def get_conversation_store() -> ConversationStore:
     return _default_store
 
 
+_EMPTY_WARNINGS: dict[str, list[object]] = {
+    "allergy_conflicts": [],
+    "blocking_interactions": [],
+    "warning_interactions": [],
+}
+
+
+def _serialize_segments(rendered: RenderedAnswer) -> list[dict[str, object]]:
+    segments: list[dict[str, object]] = []
+    for segment in rendered.segments:
+        if isinstance(segment, RenderedClaim):
+            segments.append(
+                {
+                    "type": "claim",
+                    "text": segment.text,
+                    "citations": [
+                        {
+                            "tool_call_id": ref.tool_call_id,
+                            "record_id": ref.record_id,
+                            "field": ref.field,
+                            "value": ref.asserted_value,
+                        }
+                        for ref in segment.source_refs
+                    ],
+                }
+            )
+        else:  # Notice
+            segments.append({"type": "notice", "text": segment.text})
+    return segments
+
+
+def build_verification_payload(
+    verdict_result: VerdictResult | None,
+    rendered: RenderedAnswer | None,
+) -> dict[str, object]:
+    """Serialize the verification layer's output into the ``verification`` SSE
+    frame payload the P3.8 UI renders (verdict badge, citation chips, warning
+    banner).
+
+    ``None`` inputs produce the *pending* payload (``verdict: null``, no
+    segments, no warnings): the answer->claims/meds extraction pipeline is not
+    built yet, so a live response has no ``VerdictResult``/``RenderedAnswer`` to
+    serialize. The UI renders nothing for the pending payload; when extraction
+    lands, ``_stream_chat`` passes real values here and the same contract
+    carries the full result.
+    """
+    if verdict_result is None:
+        return {
+            "verdict": None,
+            "segments": [],
+            "warnings": dict(_EMPTY_WARNINGS),
+        }
+
+    segments = _serialize_segments(rendered) if rendered is not None else []
+    return {
+        "verdict": verdict_result.verdict.value,
+        "segments": segments,
+        "warnings": {
+            "allergy_conflicts": [
+                {
+                    "medication_name": conflict.medication_name,
+                    "allergy_substance": conflict.allergy_substance,
+                }
+                for conflict in verdict_result.allergy_conflicts
+            ],
+            "blocking_interactions": [
+                {
+                    "drug_a": item.drug_a,
+                    "drug_b": item.drug_b,
+                    "severity": item.severity.value,
+                    "description": item.description,
+                }
+                for item in verdict_result.blocking_interactions
+            ],
+            "warning_interactions": [
+                {
+                    "drug_a": item.drug_a,
+                    "drug_b": item.drug_b,
+                    "severity": item.severity.value,
+                    "description": item.description,
+                }
+                for item in verdict_result.warning_interactions
+            ],
+        },
+    }
+
+
 def _sse(event: ChatEvent, data: dict[str, object]) -> str:
     return f"event: {event.value}\ndata: {json.dumps(data)}\n\n"
 
@@ -282,6 +384,14 @@ def _stream_chat(
         )
 
     yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
+
+    # TODO(extraction): the answer->claims/meds extraction pipeline (see the
+    # module docstring's `verification` frame note and app.verdict /
+    # app.rendering) is not built, so no VerdictResult/RenderedAnswer is
+    # available for a live answer. Emit the pending payload so the P3.8 UI has
+    # a frame to render against; wire real verification data here when
+    # extraction lands.
+    yield _sse(ChatEvent.VERIFICATION, build_verification_payload(None, None))
 
     store.append_turn(
         conversation.conversation_id,
