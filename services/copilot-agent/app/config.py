@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # ``openemr_base_url``.
     openemr_oauth_registration_path: str = "/oauth2/default/registration"
     openemr_oauth_token_path: str = "/oauth2/default/token"
+    # RFC 7662 token introspection endpoint (#124 Phase 4). The agent
+    # introspects the forwarded per-user bearer here, authenticating as the
+    # confidential prod client via HTTP Basic auth.
+    openemr_oauth_introspection_path: str = "/oauth2/default/introspect"
     # Superset of scopes requested for the dev token flow: OIDC + refresh,
     # standard + FHIR API, and a FHIR Patient read scope for the proof call.
     openemr_oauth_scopes: str = (
@@ -112,6 +116,16 @@ class Settings(BaseSettings):
     # Path (inside the agent container) for the production client credentials
     # written by the prod registration CLI. Distinct file from the dev bridge's.
     copilot_prod_client_creds_path: str = "/data/openemr-prod-client.json"
+
+    # #124 Phase 4 (pivotal): when true, the agent (a) validates the request's
+    # forwarded per-user OpenEMR bearer via introspection and (b) uses that same
+    # token for every tool call, so OpenEMR enforces per-user ACL end-to-end.
+    # Default OFF -- flag off keeps today's dev stub validator + DevTokenBridge
+    # demo-clinician token, byte-identical. Flipped on with the module side in
+    # Phase 6. Introspection results are cached (hash-keyed) for this many
+    # seconds, further capped by each token's own ``exp``.
+    copilot_per_user_token_enabled: bool = False
+    copilot_introspection_cache_ttl_seconds: float = 60.0
 
 
 def get_settings() -> Settings:

@@ -76,7 +76,9 @@ from app.config import get_settings
 from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import ClaimExtractor, ClaimExtractorLike, apply_recency_notice, run_verification
+from app.introspection import TokenIntrospector
 from app.ollama_client import LlmCallStats, OllamaClient
+from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult, ToolCallTrace
 from app.rendering import RenderedAnswer, RenderedClaim
@@ -140,15 +142,65 @@ Clock = Callable[[], datetime]
 def _default_token_validator(token: str) -> None:
     """Stub token validator: accepts any non-empty token.
 
-    TODO: replace with real OpenEMR token introspection (e.g. the resource
-    server's token-info endpoint) once that integration exists.
+    The flag-OFF default (``copilot_per_user_token_enabled=False``). Replaced by
+    the introspection validator when the #124 Phase 4 flag is on.
     """
     if not token:
         raise TokenValidationError("missing bearer token")
 
 
+class Introspector(Protocol):
+    """What :func:`build_introspection_validator` needs: token -> result."""
+
+    def introspect(self, token: str) -> IntrospectionResult: ...
+
+
+def build_introspection_validator(
+    introspector: Introspector, *, clock: Callable[[], float] = time.time
+) -> TokenValidator:
+    """Build a ``TokenValidator`` that accepts a token only if introspection
+    reports it ``active`` and (when ``exp`` is present) not yet expired.
+
+    Empty tokens are rejected before any introspection round-trip. Every
+    rejection raises ``TokenValidationError`` -> mapped to 401 by the endpoint,
+    before the planner is built.
+    """
+
+    def _validate(token: str) -> None:
+        if not token:
+            raise TokenValidationError("missing bearer token")
+        result = introspector.introspect(token)
+        if not result.active:
+            raise TokenValidationError("token is not active")
+        if result.exp is not None and result.exp <= clock():
+            raise TokenValidationError("token has expired")
+
+    return _validate
+
+
+_token_introspector: TokenIntrospector | None = None
+
+
+def get_token_introspector() -> TokenIntrospector:
+    """The process-wide ``TokenIntrospector`` (holds the hash-keyed TTL cache).
+
+    Built lazily and reused so the introspection cache survives across requests.
+    """
+    global _token_introspector
+    if _token_introspector is None:
+        _token_introspector = TokenIntrospector.from_settings(get_settings())
+    return _token_introspector
+
+
 def get_token_validator() -> TokenValidator:
-    """FastAPI dependency: the active ``TokenValidator``. Override in tests."""
+    """FastAPI dependency: the active ``TokenValidator``. Override in tests.
+
+    Flag ON (``copilot_per_user_token_enabled``): validates the forwarded
+    per-user bearer via OpenEMR introspection. Flag OFF: the non-empty stub,
+    byte-identical to today.
+    """
+    if get_settings().copilot_per_user_token_enabled:
+        return build_introspection_validator(get_token_introspector())
     return _default_token_validator
 
 
@@ -196,15 +248,31 @@ def _default_planner_factory(token: str) -> PlannerFactory:
 
 
 def get_planner_factory(
+    authorization: str | None = Header(default=None),
     dev_token_bridge: DevTokenBridge = Depends(get_dev_token_bridge),
 ) -> PlannerFactory:
     """FastAPI dependency: builds a ``PlannerProtocol`` for a patient_id. Override in tests.
 
-    The bridge's (potentially blocking, on a cache miss) token fetch happens
-    here, in a sync dependency FastAPI runs in its worker-thread pool -- not in
-    the ``async`` ``chat_endpoint`` body, so a token refresh never blocks the
-    event loop.
+    Flag ON (``copilot_per_user_token_enabled``, #124 Phase 4): the planner is
+    bound to the REQUEST's own forwarded bearer, so OpenEMR maps every tool call
+    to that user -> per-user ACL. This dependency resolves BEFORE the endpoint
+    body validates the token, so a missing/malformed header must NOT raise here
+    (that would surface as a 500); it binds an empty token and the body's
+    validator then rejects with 401 -- the planner is only ever *run* after
+    validation passes, so an unvalidated token never reaches a tool call.
+
+    Flag OFF: byte-identical to today -- the ``DevTokenBridge``'s demo-clinician
+    token drives tool calls. The bridge's (potentially blocking, on a cache
+    miss) token fetch happens here, in a sync dependency FastAPI runs in its
+    worker-thread pool -- not in the ``async`` ``chat_endpoint`` body, so a
+    token refresh never blocks the event loop.
     """
+    if get_settings().copilot_per_user_token_enabled:
+        try:
+            token = extract_bearer_token(authorization)
+        except TokenValidationError:
+            token = ""
+        return _default_planner_factory(token)
     return _default_planner_factory(dev_token_bridge.get_token())
 
 

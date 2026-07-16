@@ -76,6 +76,65 @@ class TokenResponse:
     scope: str | None
 
 
+@dataclass(frozen=True)
+class IntrospectionResult:
+    """The security-relevant fields of an RFC 7662 introspection response.
+
+    ``active`` folds every failure mode (inactive token, malformed/non-JSON
+    body, non-2xx status, network/timeout error) into a single fail-closed
+    ``False`` -- the caller treats anything that is not a positive ``active:
+    true`` as an invalid token. ``exp`` (epoch seconds, when present) lets the
+    caller reject a token whose expiry has already passed and bound any cache
+    TTL to it.
+    """
+
+    active: bool
+    exp: int | None
+
+
+def introspect_token(
+    client: httpx.Client,
+    *,
+    base_url: str,
+    introspect_path: str,
+    client_id: str,
+    client_secret: str,
+    token: str,
+) -> IntrospectionResult:
+    """Introspect a forwarded bearer token via OpenEMR's RFC 7662 endpoint.
+
+    ``POST {base_url}{introspect_path}`` with the confidential client
+    authenticated by HTTP **Basic** auth (``client_id:client_secret`` -- never
+    placed in the URL or query string) and the token to check carried in the
+    form body as ``token=<token>``.
+
+    Fails closed: an inactive token, a malformed/non-JSON body, a non-2xx
+    status, and any network/timeout error all return
+    ``IntrospectionResult(active=False, exp=None)`` so the caller maps them to
+    a rejection. Never logs (nor otherwise surfaces) the token or the client
+    secret.
+    """
+    url = f"{base_url}{introspect_path}"
+    try:
+        response = client.post(url, data={"token": token}, auth=(client_id, client_secret))
+    except httpx.HTTPError:
+        return IntrospectionResult(active=False, exp=None)
+
+    if not response.is_success:
+        return IntrospectionResult(active=False, exp=None)
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return IntrospectionResult(active=False, exp=None)
+
+    if not isinstance(payload, dict) or payload.get("active") is not True:
+        return IntrospectionResult(active=False, exp=None)
+
+    exp = payload.get("exp")
+    return IntrospectionResult(active=True, exp=exp if isinstance(exp, int) else None)
+
+
 def _safe_error_detail(response: httpx.Response) -> str:
     """Build a log-safe failure detail from an OAuth error response.
 
