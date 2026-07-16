@@ -117,7 +117,12 @@ def test_promote_click_produces_a_valid_regression_case_yaml(app_base_url: str) 
             yaml_text = output.text_content() or ""
             assert "category: regression" in yaml_text
             assert _SEEDED_CORRELATION_ID in yaml_text
-            assert _SEEDED_COMMENT in yaml_text
+            # #157: the raw comment is shown on the /review page (asserted
+            # above) but scrubbed from the promoted export -- a clinician who
+            # typed PHI into the comment must not leak it into the public
+            # evals/ repo. Only a neutral TODO placeholder is emitted.
+            assert _SEEDED_COMMENT not in yaml_text
+            assert "TODO" in yaml_text
             assert elapsed_seconds < 60
         finally:
             browser.close()

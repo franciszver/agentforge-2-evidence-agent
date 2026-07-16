@@ -18,11 +18,13 @@ placeholders for ``question``, ``patient_id``, and ``tool_data`` -- a human
 reviewer fills those in from what they actually saw before the case is a
 real regression guard. The only genuinely case-specific content this module
 can supply is what the trace store actually recorded: the correlation id
-(as ``source:``), the observed verdict (as a starting ``verdict`` assertion,
-when a verification span exists), and the feedback comment (as
-``failure_mode:``, when the clinician left one -- comment text is
-explicitly permitted verbatim storage, see the trace-store docstring, and is
-therefore also safe to re-emit here).
+(as ``source:``) and the observed verdict (as a starting ``verdict``
+assertion, when a verification span exists). The clinician's feedback comment
+is deliberately NOT re-emitted (#157): promoted cases land in the PUBLIC
+``evals/`` repo, and the free-text comment may contain PHI, so ``failure_mode``
+carries only a neutral TODO placeholder referencing the correlation id. The
+raw comment stays in the trusted-local review queue (``app.review_page``),
+where a human reads it to hand-write the real ``failure_mode``.
 
 **No reverse dependency on ``evals/``.** This module does not import
 ``runner.schema``/``runner.loader`` to self-validate its own output --
@@ -183,7 +185,17 @@ def _failure_mode(feedback: Span | None, verification: Span | None, correlation_
     # as the failure_mode. Fall through to the verdict-based message instead.
     if feedback is not None and feedback.feedback_thumb == FeedbackThumb.DOWN:
         if feedback.feedback_comment:
-            return feedback.feedback_comment
+            # PHI-safety (#157): promoted cases are committed to the PUBLIC
+            # evals/ repo. The clinician's free-text comment may contain
+            # patient details, so it is NEVER re-emitted here -- only a neutral
+            # TODO placeholder pointing back at the correlation id. The raw
+            # comment stays in the trusted-local review queue (review_page.py),
+            # which is where a human writes the real failure_mode from.
+            return (
+                f"TODO: describe the failure mode. Thumbs-down on correlation id "
+                f"{correlation_id}; the clinician's comment is in the local review "
+                f"queue (omitted here -- may contain free text)."
+            )
         return f"Promoted from a thumbs-down (no comment left) on correlation id {correlation_id}."
     if verification is not None:
         return (

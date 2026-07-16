@@ -130,7 +130,11 @@ def test_promote_returns_a_yaml_body_for_a_known_correlation_id(tmp_path: Path) 
     assert response.status_code == 200
     assert "category: regression" in response.text
     assert "corr-3" in response.text
-    assert "missed an interaction" in response.text
+    # #157: the raw clinician comment is scrubbed from the promoted export
+    # (public evals/ repo) -- only a neutral TODO placeholder referencing the
+    # correlation id is emitted. The comment stays in the local /review view.
+    assert "missed an interaction" not in response.text
+    assert "TODO" in response.text
 
 
 def test_promote_unknown_correlation_id_returns_404_no_leak(tmp_path: Path) -> None:
