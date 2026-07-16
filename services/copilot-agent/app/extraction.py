@@ -72,7 +72,7 @@ from typing import Any, Protocol
 
 from app.allergy_check import check_allergy_conflicts
 from app.check_drug_interactions import check_drug_interactions
-from app.ollama_client import OllamaError
+from app.ollama_client import LlmCallStats, OllamaError
 from app.planner import PlannerResult
 from app.rendering import RenderedAnswer, render_answer
 from app.schemas.planner import ToolName
@@ -202,6 +202,13 @@ class ClaimExtractor:
 
     def __init__(self, *, ollama_client: _Extractor) -> None:
         self._ollama = ollama_client
+
+    @property
+    def llm_calls(self) -> list[LlmCallStats]:
+        """Every LLM call made through this extractor's ``OllamaClient``, for
+        the P4/#149 ``llm`` trace span. ``getattr``-defensive: a hermetic
+        test double passed as ``_Extractor`` need not model ``call_stats``."""
+        return list(getattr(self._ollama, "call_stats", []))
 
     def extract_claims(
         self,

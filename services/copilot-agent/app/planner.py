@@ -45,12 +45,13 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.authz import PatientBindingViolation, enforce_patient_binding
-from app.ollama_client import OllamaClient
+from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_client import OpenEmrApiError, OpenEmrClient
 from app.quarantine import QuarantinedSummarizer, quarantine_tool_result
 from app.schemas.common import ToolSchemaModel
@@ -115,6 +116,15 @@ class ToolCallTrace:
     args: dict[str, Any]
     result: dict[str, Any] | None
     error: str | None = None
+    # Timing around the raw tool dispatch (``spec.func`` call), for the P4
+    # ``tool`` trace span (``app.trace_store.record_tool_span``). ``error``
+    # doubles as that span's ``error_category`` -- both are already the
+    # closed-set category string (``OpenEmrApiError.category.value`` or
+    # ``"patient_binding_violation"``), never a raw exception message, so no
+    # separate field is needed. Defaulted (not required) so the many existing
+    # tests constructing ``ToolCallTrace`` without timing keep working.
+    start_ts: float = 0.0
+    end_ts: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +148,12 @@ class PlannerResult:
     answer: str
     trace: list[ToolCallTrace]
     raw_results: list[dict[str, Any] | None] = field(default_factory=list)
+    # Every LLM call this run made (decision extracts, the quarantine
+    # summarizer, and the two-call finalize) -- read from ``ollama_client
+    # .call_stats`` at the end of ``run()``, for the P4 ``llm`` trace spans.
+    # Empty for an ``ollama_client`` double with no ``call_stats`` (see
+    # ``Planner.run``'s defensive ``getattr``).
+    llm_calls: list[LlmCallStats] = field(default_factory=list)
 
 
 TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
@@ -376,7 +392,7 @@ class Planner:
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
                 final = self._finalize_answer(messages)
-                return PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results)
+                return PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
 
             messages.append({"role": "assistant", "content": decision.model_dump_json()})
 
@@ -387,10 +403,20 @@ class Planner:
                 )
                 continue
 
+            binding_check_ts = time.time()
             try:
                 enforce_patient_binding(bound_patient_id=self._patient_id, tool_args=decision.tool_args)
             except PatientBindingViolation:
-                trace.append(ToolCallTrace(tool=decision.tool, args={}, result=None, error="patient_binding_violation"))
+                trace.append(
+                    ToolCallTrace(
+                        tool=decision.tool,
+                        args={},
+                        result=None,
+                        error="patient_binding_violation",
+                        start_ts=binding_check_ts,
+                        end_ts=time.time(),
+                    )
+                )
                 raw_results.append(None)
                 _logger.warning("tool_call refused: patient_binding_violation", extra={"tool": decision.tool.value})
                 messages.append(
@@ -406,27 +432,52 @@ class Planner:
 
             call_kwargs = _build_tool_kwargs(spec, decision.tool_args)
 
+            tool_start_ts = time.time()
             try:
                 output = spec.func(self._openemr, self._token, self._patient_id, **call_kwargs)
             except OpenEmrApiError as exc:
-                trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=None, error=exc.category.value))
+                trace.append(
+                    ToolCallTrace(
+                        tool=decision.tool,
+                        args=call_kwargs,
+                        result=None,
+                        error=exc.category.value,
+                        start_ts=tool_start_ts,
+                        end_ts=time.time(),
+                    )
+                )
                 raw_results.append(None)
                 _logger.warning(
                     "tool_call failed", extra={"tool": decision.tool.value, "error": exc.category.value}
                 )
                 messages.append({"role": "user", "content": f"[tool result] {decision.tool.value} failed: {exc.category.value}"})
                 continue
+            tool_end_ts = time.time()
 
             # Capture the RAW output for the verifier-only channel BEFORE
             # quarantining. The planner's message context (below) and the
             # client-facing trace still only ever see the quarantined summary.
             raw_results.append(output.model_dump(mode="json"))
             summary = quarantine_tool_result(self._summarizer, decision.tool, output)
-            trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=summary, error=None))
+            trace.append(
+                ToolCallTrace(
+                    tool=decision.tool, args=call_kwargs, result=summary, error=None, start_ts=tool_start_ts, end_ts=tool_end_ts
+                )
+            )
             _logger.info("tool_call dispatched", extra={"tool": decision.tool.value})
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
-        return PlannerResult(answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results)
+        return PlannerResult(
+            answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls()
+        )
+
+    def _collect_llm_calls(self) -> list[LlmCallStats]:
+        """Every LLM call this run made so far, read from the shared
+        ``OllamaClient.call_stats`` side channel (see ``PlannerResult
+        .llm_calls``). ``getattr``-defensive: hermetic test doubles that
+        don't model ``call_stats`` degrade to no llm spans rather than an
+        ``AttributeError``."""
+        return list(getattr(self._ollama, "call_stats", []))
 
     def _finalize_answer(self, messages: list[dict[str, str]]) -> FinalAnswer:
         """Produce the final answer via the two-call pattern (P2.9).

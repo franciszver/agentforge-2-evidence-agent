@@ -38,6 +38,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import httpx
@@ -55,6 +57,29 @@ _CHAT_PATH = "/api/chat"
 # whitespace right after it), whether or not a matching "<think>" opening tag
 # is present. See the module docstring's "Live-verified quirk" note.
 _LEAKED_THINK_RE = re.compile(r"^.*?</think>\s*", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class LlmCallStats:
+    """Timing + token counts for one completed call to Ollama (P4/#149).
+
+    Appended to ``OllamaClient.call_stats`` for every underlying request the
+    client makes -- one per ``chat()`` call, and one per ``extract()``
+    *attempt* (a retried extraction is a real, token-consuming call to
+    Ollama, so each attempt gets its own entry, not just the final one).
+    Callers (``app.planner``, ``app.extraction``) read this side channel
+    after the fact to build the ``llm`` spans ``app.trace_store`` persists --
+    chosen over changing ``chat``/``extract``'s return types, which would
+    touch every call site and the many existing tests asserting on those
+    return values.
+    """
+
+    model: str
+    start_ts: float
+    end_ts: float
+    ok: bool
+    tokens_in: int | None
+    tokens_out: int | None
 
 
 class OllamaError(Exception):
@@ -92,6 +117,10 @@ class OllamaClient:
         self._client = client
         self._model = model
         self._max_retries = max_retries
+        # Side channel of per-call timing/token stats -- see ``LlmCallStats``.
+        # Public (not ``_``-prefixed): ``app.planner``/``app.extraction`` read
+        # it after invoking ``chat``/``extract`` to build ``llm`` trace spans.
+        self.call_stats: list[LlmCallStats] = []
 
     @classmethod
     def from_settings(cls, settings: Settings) -> OllamaClient:
@@ -113,12 +142,24 @@ class OllamaClient:
         """Send a chat request and return the assembled response text.
 
         POSTs with ``stream: true`` and assembles the NDJSON chunk stream's
-        ``message.content`` pieces into the full response.
+        ``message.content`` pieces into the full response. Appends one
+        ``LlmCallStats`` entry to ``call_stats`` regardless of outcome.
         """
         _logger.info("ollama chat call", extra={"model": self._model})
         body = self._build_body(messages, stream=True, options=options)
-        response = self._post_chat(body)
-        return self._assemble_stream(response)
+        start_ts = time.time()
+        try:
+            response = self._post_chat(body)
+            content, tokens_in, tokens_out = self._assemble_stream(response)
+        except OllamaError:
+            self.call_stats.append(
+                LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=False, tokens_in=None, tokens_out=None)
+            )
+            raise
+        self.call_stats.append(
+            LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=True, tokens_in=tokens_in, tokens_out=tokens_out)
+        )
+        return content
 
     def extract(
         self,
@@ -147,13 +188,33 @@ class OllamaClient:
         )
 
         for _ in range(self._max_retries):
-            response = self._post_chat(body)
+            start_ts = time.time()
+            # Network/HTTP failures are NOT retried (see docstring): keep the
+            # ``_post_chat`` call OUT of the retry-catch below so an
+            # ``OllamaError`` from it propagates immediately, after recording
+            # the failed attempt's stats (symmetric with ``chat``).
             try:
-                content = self._single_message_content(response)
+                response = self._post_chat(body)
+            except OllamaError:
+                self.call_stats.append(
+                    LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=False, tokens_in=None, tokens_out=None)
+                )
+                raise
+            tokens_in: int | None = None
+            tokens_out: int | None = None
+            try:
+                content, tokens_in, tokens_out = self._single_message_content(response)
                 payload = json.loads(content)
-                return schema.model_validate(payload)
+                result = schema.model_validate(payload)
             except (OllamaError, ValueError, ValidationError):
+                self.call_stats.append(
+                    LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=False, tokens_in=tokens_in, tokens_out=tokens_out)
+                )
                 continue
+            self.call_stats.append(
+                LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=True, tokens_in=tokens_in, tokens_out=tokens_out)
+            )
+            return result
 
         raise OllamaError(f"constrained extraction failed after {self._max_retries} attempts")
 
@@ -200,9 +261,16 @@ class OllamaClient:
         return prompt_or_messages
 
     @staticmethod
-    def _assemble_stream(response: httpx.Response) -> str:
-        """Parse an NDJSON chunk stream and concatenate ``message.content`` pieces."""
+    def _assemble_stream(response: httpx.Response) -> tuple[str, int | None, int | None]:
+        """Parse an NDJSON chunk stream and concatenate ``message.content`` pieces.
+
+        Also returns the token counts Ollama reports on the terminal
+        (``done: true``) chunk (``prompt_eval_count``/``eval_count``), or
+        ``None``/``None`` if that chunk didn't carry them.
+        """
         parts: list[str] = []
+        tokens_in: int | None = None
+        tokens_out: int | None = None
         for line in response.iter_lines():
             if not line:
                 continue
@@ -210,16 +278,24 @@ class OllamaClient:
                 chunk = json.loads(line)
             except ValueError as exc:
                 raise OllamaError("Ollama stream contained invalid JSON") from exc
-            message = chunk.get("message") if isinstance(chunk, dict) else None
+            if not isinstance(chunk, dict):
+                continue
+            message = chunk.get("message")
             if isinstance(message, dict):
                 piece = message.get("content")
                 if isinstance(piece, str):
                     parts.append(piece)
-        return OllamaClient._strip_leaked_thinking("".join(parts))
+            if chunk.get("done") is True:
+                tokens_in, tokens_out = OllamaClient._token_counts(chunk)
+        return OllamaClient._strip_leaked_thinking("".join(parts)), tokens_in, tokens_out
 
     @staticmethod
-    def _single_message_content(response: httpx.Response) -> str:
-        """Extract ``message.content`` from a non-streamed (single-object) response."""
+    def _single_message_content(response: httpx.Response) -> tuple[str, int | None, int | None]:
+        """Extract ``message.content`` from a non-streamed (single-object) response.
+
+        Also returns ``prompt_eval_count``/``eval_count`` from the same
+        response payload.
+        """
         try:
             payload = response.json()
         except ValueError as exc:
@@ -229,7 +305,20 @@ class OllamaClient:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             raise OllamaError("Ollama response missing message content")
-        return OllamaClient._strip_leaked_thinking(content)
+        tokens_in, tokens_out = OllamaClient._token_counts(payload) if isinstance(payload, dict) else (None, None)
+        return OllamaClient._strip_leaked_thinking(content), tokens_in, tokens_out
+
+    @staticmethod
+    def _token_counts(payload: dict[str, Any]) -> tuple[int | None, int | None]:
+        """Pull ``prompt_eval_count``/``eval_count`` out of an Ollama response
+        payload (a streamed ``done: true`` chunk or a non-streamed body) --
+        both live at the top level alongside ``message``/``done``."""
+        tokens_in = payload.get("prompt_eval_count")
+        tokens_out = payload.get("eval_count")
+        return (
+            tokens_in if isinstance(tokens_in, int) else None,
+            tokens_out if isinstance(tokens_out, int) else None,
+        )
 
     @staticmethod
     def _strip_leaked_thinking(content: str) -> str:

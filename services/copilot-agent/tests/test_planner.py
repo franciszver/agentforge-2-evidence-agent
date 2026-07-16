@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
 from app.planner import Planner, ToolSpec
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
@@ -43,8 +44,17 @@ class _ScriptedOllamaClient:
         self.calls: list[list[dict[str, str]]] = []
         self.chat_calls: list[list[dict[str, str]]] = []
         self._last_final_answer = ""
+        # Mirrors the real ``OllamaClient.call_stats`` side channel (#149) so
+        # tests can assert ``PlannerResult.llm_calls`` is read from it.
+        self.call_stats: list[LlmCallStats] = []
+
+    def _record_call_stats(self) -> None:
+        self.call_stats.append(
+            LlmCallStats(model="qwen3:4b", start_ts=0.0, end_ts=0.1, ok=True, tokens_in=10, tokens_out=5)
+        )
 
     def extract(self, messages: list[dict[str, str]], schema: type):
+        self._record_call_stats()
         if schema is QuarantineSummary:
             return QuarantineSummary(summary="quarantined summary")
         if schema is FinalAnswer:
@@ -58,6 +68,7 @@ class _ScriptedOllamaClient:
         return decision
 
     def chat(self, messages: list[dict[str, str]], *, options=None) -> str:
+        self._record_call_stats()
         self.chat_calls.append(messages)
         return "reasoning"
 
@@ -326,3 +337,103 @@ def test_raw_results_hold_none_for_a_refused_call_keeping_positional_alignment()
     assert len(result.raw_results) == len(result.trace) == 1
     assert result.raw_results[0] is None
     assert result.trace[0].error == "patient_binding_violation"
+
+
+# --- span emission: tool timing + llm call stats (#149) ------------------------
+
+
+def test_tool_call_trace_carries_start_and_end_timestamps_for_a_successful_dispatch():
+    medications_fn = MagicMock(return_value=MedicationsOutput(items=[]))
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(action=PlannerAction.CALL_TOOL, tool=ToolName.GET_MEDICATIONS, reason="meds"),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    call = result.trace[0]
+    assert call.start_ts > 0
+    assert call.end_ts >= call.start_ts
+
+
+def test_tool_call_trace_carries_timestamps_on_the_error_path_too():
+    medications_fn = MagicMock(side_effect=OpenEmrApiError(ErrorCategory.FORBIDDEN, "forbidden"))
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(action=PlannerAction.CALL_TOOL, tool=ToolName.GET_MEDICATIONS, reason="meds"),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    call = result.trace[0]
+    assert call.start_ts > 0
+    assert call.end_ts >= call.start_ts
+
+
+def test_tool_call_trace_carries_timestamps_on_a_binding_violation_refusal():
+    medications_fn = MagicMock(return_value=MedicationsOutput(items=[]))
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(
+            action=PlannerAction.CALL_TOOL,
+            tool=ToolName.GET_MEDICATIONS,
+            tool_args={"patient_id": "999999"},
+            reason="cross-patient",
+        ),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    call = result.trace[0]
+    assert call.start_ts > 0
+    assert call.end_ts >= call.start_ts
+
+
+def test_planner_result_collects_llm_call_stats_from_the_ollama_client():
+    medications_fn = MagicMock(return_value=MedicationsOutput(items=[]))
+    registry = {ToolName.GET_MEDICATIONS: _fake_medications_spec(medications_fn)}
+    decisions = [
+        PlannerDecision(action=PlannerAction.CALL_TOOL, tool=ToolName.GET_MEDICATIONS, reason="meds"),
+        PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done"),
+    ]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry)
+
+    result = planner.run("What meds is she on?")
+
+    # Every extract()/chat() call the loop made (2 PlannerDecision extracts +
+    # the two-call finalize: 1 chat + 1 extract) shows up as an llm call.
+    assert result.llm_calls == ollama.call_stats
+    assert len(result.llm_calls) == 4
+
+
+def test_planner_result_llm_calls_defaults_to_empty_list_for_a_client_without_call_stats():
+    # A minimal fake that has no ``call_stats`` attribute at all must not
+    # crash the planner -- the field degrades to an empty list rather than
+    # raising AttributeError.
+    class _BareOllamaClient:
+        def extract(self, messages, schema):
+            if schema is QuarantineSummary:
+                return QuarantineSummary(summary="s")
+            if schema is FinalAnswer:
+                return FinalAnswer(answer="done")
+            return PlannerDecision(action=PlannerAction.ANSWER, final_answer="done", reason="done")
+
+        def chat(self, messages, *, options=None) -> str:
+            return "reasoning"
+
+    registry: dict[ToolName, ToolSpec] = {}
+    planner = _make_planner(_BareOllamaClient(), registry)
+
+    result = planner.run("anything?")
+
+    assert result.llm_calls == []

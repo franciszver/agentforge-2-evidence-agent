@@ -253,6 +253,134 @@ def test_from_settings_builds_client_targeting_configured_base_url_and_model():
     assert client._base_url == "http://ollama.example:11434"
 
 
+# --- call_stats: per-call token counts + timing (#149 span emission) --------
+#
+# ``record_llm_span`` (app.trace_store) needs a model name, token counts, and
+# timing per Ollama call, but chat()/extract() only ever returned the
+# assembled content/model -- nothing surfaced tokens or timing. These tests
+# pin the side-channel ``OllamaClient.call_stats`` list every top-level
+# chat()/extract() call appends to, which ``app.planner``/``app.extraction``
+# read after the fact to build the spans the dashboard aggregates.
+
+
+def test_chat_records_call_stats_with_tokens_model_and_timing():
+    body = _ndjson(
+        {"message": {"role": "assistant", "content": "hello"}, "done": False},
+        {
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "prompt_eval_count": 12,
+            "eval_count": 7,
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler, model="qwen3:4b")
+    client.chat([{"role": "user", "content": "hi"}])
+
+    assert len(client.call_stats) == 1
+    stats = client.call_stats[0]
+    assert stats.model == "qwen3:4b"
+    assert stats.ok is True
+    assert stats.tokens_in == 12
+    assert stats.tokens_out == 7
+    assert stats.end_ts >= stats.start_ts
+
+
+def test_chat_records_failed_call_stats_on_http_error_with_no_token_counts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal stack trace detail")
+
+    client = _client(handler)
+    with pytest.raises(OllamaError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    assert len(client.call_stats) == 1
+    assert client.call_stats[0].ok is False
+    assert client.call_stats[0].tokens_in is None
+    assert client.call_stats[0].tokens_out is None
+
+
+def test_extract_records_call_stats_with_tokens_on_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {
+                    "message": {"role": "assistant", "content": json.dumps({"name": "dog", "legs": 4})},
+                    "done": True,
+                    "prompt_eval_count": 20,
+                    "eval_count": 5,
+                }
+            ),
+        )
+
+    client = _client(handler)
+    client.extract([{"role": "user", "content": "describe a dog"}], _Animal)
+
+    assert len(client.call_stats) == 1
+    assert client.call_stats[0].ok is True
+    assert client.call_stats[0].tokens_in == 20
+    assert client.call_stats[0].tokens_out == 5
+
+
+def test_extract_records_one_call_stats_entry_per_attempt_including_failed_retries():
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        content = "not valid json {{{" if call_count == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {
+                    "message": {"role": "assistant", "content": content},
+                    "done": True,
+                    "prompt_eval_count": 10,
+                    "eval_count": 3,
+                }
+            ),
+        )
+
+    client = _client(handler, max_retries=2)
+    client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    # One call_stats entry per actual Ollama request -- the failed first
+    # attempt AND the succeeding second attempt, not just the final one.
+    assert len(client.call_stats) == 2
+    assert client.call_stats[0].ok is False
+    assert client.call_stats[1].ok is True
+    assert client.call_stats[1].tokens_in == 10
+    assert client.call_stats[1].tokens_out == 3
+
+
+def test_extract_http_error_propagates_immediately_without_retry():
+    # Contract (see extract() docstring): network/HTTP failures are NOT
+    # retried -- they propagate immediately. Recording the failed attempt's
+    # call_stats must not turn an HTTP error into a retried one.
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(500, text="internal stack trace detail")
+
+    client = _client(handler, max_retries=2)
+    with pytest.raises(OllamaError):
+        client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    # Exactly ONE upstream request was made (no retry on HTTP error), and it
+    # recorded a single failed call_stats entry with no token counts.
+    assert call_count == 1
+    assert len(client.call_stats) == 1
+    assert client.call_stats[0].ok is False
+    assert client.call_stats[0].tokens_in is None
+    assert client.call_stats[0].tokens_out is None
+
+
 # --- live integration: real qwen3:4b -----------------------------------
 #
 # Ollama is internal-only on the dev stack's docker network (no host port

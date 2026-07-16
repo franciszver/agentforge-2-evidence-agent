@@ -19,15 +19,18 @@ binding the planner itself already enforces (see ``app.planner`` module
 docstring). This in-memory store is kept as-is (P4.2 does not replace it --
 conversation *content* and durable *trace* data are different concerns; see
 ``app.trace_store``): a durable, queryable ``TraceStore`` (P4.2) is wired in
-alongside it and records a **request** span (whole invocation) and a
-**verification** span (the P3.7 verdict fold) per turn, keyed by the SAME
-correlation id ``Turn`` already carries. Per-tool and per-LLM-call spans are
-NOT wired live here -- ``app.planner.ToolCallTrace`` and ``OllamaClient``
-don't currently expose per-call timestamps/token counts, so emitting those
-spans from this module would mean fabricating timing data; see
-``app.trace_store.TraceStore.record_tool_span`` /
-``.record_llm_span`` (built and tested, just not called from here yet) and
-``.record_feedback_span`` (P4.3's ``/feedback`` endpoint seam).
+alongside it and records a **request** span (whole invocation), a
+**verification** span (the P3.7 verdict fold), a **tool** span per planner
+tool dispatch, and an **llm** span per completed Ollama call (#149), all
+keyed by the SAME correlation id ``Turn`` already carries. Tool timing comes
+from ``app.planner.ToolCallTrace.start_ts``/``end_ts`` (its ``error`` field
+doubles as the tool span's ``error_category`` -- already a closed-set string,
+see ``app.planner`` module docstring); LLM timing/tokens come from
+``PlannerResult.llm_calls`` and the claim extractor's own ``llm_calls`` (both
+``OllamaClient.call_stats`` side channels -- see ``app.ollama_client
+.LlmCallStats``). See ``_emit_llm_spans`` and
+``.record_feedback_span`` (P4.3's ``/feedback`` endpoint seam, separately
+wired).
 
 SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
   * ``conversation`` -- first frame, carries ``{"conversation_id": str,
@@ -72,7 +75,7 @@ from app.config import get_settings
 from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import ClaimExtractor, ClaimExtractorLike, run_verification
-from app.ollama_client import OllamaClient
+from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer, RenderedClaim
@@ -443,6 +446,30 @@ def _record_span_best_effort(operation: str, write: Callable[[], object]) -> Non
         )
 
 
+def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: list[LlmCallStats]) -> None:
+    """Record one ``llm`` span per completed Ollama call (P4/#149), best-effort.
+
+    ``llm_calls`` comes from ``PlannerResult.llm_calls`` (decision extracts,
+    the quarantine summarizer, the two-call finalize) and, separately, the
+    claim extractor's own ``llm_calls`` -- both are plain ``LlmCallStats``
+    lists, never raw prompts/completions, so nothing PHI-bearing reaches the
+    trace store here.
+    """
+    for llm_call in llm_calls:
+        _record_span_best_effort(
+            "llm_span",
+            lambda llm_call=llm_call: trace_store.record_llm_span(
+                correlation_id=correlation_id,
+                start_ts=llm_call.start_ts,
+                end_ts=llm_call.end_ts,
+                ok=llm_call.ok,
+                model=llm_call.model,
+                tokens_in=llm_call.tokens_in,
+                tokens_out=llm_call.tokens_out,
+            ),
+        )
+
+
 def _stream_chat(
     planner: PlannerProtocol,
     extractor: ClaimExtractorLike,
@@ -473,6 +500,20 @@ def _stream_chat(
                 ChatEvent.TOOL_CALL,
                 {"tool": call.tool.value, "args": call.args, "error": call.error},
             )
+            _record_span_best_effort(
+                "tool_span",
+                lambda call=call: trace_store.record_tool_span(
+                    correlation_id=correlation_id,
+                    start_ts=call.start_ts,
+                    end_ts=call.end_ts,
+                    ok=call.error is None,
+                    tool_name=call.tool.value,
+                    args=call.args,
+                    error_category=call.error,
+                ),
+            )
+
+        _emit_llm_spans(trace_store, correlation_id, result.llm_calls)
 
         yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
 
@@ -484,6 +525,7 @@ def _stream_chat(
         verification_start_ts = time.time()
         verdict_result, rendered = run_verification(extractor, result)
         verification_end_ts = time.time()
+        _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
         verdict_trace_record = to_trace_record(verdict_result)
         # Yield the frame before the trace write -- the client shouldn't wait
         # on a disk write for data it already has.
