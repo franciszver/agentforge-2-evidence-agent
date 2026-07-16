@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.chat import chat_endpoint
 from app.correlation import CorrelationIdMiddleware, configure_logging
+from app.feedback import feedback_endpoint
 from app.readiness import ReadinessReport, compute_readiness
 
 configure_logging()
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
         return HTMLResponse(content=CHAT_SHELL_HTML)
 
     app.add_api_route("/chat", chat_endpoint, methods=["POST"])
+    app.add_api_route("/feedback", feedback_endpoint, methods=["POST"], status_code=201)
 
     return app
 

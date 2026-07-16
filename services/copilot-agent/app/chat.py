@@ -523,7 +523,13 @@ def _stream_chat(
         )
 
 
-def _extract_bearer_token(authorization: str | None) -> str:
+def extract_bearer_token(authorization: str | None) -> str:
+    """Pull the token out of an ``Authorization: Bearer <token>`` header.
+
+    Public (not module-private): ``app.feedback.feedback_endpoint`` reuses
+    this exact parsing rather than duplicating it, since both endpoints gate
+    on the same bearer-token seam.
+    """
     prefix = "Bearer "
     if not authorization or not authorization.startswith(prefix):
         raise TokenValidationError("missing bearer token")
@@ -540,7 +546,7 @@ async def chat_endpoint(
     trace_store: TraceStore = Depends(get_trace_store),
 ) -> StreamingResponse:
     try:
-        token = _extract_bearer_token(authorization)
+        token = extract_bearer_token(authorization)
         validator(token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
