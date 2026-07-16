@@ -85,11 +85,15 @@ class IntrospectionResult:
     ``False`` -- the caller treats anything that is not a positive ``active:
     true`` as an invalid token. ``exp`` (epoch seconds, when present) lets the
     caller reject a token whose expiry has already passed and bound any cache
-    TTL to it.
+    TTL to it. ``patient`` (#124 Phase 5) is the SMART launch patient the token
+    was issued for -- a FHIR **UUID** string echoed verbatim by OpenEMR's
+    introspection ``patient`` key (see ``TokenIntrospectionRestController``);
+    ``None`` when the token carries no launch context.
     """
 
     active: bool
     exp: int | None
+    patient: str | None = None
 
 
 def introspect_token(
@@ -132,7 +136,12 @@ def introspect_token(
         return IntrospectionResult(active=False, exp=None)
 
     exp = payload.get("exp")
-    return IntrospectionResult(active=True, exp=exp if isinstance(exp, int) else None)
+    patient = payload.get("patient")
+    return IntrospectionResult(
+        active=True,
+        exp=exp if isinstance(exp, int) else None,
+        patient=patient if isinstance(patient, str) and patient else None,
+    )
 
 
 def _safe_error_detail(response: httpx.Response) -> str:

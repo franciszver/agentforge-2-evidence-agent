@@ -77,6 +77,7 @@ from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import ClaimExtractor, ClaimExtractorLike, apply_recency_notice, run_verification
 from app.introspection import TokenIntrospector
+from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
@@ -202,6 +203,45 @@ def get_token_validator() -> TokenValidator:
     if get_settings().copilot_per_user_token_enabled:
         return build_introspection_validator(get_token_introspector())
     return _default_token_validator
+
+
+LaunchBindingChecker = Callable[[str, int], None]
+
+
+def _default_launch_binding_checker(token: str, patient_id: int) -> None:
+    """Flag-OFF default: no-op. Keeps /chat byte-identical to today -- the
+    token-launch patient binding is a flag-on (#124 Phase 5) layer."""
+    return None
+
+
+_launch_patient_binder: LaunchPatientBinder | None = None
+
+
+def get_launch_patient_binder() -> LaunchPatientBinder:
+    """The process-wide ``LaunchPatientBinder``.
+
+    Built lazily and given the SAME ``TokenIntrospector`` the token validator
+    uses, so its introspection is a cache hit -- only the pid->uuid resolve
+    read is an extra round trip.
+    """
+    global _launch_patient_binder
+    if _launch_patient_binder is None:
+        _launch_patient_binder = LaunchPatientBinder.from_settings(
+            get_settings(), get_token_introspector()
+        )
+    return _launch_patient_binder
+
+
+def get_launch_binding_checker() -> LaunchBindingChecker:
+    """FastAPI dependency: the active launch-patient binding check. Override in tests.
+
+    Flag ON (``copilot_per_user_token_enabled``, #124 Phase 5): verifies the
+    token's SMART launch patient matches ``request.patient_id`` before the
+    planner runs. Flag OFF: a no-op, so /chat is byte-identical to today.
+    """
+    if get_settings().copilot_per_user_token_enabled:
+        return get_launch_patient_binder().verify
+    return _default_launch_binding_checker
 
 
 _dev_token_bridge: DevTokenBridge | None = None
@@ -694,6 +734,7 @@ async def chat_endpoint(
     request: ChatRequest,
     authorization: str | None = Header(default=None),
     validator: TokenValidator = Depends(get_token_validator),
+    launch_binding_checker: LaunchBindingChecker = Depends(get_launch_binding_checker),
     planner_factory: PlannerFactory = Depends(get_planner_factory),
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
@@ -705,6 +746,20 @@ async def chat_endpoint(
         validator(token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
+
+    # #124 Phase 5: the token's SMART launch patient (when present) is the
+    # authoritative binding -- reject a mismatch here, BEFORE the planner (and
+    # thus any tool call) is run. A token WITHOUT launch context is not
+    # hard-failed; the checker is a no-op and the request falls back to the
+    # P2.16 conversation-pid binding below. Flag OFF -> the checker is a no-op.
+    try:
+        launch_binding_checker(token, request.patient_id)
+    except LaunchPatientMismatchError as exc:
+        # Log-safe: no token, pid, or UUID -- just that a binding was refused.
+        _logger.warning("chat request rejected: token launch-context patient binding mismatch")
+        raise HTTPException(
+            status_code=403, detail="patient_id is not authorized for this token"
+        ) from exc
 
     user = _user_identity_from_token(token)
 
