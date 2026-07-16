@@ -217,6 +217,15 @@ class TraceStore:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
+    @property
+    def db_path(self) -> str:
+        """The SQLite file path this store reads/writes -- exposed for the
+        P4.5 dashboard's read-only aggregation queries
+        (``app.dashboard_metrics.compute_dashboard_metrics``), which open
+        their own connection against the same file rather than going through
+        this class's per-correlation-id ``get_spans``."""
+        return self._db_path
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._db_path)
 
