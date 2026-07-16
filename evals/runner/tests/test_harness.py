@@ -97,6 +97,14 @@ def test_schema_invalid_case_raises_a_clear_error() -> None:
         load_case(_CASES / "invalid-schema.yaml")
 
 
+def test_case_without_failure_mode_raises_validation_error() -> None:
+    """A case without a failure_mode must be rejected at load time (policy:
+    every case documents why it tests what it does). All 31 cases in evals/cases/
+    have failure_mode; this proves the schema enforces it for any new case."""
+    with pytest.raises(EvalCaseError, match="schema validation failed"):
+        load_case(_CASES / "missing-failure-mode.yaml")
+
+
 # --- missing recording: FAIL, not skip ------------------------------------
 
 

@@ -61,6 +61,8 @@ def test_case_outcome_schema_drifted_recording_reports_failed_not_raises(tmp_pat
     (cases_dir / "drift.yaml").write_text(
         "id: drift\n"
         "category: tool_selection\n"
+        "failure_mode: >\n"
+        "  Test fixture: proves drifted recordings are counted as failures.\n"
         'question: "What meds is she on?"\n'
         "patient_id: 1\n"
         "tool_data:\n"
@@ -154,6 +156,8 @@ def test_compute_run_result_wires_discovery_through_to_a_run_point(tmp_path: Pat
     (cases_dir / "t-pass.yaml").write_text(
         "id: t-pass\n"
         "category: tool_selection\n"
+        "failure_mode: >\n"
+        "  Test fixture: proves compute_run_result counts passing cases.\n"
         'question: "What meds is she on?"\n'
         "patient_id: 1\n"
         "tool_data:\n"
@@ -173,6 +177,8 @@ def test_compute_run_result_wires_discovery_through_to_a_run_point(tmp_path: Pat
     (cases_dir / "t-fail.yaml").write_text(
         "id: t-fail\n"
         "category: tool_selection\n"
+        "failure_mode: >\n"
+        "  Test fixture: proves compute_run_result counts failing cases.\n"
         'question: "What meds is she on?"\n'
         "patient_id: 1\n"
         "tool_data:\n"

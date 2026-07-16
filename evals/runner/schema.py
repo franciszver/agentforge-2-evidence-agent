@@ -144,7 +144,7 @@ class EvalCase(BaseModel):
 
     id: str = Field(min_length=1)
     category: _CATEGORIES
-    failure_mode: str | None = None
+    failure_mode: str = Field(min_length=1)
     source: str | None = Field(
         default=None,
         description=(

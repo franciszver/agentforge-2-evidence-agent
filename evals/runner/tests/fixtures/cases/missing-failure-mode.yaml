@@ -1,0 +1,8 @@
+id: fixture-missing-failure-mode
+category: tool_selection
+# deliberately omitting failure_mode to test schema validation
+question: "What meds is she on?"
+patient_id: 1
+assertions:
+  - type: first_tool_in
+    tools: [get_medications]
