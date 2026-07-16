@@ -28,4 +28,12 @@ interface AuthorizationCodeExchanger
      * log-only and must never reach the browser.
      */
     public function exchange(string $code, string $codeVerifier): OAuthTokenResponse;
+
+    /**
+     * Redeem a stored refresh token (grant_type=refresh_token) for a fresh
+     * access token and a ROTATED refresh token. Throws OAuthExchangeException on
+     * any failure (e.g. a revoked/expired refresh token); the message is
+     * log-only and must never reach the browser.
+     */
+    public function refresh(string $refreshToken): OAuthTokenResponse;
 }

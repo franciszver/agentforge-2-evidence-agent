@@ -40,7 +40,8 @@ new Function('window', 'document', src)(global.window, global.document);
 const {
     createSSEFrameParser,
     consumeSSEStream,
-    appendMessage
+    appendMessage,
+    createChatController
 } = global.window.CopilotChat;
 
 const encoder = new TextEncoder();
@@ -259,5 +260,59 @@ describe('appendMessage', () => {
 
         // If innerHTML had been used, this would be a real <b> element.
         expect(container.querySelector('b')).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — consent-required redirect (#124 Phase 3)
+// ---------------------------------------------------------------------------
+describe('createChatController consent-required handling', () => {
+    const AUTHORIZE_URL = 'https://host/base/oauth-authorize.php';
+
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function makeController(fetchImpl, redirectImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: AUTHORIZE_URL,
+                fetchImpl: fetchImpl,
+                redirectImpl: redirectImpl
+            })
+        };
+    }
+
+    test('a consent_required broker response redirects to the authorize entry and never calls the proxy', async () => {
+        const redirectImpl = jest.fn();
+        const fetchImpl = jest.fn().mockResolvedValue({
+            ok: true,
+            json: () => Promise.resolve({ consent_required: true })
+        });
+
+        const { messagesEl, controller } = makeController(fetchImpl, redirectImpl);
+        controller.sendMessage('What meds is she on?');
+
+        // Flush the microtask/promise chain triggered by ensureToken.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(redirectImpl).toHaveBeenCalledTimes(1);
+        expect(redirectImpl).toHaveBeenCalledWith(AUTHORIZE_URL);
+        // Only the broker was hit — the proxy was never called.
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(fetchImpl).toHaveBeenCalledWith('https://host/base/ajax.php', expect.anything());
+        // The user's message is shown; no "unavailable" bubble is appended.
+        expect(messagesEl.textContent).not.toContain('unavailable');
     });
 });

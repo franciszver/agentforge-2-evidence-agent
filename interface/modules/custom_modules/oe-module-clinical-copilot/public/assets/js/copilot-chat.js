@@ -525,6 +525,9 @@
     function createChatController(options) {
         var cachedToken = null;
         var conversationId = null;
+        var redirect = options.redirectImpl || function (url) {
+            window.location.assign(url);
+        };
 
         function ensureToken() {
             if (cachedToken) {
@@ -536,6 +539,14 @@
                 body: 'csrf_token_form=' + encodeURIComponent(options.context.csrfToken)
             }).then(function (resp) {
                 return resp.json().then(function (data) {
+                    // Flag-on Phase 3: the broker asks the user to (re)authorize.
+                    // Send them into the authorize flow and stop this turn — the
+                    // page is navigating away, so we return a promise that never
+                    // settles rather than surfacing an "unavailable" message.
+                    if (data && data.consent_required === true) {
+                        redirect(options.authorizeUrl);
+                        return new Promise(function () {});
+                    }
                     if (!resp.ok || typeof data.token !== 'string' || data.token === '') {
                         throw new Error('token broker request failed');
                     }
@@ -649,6 +660,7 @@
             brokerUrl: baseUrl + '/ajax.php',
             proxyUrl: baseUrl + '/chat-proxy.php',
             feedbackUrl: baseUrl + '/feedback-proxy.php',
+            authorizeUrl: baseUrl + '/oauth-authorize.php',
             fetchImpl: window.fetch.bind(window)
         });
         controller.init();

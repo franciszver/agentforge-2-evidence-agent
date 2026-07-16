@@ -84,6 +84,51 @@ final class GuzzleAuthorizationCodeExchanger implements AuthorizationCodeExchang
         }
     }
 
+    public function refresh(string $refreshToken): OAuthTokenResponse
+    {
+        // Same fail-safe posture as exchange(): every failure funnels into
+        // OAuthExchangeException with a generic, log-only message; the original
+        // is chained (never embedded) so creds/URLs cannot leak. OpenEMR rotates
+        // the refresh token on every refresh, so the response carries a NEW
+        // refresh token the caller must persist in place of the old one.
+        try {
+            $response = $this->client->post($this->config->tokenUrl, [
+                'form_params' => [
+                    'grant_type' => 'refresh_token',
+                    'refresh_token' => $refreshToken,
+                    'client_id' => $this->config->clientId,
+                    'client_secret' => $this->config->clientSecret,
+                ],
+                'timeout' => self::TIMEOUT_SECONDS,
+                'verify' => $this->verifySsl,
+                'http_errors' => false,
+            ]);
+
+            if ($response->getStatusCode() !== 200) {
+                throw new OAuthExchangeException('Token endpoint returned status ' . $response->getStatusCode());
+            }
+
+            $decoded = json_decode((string) $response->getBody(), true);
+            if (!is_array($decoded)) {
+                throw new OAuthExchangeException('Token endpoint returned a non-JSON body');
+            }
+
+            $rotatedRefresh = $decoded['refresh_token'] ?? null;
+            if (!is_string($rotatedRefresh) || $rotatedRefresh === '') {
+                throw new OAuthExchangeException('Token endpoint response is missing a refresh_token');
+            }
+
+            $accessTokenRaw = $decoded['access_token'] ?? null;
+            $accessToken = is_string($accessTokenRaw) && $accessTokenRaw !== '' ? $accessTokenRaw : null;
+
+            return new OAuthTokenResponse($rotatedRefresh, $accessToken, $this->expiryFrom($decoded));
+        } catch (OAuthExchangeException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new OAuthExchangeException('Token refresh failed', 0, $e);
+        }
+    }
+
     /**
      * @param array<array-key, mixed> $decoded
      */
