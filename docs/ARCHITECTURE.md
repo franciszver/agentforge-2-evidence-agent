@@ -526,30 +526,96 @@ place, which this architecture avoids entirely by construction (§5).
 ### Capacity reality (§7)
 
 `docs/IMPLEMENTATION_PLAN.md` §7 published an expectations table as
-"research-informed priors, to be measured in Phase 5" — that formal
-capacity run (Locust/k6 at 5 and 10 concurrent chats, P5.1) has **not yet
-run** as of this document. What exists instead is one real, informal data
-point from the P2.9 live-model eval: **the RTX 5060 Laptop's 8GB VRAM tier
+"research-informed priors, to be measured in Phase 5." That formal capacity
+run (P5.1) has now run, live against the running dev stack, hitting the
+real SSE `POST /chat` endpoint end-to-end (planner LLM + real OpenEMR tool
+calls + extraction LLM + deterministic verification) at 1, 5, and 10
+concurrent chats. Headline result: **100% of requests (21/21 across all
+three runs) returned a `verified` verdict with zero failures**, VRAM stayed
+flat at ~3.2 GB regardless of concurrency, and the hard bottleneck turned
+out to be single-GPU inference throughput (~0.15 req/s), not memory — see
+the measured-results subsection below for the full numbers.
+
+Before this run, the only data point was one real, informal observation
+from the P2.9 live-model eval: **the RTX 5060 Laptop's 8GB VRAM tier
 crashed under sustained inference load** (Finding F3) — `qwen3:4b` hit a
 `failure during GPU discovery ... timeout`, the `llama runner` process
 terminated, and the Ollama container wedged, requiring a host-level restart
-to recover. This is a genuine hardware/runtime finding, not a code defect,
-and it directly qualifies the priors below: the 8GB tier is workable for
-interactive single-user demo use but is demonstrably tight under sustained
-concurrent load, which is exactly what P5.1 is designed to quantify
-properly.
+to recover. That remains a genuine hardware/runtime finding from its own
+era, not a code defect, and it is not being retracted here — it was
+resolved at the time by a GPU driver update and reboot on the owner's
+machine. This P5.1 run, performed post-driver-update with bursty concurrent
+waves (not F3's sustained soak), **did not reproduce it**: Ollama stayed
+healthy throughout at every concurrency level tested. Read that as "did not
+reproduce under these conditions," not as "fixed" — F3 is kept below as
+real history.
 
 | Hardware tier | Model (Q4_K_M) | Expected speed | Status |
 |---|---|---|---|
-| RTX 5060 Laptop 8GB (dev/demo) | Qwen3-4B | ~40–100+ tok/s | **Prior, not measured.** Workable for single-user interactive demo; F3 shows it destabilizes under sustained concurrent load — a real capacity ceiling, not yet quantified. |
+| RTX 5060 Laptop 8GB (dev/demo) | Qwen3-4B | ~40–100+ tok/s | **Measured (P5.1).** The 10.3s single-request baseline backs the ~40–100 tok/s prior. 100% verified / 0 failures at 1, 5, and 10 concurrent chats (21/21 requests). VRAM flat at ~3.2 GB across all concurrency levels — not memory-bound. Throughput saturates at ~0.15 req/s; p50 latency scales 10.3s → 34.0s → 59.3s as concurrency goes 1 → 5 → 10. See measured-results subsection below. |
 | Raspberry Pi 5 8GB (CPU) | Llama 3.2 3B / Qwen3-4B | ~5–9 tok/s | **Prior, not measured.** Expected to work only in a "pre-visit brief generated ahead of time" batch mode (30–60s/answer), not live chat. |
 | Flagship phone (on-device, future) | 3–4B via llama.cpp/MLC | ~10–15 tok/s | **Industry-reported figure for this model class, not benchmarked here.** Relevant to the future mobile path, not the current deployment. |
 
-The honest takeaway: this architecture's local-inference economics are
-compelling *if* the hardware tier holds up under real concurrent load, and
-that "if" is currently a measured gap, not a measured fact — P5.1 is the
-next step to close it, and any TCO conclusion above should be read as
-provisional on that result.
+#### Measured results (P5.1)
+
+Hardware: NVIDIA GeForce RTX 5060 Laptop GPU, 8151 MiB total VRAM. Model:
+`qwen3:4b` (Q4_K_M) on Ollama 0.12.6. Load hit the live SSE `POST /chat`
+end-to-end (planner LLM + real OpenEMR tool calls + extraction LLM +
+deterministic verification), patient_id 1.
+
+| Concurrency | Requests | Success | p50 latency | p95 latency | max latency | Throughput | Peak VRAM | Max GPU temp | Verdicts |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 (baseline) | 1 | 1/1 | 10.3s | — | — | — | 3176 MiB | 64°C | verified |
+| 5 | 10 | 10/10 | 34.0s | 38.6s | 40.2s | 0.137 req/s | 3176 MiB | 81°C | 10 verified |
+| 10 | 10 | 10/10 | 59.3s | 66.2s | 67.0s | 0.149 req/s | 3176 MiB | 82°C | 10 verified |
+
+Idle VRAM with the model loaded but no inference running: ~3176 MiB,
+constant; idle GPU temp ~46°C.
+
+Reproduce:
+
+```
+docker cp services/copilot-agent/scripts/capacity_run.py development-easy-agent-1:/tmp/ && MSYS_NO_PATHCONV=1 docker exec development-easy-agent-1 python /tmp/capacity_run.py --concurrency 5 --requests 10
+```
+
+(the `MSYS_NO_PATHCONV` prefix is only needed on Git-Bash/Windows, to stop
+it from mangling the container path)
+
+Findings:
+
+- **VRAM is flat at ~3.2 GB across all concurrency levels.** Ollama
+  serializes inference to a single slot on the 8 GB GPU, so the KV cache
+  does not balloon with concurrency. Consequence: **Finding F3's
+  VRAM-exhaustion regime does not reproduce under bursty concurrent chat
+  load** — the 8 GB GPU is not memory-starved by concurrency alone.
+- **Throughput saturates at ~0.14–0.15 req/s** (roughly one completed chat
+  every 7 seconds) regardless of concurrency. The single GPU's serialized
+  inference is the hard bottleneck; adding concurrency adds queue latency,
+  not throughput.
+- **Latency scales roughly linearly with concurrency**: 10.3s (1 user) →
+  34.0s p50 (5) → 59.3s p50 (10). Correctness is unaffected — 100% of
+  requests returned a `verified` verdict with zero failures at every level.
+- **Thermals stayed stable and under throttle** (≤82°C under sustained
+  load vs. ~46°C idle).
+- **Reconciling with F3:** F3 was observed during the P2.9 sustained
+  live-eval soak and was resolved by the owner's GPU driver update and
+  reboot; this P5.1 run (bursty concurrent waves, post-driver-update) did
+  not reproduce a crash — Ollama stayed healthy throughout. The honest
+  capacity ceiling is therefore not VRAM exhaustion under short bursts but
+  the single-GPU throughput limit (~0.15 req/s) and the resulting
+  queue-latency growth: this hardware comfortably serves ~1 interactive
+  user (~10s answers) and degrades gracefully — not catastrophically — to
+  30–60s queued answers at 5–10 concurrent. F3 stays documented as a real
+  sustained-load/driver-era finding; it is not "fixed," only unreproduced
+  in this run.
+
+The honest takeaway: this architecture's local-inference economics hold up
+for low-concurrency interactive use — exactly the shape a single clinician
+panel produces. The measured constraint is throughput, not memory: this
+8GB tier comfortably serves one interactive user and degrades gracefully
+(queue latency, not crashes) under 5–10 concurrent chats. That is now a
+measured fact, not a measured gap, and the TCO conclusion above can be read
+as backed by it rather than provisional on it.
 
 ## Eval Results (the honest number)
 
