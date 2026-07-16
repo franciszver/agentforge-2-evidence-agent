@@ -12,6 +12,8 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.chat import get_trace_store
+from app.dashboard import get_eval_history_provider
+from app.dashboard_eval_history import EvalRunPoint
 from app.main import app
 from app.trace_store import FeedbackThumb, TraceStore
 
@@ -133,3 +135,54 @@ def test_dashboard_renders_banner_for_over_threshold_error_rate(tmp_path) -> Non
     assert response.status_code == 200
     assert 'data-testid="alert-banner"' in response.text
     assert "error rate" in response.text.lower()
+
+
+# --- P4.10: eval pass-rate-over-time chart ---------------------------------
+
+
+def test_dashboard_shows_no_data_state_when_eval_history_empty() -> None:
+    app.dependency_overrides[get_eval_history_provider] = lambda: (lambda: [])
+
+    try:
+        response = client.get("/dashboard")
+    finally:
+        app.dependency_overrides.pop(get_eval_history_provider, None)
+
+    assert response.status_code == 200
+    assert "No eval runs recorded yet" in response.text
+
+
+def test_dashboard_renders_eval_pass_rate_chart_when_history_exists() -> None:
+    points = [
+        EvalRunPoint(
+            timestamp="2026-07-10T00:00:00+00:00",
+            git_sha="aaa1111",
+            total=10,
+            passed=8,
+            failed=0,
+            xfailed=2,
+            pass_rate=0.8,
+        ),
+        EvalRunPoint(
+            timestamp="2026-07-15T00:00:00+00:00",
+            git_sha="bbb2222",
+            total=12,
+            passed=10,
+            failed=0,
+            xfailed=2,
+            pass_rate=10 / 12,
+        ),
+    ]
+    app.dependency_overrides[get_eval_history_provider] = lambda: (lambda: points)
+
+    try:
+        response = client.get("/dashboard")
+    finally:
+        app.dependency_overrides.pop(get_eval_history_provider, None)
+
+    assert response.status_code == 200
+    assert "Eval pass rate" in response.text
+    assert "No eval runs recorded yet" not in response.text
+    # Latest point's git sha surfaces so a clinician/reviewer can tell which
+    # commit the newest recorded run corresponds to.
+    assert "bbb2222" in response.text

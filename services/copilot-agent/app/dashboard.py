@@ -36,10 +36,12 @@ from fastapi.responses import HTMLResponse
 
 from app.chat import get_trace_store
 from app.dashboard_alerts import Alert, evaluate_alerts
+from app.dashboard_eval_history import EvalRunPoint, load_eval_history
 from app.dashboard_metrics import DashboardMetrics, compute_dashboard_metrics
 from app.trace_store import TraceStore
 
 MetricsProvider = Callable[[], DashboardMetrics]
+EvalHistoryProvider = Callable[[], list[EvalRunPoint]]
 
 
 def get_metrics_provider(trace_store: TraceStore = Depends(get_trace_store)) -> MetricsProvider:
@@ -55,6 +57,17 @@ def get_metrics_provider(trace_store: TraceStore = Depends(get_trace_store)) -> 
        transparently isolates this dependency too, with zero extra plumbing.
     """
     return lambda: compute_dashboard_metrics(trace_store.db_path)
+
+
+def get_eval_history_provider() -> EvalHistoryProvider:
+    """FastAPI dependency: builds an ``EvalHistoryProvider`` over the
+    committed, agent-packaged eval-run history (P4.10). Unlike
+    ``get_metrics_provider`` this has no per-request trace-store dependency
+    -- the history is a static committed file -- but it is still expressed
+    as an overridable dependency so tests can inject a fixture history
+    (empty, single-run, multi-run) without touching the real file on disk.
+    """
+    return load_eval_history
 
 
 def _fmt_rate(value: float | None) -> str:
@@ -102,6 +115,54 @@ def _split_bar_svg(*, label: str, up: int, down: int) -> str:
 <rect x="0" y="0" width="{up_pct:.1f}%" height="28" fill="#2e7d32"></rect>
 <rect x="{up_pct:.1f}%" y="0" width="{down_pct:.1f}%" height="28" fill="#c62828"></rect>
 <text x="8" y="19" fill="#fff" font-size="14">{up} up / {down} down</text>
+</svg>"""
+
+
+def _eval_pass_rate_chart_svg(points: list[EvalRunPoint]) -> str:
+    """Inline SVG line chart of eval pass-rate over time (P4.10).
+
+    X-axis is run ORDER (evenly spaced), not a time-proportional scale --
+    the committed history is expected to have few, irregularly-spaced
+    points (one per recorded run, not a continuous series), so an
+    order-based axis reads more cleanly than a cramped/sparse time axis.
+    Y-axis is pass_rate, 0-100%. A single point renders as a dot with no
+    line (nothing to connect yet); the empty history renders the same
+    "no data" treatment as the other dashboard charts.
+    """
+    if not points:
+        return """<svg width="100%" height="80" role="img" aria-label="Eval pass rate over time: no data">
+<rect x="0" y="0" width="100%" height="80" fill="#e0e0e0"></rect>
+<text x="8" y="44" fill="#555" font-size="14">No eval runs recorded yet</text>
+</svg>"""
+
+    width, height, pad = 300, 80, 10
+    n = len(points)
+
+    def x_at(i: int) -> float:
+        return width / 2 if n == 1 else pad + (width - 2 * pad) * i / (n - 1)
+
+    def y_at(rate: float) -> float:
+        fraction = max(0.0, min(1.0, rate))
+        return pad + (height - 2 * pad) * (1 - fraction)
+
+    coords = [(x_at(i), y_at(point.pass_rate)) for i, point in enumerate(points)]
+    dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="#2e7d32"></circle>' for x, y in coords)
+    line = ""
+    if n > 1:
+        poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+        line = f'<polyline points="{poly}" fill="none" stroke="#2e7d32" stroke-width="2"></polyline>'
+
+    latest = points[-1]
+    label = (
+        f"Eval pass rate over time: latest {latest.pass_rate * 100:.1f}% "
+        f"({latest.passed}/{latest.total} passed, {latest.xfailed} known failures) "
+        f"at {latest.git_sha}"
+    )
+    return f"""<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{label}">
+<rect x="0" y="0" width="{width}" height="{height}" fill="#f5f5f5"></rect>
+{line}
+{dots}
+<text x="4" y="{height - 4}" fill="#555" font-size="10">latest: {latest.pass_rate * 100:.1f}% ({latest.git_sha}, {latest.xfailed} known failures)</text>
 </svg>"""
 
 
@@ -178,9 +239,10 @@ def _alert_banners_section(alerts: list[Alert]) -> str:
     return f"""<section class="alert-banners">{"".join(_alert_banner(alert) for alert in alerts)}</section>"""
 
 
-def render_dashboard_html(metrics: DashboardMetrics) -> str:
-    """Render the full dashboard page for ``metrics``. Pure function of the
-    DTO -- no I/O, so hermetically testable with any seeded/empty metrics."""
+def render_dashboard_html(metrics: DashboardMetrics, eval_history: list[EvalRunPoint]) -> str:
+    """Render the full dashboard page for ``metrics``/``eval_history``. Pure
+    function of the two DTOs -- no I/O, so hermetically testable with any
+    seeded/empty metrics and any seeded/empty eval-run history."""
     alert_banners = _alert_banners_section(evaluate_alerts(metrics))
     tiles = "".join(
         [
@@ -201,6 +263,7 @@ def render_dashboard_html(metrics: DashboardMetrics) -> str:
     feedback_bar = _split_bar_svg(
         label="Feedback", up=metrics.feedback_up_count, down=metrics.feedback_down_count
     )
+    eval_chart = _eval_pass_rate_chart_svg(eval_history)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -228,6 +291,10 @@ def render_dashboard_html(metrics: DashboardMetrics) -> str:
 <h2>Feedback</h2>
 {feedback_bar}
 </section>
+<section class="chart-section">
+<h2>Eval pass rate over time</h2>
+{eval_chart}
+</section>
 </main>
 </div>
 </body>
@@ -235,6 +302,10 @@ def render_dashboard_html(metrics: DashboardMetrics) -> str:
 """
 
 
-def dashboard_endpoint(metrics_provider: MetricsProvider = Depends(get_metrics_provider)) -> HTMLResponse:
+def dashboard_endpoint(
+    metrics_provider: MetricsProvider = Depends(get_metrics_provider),
+    eval_history_provider: EvalHistoryProvider = Depends(get_eval_history_provider),
+) -> HTMLResponse:
     metrics = metrics_provider()
-    return HTMLResponse(content=render_dashboard_html(metrics))
+    eval_history = eval_history_provider()
+    return HTMLResponse(content=render_dashboard_html(metrics, eval_history))

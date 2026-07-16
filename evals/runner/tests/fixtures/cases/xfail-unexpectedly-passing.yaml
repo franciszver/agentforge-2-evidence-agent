@@ -1,0 +1,27 @@
+id: xfail-unexpectedly-passing
+category: tool_selection
+failure_mode: >
+  Harness self-test (P4.10): proves record_run classifies a STALE xfail (a
+  case marked as a documented known-failure whose assertions now genuinely
+  pass on replay) as "failed", not "passed" and not "xfailed" -- mirroring
+  pytest's strict=True unexpected-pass-is-a-failure semantics, so a fixed
+  model behavior can't leave a stale xfail hiding inside the pass rate.
+xfail: >
+  Harness self-test fixture: this case is deliberately marked xfail even
+  though its assertions are the same ones fixture-pass.yaml uses (which
+  genuinely pass against fixture-pass.json's recording, reused here) -- an
+  intentional stale xfail for the test to detect.
+question: "What meds is she on?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: Lisinopril
+        dose: 10mg
+        route: oral
+        status: active
+assertions:
+  - type: first_tool_in
+    tools: [get_medications]
+  - type: answer_contains
+    phrases: ["Lisinopril"]

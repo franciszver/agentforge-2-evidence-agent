@@ -1,0 +1,46 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The medication list answers this directly.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "Active oral Lisinopril 10mg."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "She is on Lisinopril 10mg oral.",
+        "reason": "Medication list answers the question.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "She takes Lisinopril 10mg orally, currently active.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "She is on Lisinopril 10mg oral.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

@@ -34,4 +34,4 @@ build-backend = "setuptools.build_meta"
 packages = ["app", "app.schemas", "app.tools", "app.data"]
 
 [tool.setuptools.package-data]
-"app.data" = ["*.csv", "*.db", "*.sha256"]
+"app.data" = ["*.csv", "*.db", "*.sha256", "*.json"]
