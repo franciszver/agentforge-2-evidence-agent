@@ -1,0 +1,64 @@
+# drug_interactions_source.csv -- P3.5 offline drug-drug interaction dataset.
+#
+# PROVENANCE / LICENSING NOTE (this repo is public):
+# This is an ORIGINALLY CURATED, hand-reviewed demonstration dataset,
+# compiled from general clinical pharmacology knowledge, using the same
+# drug-pair + severity-level (Major / Moderate / Minor) schema style as the
+# DDInter reference database (https://ddinter2.scbdd.com). It is NOT a copy
+# or export of DDInter's data. DDInter itself is licensed CC BY-NC-SA 4.0
+# (non-commercial, share-alike), so its actual data files are never
+# redistributed here -- only the schema style is reused. Drug-drug
+# interactions are established clinical facts, not copyrightable
+# expression; this file's specific selection, wording, and severity
+# ratings are original authorship for this project.
+#
+# THIS IS A DEMO DATASET, NOT A CLINICAL REFERENCE. It covers a few dozen
+# well-known, textbook interaction pairs -- enough to exercise the offline
+# lookup (P3.6) and the demo scenarios (UC2: "does ibuprofen conflict with
+# this patient's meds?" for a patient on Lisinopril + Norvasc). It is not
+# exhaustive, not validated against a clinical decision-support system, and
+# must never be used for real prescribing decisions.
+#
+# Columns: drug_a, drug_b, severity, mechanism
+#   - Names are the literal names ingest stores; app.data.drug_interactions
+#     normalizes (casefold + strip) and orders them symmetrically at
+#     ingest/lookup time, so case and pair order never matter.
+#   - "norvasc" (not "amlodipine") is used deliberately: it matches the
+#     literal brand name the seeded demo patient's medication record uses
+#     (see evals/fixtures/seed.py / tests/test_tool_medications.py), so
+#     P3.6 can match against MedicationItem.name without a brand/generic
+#     alias table (out of scope for this dataset).
+#   - severity in {Major, Moderate, Minor} (DDInter-style levels), enforced
+#     by the ingest loader and the SQLite CHECK constraint.
+#
+drug_a,drug_b,severity,mechanism
+ibuprofen,lisinopril,Moderate,"NSAID inhibits renal prostaglandins, blunting the antihypertensive effect of ACE inhibitors and raising the risk of reduced renal function, especially with volume depletion."
+warfarin,aspirin,Major,"Combined anticoagulant and antiplatelet effect substantially increases bleeding risk, particularly gastrointestinal bleeding."
+warfarin,ibuprofen,Major,"NSAID displaces warfarin from protein binding and impairs platelet function, increasing bleeding risk on top of anticoagulation."
+lisinopril,spironolactone,Major,"ACE inhibitor plus potassium-sparing diuretic raises serum potassium; risk of clinically significant hyperkalemia."
+simvastatin,clarithromycin,Major,"Clarithromycin strongly inhibits CYP3A4, raising simvastatin plasma levels and the risk of myopathy or rhabdomyolysis."
+norvasc,simvastatin,Moderate,"Amlodipine (Norvasc) is a moderate CYP3A4 inhibitor; combined use increases simvastatin exposure. FDA labeling recommends limiting simvastatin to 20mg/day with amlodipine."
+sertraline,tramadol,Major,"Both increase serotonergic activity; combination carries a risk of serotonin syndrome."
+warfarin,amiodarone,Major,"Amiodarone inhibits warfarin metabolism via CYP2C9, increasing INR and bleeding risk; dose reduction and closer monitoring are typically required."
+digoxin,amiodarone,Major,"Amiodarone reduces digoxin clearance, raising digoxin levels and toxicity risk; dose reduction is usually needed."
+clopidogrel,omeprazole,Moderate,"Omeprazole inhibits CYP2C19-mediated activation of clopidogrel, potentially reducing its antiplatelet effect."
+ciprofloxacin,warfarin,Major,"Ciprofloxacin inhibits warfarin metabolism, increasing INR and bleeding risk."
+methotrexate,ibuprofen,Major,"NSAIDs reduce renal clearance of methotrexate, raising the risk of methotrexate toxicity, especially at higher methotrexate doses."
+lithium,lisinopril,Major,"ACE inhibitors reduce renal lithium clearance, raising lithium levels and toxicity risk."
+lithium,ibuprofen,Moderate,"NSAIDs reduce renal lithium clearance, raising lithium levels; monitor lithium levels if the combination is unavoidable."
+metoprolol,verapamil,Major,"Combined beta-blocker and non-dihydropyridine calcium channel blocker can cause severe bradycardia, AV block, or hypotension."
+azithromycin,warfarin,Moderate,"Macrolides can potentiate warfarin's anticoagulant effect; monitor INR more closely when co-prescribed."
+levothyroxine,"calcium carbonate",Minor,"Calcium carbonate binds levothyroxine in the gut, reducing absorption; separate dosing by several hours."
+sildenafil,nitroglycerin,Major,"Both are potent vasodilators; combined use can cause severe, potentially life-threatening hypotension. Contraindicated."
+tramadol,warfarin,Moderate,"Tramadol has been associated with increased INR when combined with warfarin; monitor coagulation status."
+spironolactone,ibuprofen,Moderate,"NSAIDs blunt the diuretic and antihypertensive effect of spironolactone and, combined with its potassium-sparing action, raise hyperkalemia risk."
+metformin,cimetidine,Minor,"Cimetidine reduces renal clearance of metformin, modestly raising metformin levels."
+atorvastatin,clarithromycin,Major,"Clarithromycin's CYP3A4 inhibition raises atorvastatin levels, increasing myopathy or rhabdomyolysis risk."
+losartan,spironolactone,Major,"ARB plus potassium-sparing diuretic raises serum potassium; risk of clinically significant hyperkalemia."
+hydrochlorothiazide,lithium,Major,"Thiazide diuretics reduce renal lithium clearance, raising lithium levels and toxicity risk."
+fluoxetine,tramadol,Major,"Both increase serotonergic activity; combination carries a risk of serotonin syndrome."
+metoprolol,diltiazem,Major,"Combined beta-blocker and non-dihydropyridine calcium channel blocker can cause severe bradycardia or AV block."
+digoxin,verapamil,Major,"Verapamil reduces digoxin clearance and adds additive AV-nodal blockade, raising digoxin toxicity and bradyarrhythmia risk."
+omeprazole,warfarin,Minor,"Omeprazole can modestly increase warfarin exposure via CYP2C19 interaction; clinically significant effect is uncommon but INR monitoring is reasonable."
+simvastatin,gemfibrozil,Major,"Gemfibrozil markedly raises simvastatin plasma levels via glucuronidation/OATP1B1 inhibition, substantially increasing rhabdomyolysis risk. Combination is generally avoided."
+warfarin,fluconazole,Major,"Fluconazole strongly inhibits CYP2C9, markedly increasing warfarin levels and INR; bleeding risk is significantly elevated."
