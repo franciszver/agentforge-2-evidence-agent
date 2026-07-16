@@ -30,3 +30,36 @@ jobs:
       - name: Run pytest (exclude browser tests)
         working-directory: services/copilot-agent
         run: pytest -m "not browser and not integration"
+
+      - name: Verification-layer coverage gate
+        working-directory: services/copilot-agent
+        run: |
+          pytest -m "not browser and not integration" \
+            --cov=app.verification --cov=app.rendering --cov=app.allergy_check \
+            --cov=app.check_drug_interactions --cov=app.verdict \
+            --cov-branch --cov-report=term-missing --cov-fail-under=99
+
+      - name: Eval replay (offline, no model inference)
+        run: pytest evals/ -m "not integration"
+
+  module-isolated-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.2'
+          extensions: bcmath, calendar, gd, imagick, intl, ldap, redis, soap, xsl, zip
+          tools: composer:v2
+          coverage: none
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress --no-scripts
+
+      - name: Run Clinical Co-Pilot module isolated tests (no DB)
+        run: vendor/bin/phpunit -c phpunit-isolated.xml tests/Tests/Isolated/Modules/ClinicalCopilot

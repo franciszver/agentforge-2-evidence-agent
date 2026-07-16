@@ -67,7 +67,8 @@ The consolidated checklist — every PR satisfies all applicable items before me
 
 ## 4. Coverage policy
 
-- **Verification layer — enforced.** The citation checker, allergy cross-check, drug-interaction lookup, and verdict computation carry a CI-enforced branch-coverage floor (target ~100%; the enforced number is set when the package lands and recorded here). If coverage drops below the floor, CI fails the PR. Rationale: this layer is the trust story; an untested branch here is an unverified claim reaching a clinician.
+- **Verification layer — enforced.** The citation checker, allergy cross-check, drug-interaction lookup, and verdict computation carry a CI-enforced branch-coverage floor. If coverage drops below the floor, CI fails the PR. Rationale: this layer is the trust story; an untested branch here is an unverified claim reaching a clinician.
+  - **Enforced floor (set P5.2, 2026-07-16): 99% branch coverage**, measured over `app.verification`, `app.rendering`, `app.allergy_check`, `app.check_drug_interactions`, `app.verdict` via `pytest --cov=app.verification --cov=app.rendering --cov=app.allergy_check --cov=app.check_drug_interactions --cov=app.verdict --cov-branch --cov-fail-under=99` (see `copilot-ci.yml`). Measured value at the time the gate was set: 99.32% (229 stmts / 66 branches, 0 missed statements, 2 partial branches). The 2 partial branches are both in `app/verdict.py` (`_is_blocking_severity` and `_decide`, exhaustive `match` statements over closed enums with no `case _:` per this repo's exhaustive-matching convention) — coverage.py counts the implicit "no case matched" fall-through as an uncoverable branch even though the match is exhaustive. The floor is set a hair below the measured value so an unrelated whitespace/branch-count shift doesn't flake the gate.
 - **Everything else — reported, not gated.** Coverage is computed and surfaced on every PR, but no global threshold blocks merges. A repo-wide gate incentivizes padding tests on glue code to protect a number; the TDD protocol (red-first, visible in PR history) is the actual backstop.
 
 ## 5. Eval suite
@@ -203,10 +204,12 @@ Frontend logic: `npm test` (Jest) once the panel lands (P2.14).
 
 ## 9. CI
 
-`copilot-ci.yml` runs on GitHub-hosted runners on every PR (branch-protection required check):
+`copilot-ci.yml` runs on GitHub-hosted runners on every PR. Two jobs:
 
-- **From Phase 0 (P0.7):** agent-service pytest (unit tier; integration tests that need the full stack run locally per the cadence in §8).
-- **Expanded in Phase 5 (P5.2):** eval replay + case-schema validation, module isolated tests, verification-layer coverage gate (§4), README badges.
+- **`agent-tests`** (branch-protection required check):
+  - **From Phase 0 (P0.7):** agent-service pytest (unit tier; integration tests that need the full stack run locally per the cadence in §8).
+  - **Expanded in Phase 5 (P5.2):** verification-layer coverage gate (§4, floor recorded there); eval replay + case-schema validation (`pytest evals/ -m "not integration"` — every case's schema and its recorded replay run on every PR, offline).
+- **`module-isolated-tests`** (added P5.2, **not yet a required check** — see below): the OpenEMR module's `tests/Tests/Isolated/Modules/ClinicalCopilot/` PHPUnit suite (no DB), via `shivammathur/setup-php` + a `composer install` scoped to the repo root (unavoidable — the isolated tests exercise `OpenEMR\Core\ModulesClassLoader` and root-level `OpenEMR\Events\*`/Symfony classes, so there is no lighter, module-only install) and a `phpunit -c phpunit-isolated.xml` run scoped to just the `ClinicalCopilot` directory (not the full OpenEMR isolated suite, which covers unrelated modules). Measured locally before landing: `composer install` (cold cache) ~16-20s, the scoped PHPUnit run <0.1s for 39 tests. It was added as its own job rather than folded into `agent-tests` so a first-run surprise on a real GitHub-hosted runner (PHP extension availability, network variance) can't block the required check; promote it to required once it's shown green over a few PRs.
 
 **Where eval inference actually runs (decided 2026-07-14):** GitHub-hosted runners have no GPU and cannot serve a 4B model at useful speed, so model inference never runs in CI. The eval harness supports **record/replay**: live-model runs execute locally on the dev GPU and record model outputs as committed artifacts; CI replays those recordings through every deterministic assertion and validates all case schemas — so a broken checker, contract, or case still fails the PR without any inference. Live runs are mandatory before merging any agent-behavior PR and at every phase gate (see PR Definition of Done, §3); their pass-rate results are committed, feeding the dashboard chart and the README results table. A self-hosted runner on the dev machine was considered and rejected: attaching a personal machine to a public repository's CI is an unnecessary attack surface.
 
