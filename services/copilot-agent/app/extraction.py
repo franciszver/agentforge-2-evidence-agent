@@ -66,6 +66,7 @@ long-format tools are reshaped; wide-format outputs pass through untouched.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any, Protocol
 
@@ -86,6 +87,8 @@ from app.schemas.tools import (
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.verdict import VerdictResult, compute_verdict
 from app.verification import CacheIndex, check_claims
+
+_logger = logging.getLogger(__name__)
 
 # Free-text provenance hook present on every output item; never a citable
 # field, so it is excluded from the catalog the model sees.
@@ -343,4 +346,8 @@ def run_verification(
     interactions = mentioned_interactions(medications)
 
     verdict_result = compute_verdict(claim_results, allergy_conflicts, interactions)
+    _logger.info(
+        "verification computed",
+        extra={"verdict": verdict_result.verdict.value, "claim_count": len(claim_results)},
+    )
     return verdict_result, rendered

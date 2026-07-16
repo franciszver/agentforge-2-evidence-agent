@@ -36,6 +36,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, TypeVar
 
@@ -43,6 +44,8 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
+
+_logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -112,6 +115,7 @@ class OllamaClient:
         POSTs with ``stream: true`` and assembles the NDJSON chunk stream's
         ``message.content`` pieces into the full response.
         """
+        _logger.info("ollama chat call", extra={"model": self._model})
         body = self._build_body(messages, stream=True, options=options)
         response = self._post_chat(body)
         return self._assemble_stream(response)
@@ -133,6 +137,7 @@ class OllamaClient:
         non-2xx status, a timeout, a connection error) are NOT retried here —
         they propagate immediately as ``OllamaError``.
         """
+        _logger.info("ollama extract call", extra={"model": self._model, "schema": schema.__name__})
         messages = self._normalize_messages(prompt_or_messages)
         body = self._build_body(
             messages,

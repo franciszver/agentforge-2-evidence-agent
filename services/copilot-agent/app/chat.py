@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import ClaimExtractor, ClaimExtractorLike, run_verification
 from app.ollama_client import OllamaClient
@@ -58,6 +60,8 @@ from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.verdict import VerdictResult
+
+_logger = logging.getLogger(__name__)
 
 
 class ChatEvent(StrEnum):
@@ -198,8 +202,11 @@ class Turn:
     patient (``patient_id``), under WHAT ``correlation_id`` -- plus the
     question and answer.
 
-    ``correlation_id`` is a minimal per-turn identifier; the full
-    correlation-id middleware is P4.1. ``user`` is a best-effort identity
+    ``correlation_id`` IS the P4.1 correlation id (``app.correlation``) --
+    the same id bound to this request by ``CorrelationIdMiddleware`` and
+    readable from every stage of this invocation (log lines, tool dispatch,
+    LLM calls, verification), not a second id minted independently here.
+    ``user`` is a best-effort identity
     assertion read from the dev bearer token (see ``_user_identity_from_token``
     and the module's ``DevAgentToken``), not a validated principal -- real
     token introspection is the deferred P4.1 work. The durable, DB-backed
@@ -382,7 +389,11 @@ def _stream_chat(
     message: str,
     user: str,
 ) -> Iterable[str]:
-    correlation_id = str(uuid.uuid4())
+    correlation_id = get_correlation_id()
+    _logger.info(
+        "chat invocation started",
+        extra={"conversation_id": conversation.conversation_id, "patient_id": conversation.patient_id},
+    )
 
     yield _sse(ChatEvent.CONVERSATION, {"conversation_id": conversation.conversation_id})
 

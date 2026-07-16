@@ -4,7 +4,10 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.chat import chat_endpoint
+from app.correlation import CorrelationIdMiddleware, configure_logging
 from app.readiness import ReadinessReport, compute_readiness
+
+configure_logging()
 
 CHAT_SHELL_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -87,6 +90,7 @@ CHAT_SHELL_HTML = """<!DOCTYPE html>
 def create_app() -> FastAPI:
     """Build and return the FastAPI application."""
     app = FastAPI(title="copilot-agent")
+    app.add_middleware(CorrelationIdMiddleware)
 
     @app.get("/health")
     def health() -> dict[str, str]:

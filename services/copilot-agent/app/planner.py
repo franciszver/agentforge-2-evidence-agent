@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -72,6 +73,8 @@ from app.tools.medications import get_medications
 from app.tools.patient_summary import get_patient_summary
 from app.tools.problems import get_problems
 from app.tools.vitals import get_vitals
+
+_logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TURNS = 6
 
@@ -389,6 +392,7 @@ class Planner:
             except PatientBindingViolation:
                 trace.append(ToolCallTrace(tool=decision.tool, args={}, result=None, error="patient_binding_violation"))
                 raw_results.append(None)
+                _logger.warning("tool_call refused: patient_binding_violation", extra={"tool": decision.tool.value})
                 messages.append(
                     {
                         "role": "user",
@@ -407,6 +411,9 @@ class Planner:
             except OpenEmrApiError as exc:
                 trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=None, error=exc.category.value))
                 raw_results.append(None)
+                _logger.warning(
+                    "tool_call failed", extra={"tool": decision.tool.value, "error": exc.category.value}
+                )
                 messages.append({"role": "user", "content": f"[tool result] {decision.tool.value} failed: {exc.category.value}"})
                 continue
 
@@ -416,6 +423,7 @@ class Planner:
             raw_results.append(output.model_dump(mode="json"))
             summary = quarantine_tool_result(self._summarizer, decision.tool, output)
             trace.append(ToolCallTrace(tool=decision.tool, args=call_kwargs, result=summary, error=None))
+            _logger.info("tool_call dispatched", extra={"tool": decision.tool.value})
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
         return PlannerResult(answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results)
