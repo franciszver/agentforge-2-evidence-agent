@@ -288,6 +288,123 @@
     }
 
     // -------------------------------------------------------------------
+    // #219 paced reveal: buffers `reasoning_delta` text and drains it into
+    // the zone at a steady, readable rate instead of appending it the
+    // instant it arrives. The tokens have genuinely already arrived (see
+    // the #213 section of the module docstring) -- this paces the *reveal*
+    // for readability, so the zone stays smoothly "typing" whether Ollama
+    // delivers deltas spread out, in a sub-20ms burst, or as a single frame
+    // at EOF. ~40 chars/sec (2 chars every 50ms) sits in the 30-45 chars/sec
+    // readable target.
+    //
+    // Design decision (documented per the issue's acceptance criteria): the
+    // verified `answer` frame must never be blocked by more than a small,
+    // fixed cap. REVEAL_CAP_MS bounds how long waitForDrain() below may wait
+    // before force-flushing whatever remains of the buffer -- NOT a
+    // fast-forward-on-answer-arrival approach, because in this app's
+    // request/response shape the whole SSE stream (reasoning_delta frames
+    // AND the answer frame) is fully received before createChatController's
+    // frame handler ever sees the `answer` frame (consumeSSEStream resolves
+    // its promise only after the reader reports done) -- fast-forwarding
+    // the instant the answer frame is *observed* would collapse the paced
+    // reveal to ~0ms and defeat the feature. Bounding total drain time
+    // instead keeps the reveal genuinely paced while still guaranteeing the
+    // answer renders within REVEAL_CAP_MS.
+    //
+    // `prefers-reduced-motion` skips pacing entirely -- push() reveals the
+    // full delta immediately and never starts a timer (same media-query
+    // string the #208/#213 CSS already checks).
+    // -------------------------------------------------------------------
+    var REVEAL_TICK_MS = 50;
+    var REVEAL_CHARS_PER_TICK = 2; // ~40 chars/sec
+    var REVEAL_CAP_MS = 1500;
+
+    function prefersReducedMotion() {
+        return typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+
+    function createReasoningRevealer(zone) {
+        var buffer = '';
+        var timer = null;
+        var startedAt = 0;
+        var waiters = [];
+
+        function notifyWaiters() {
+            var pending = waiters;
+            waiters = [];
+            for (var i = 0; i < pending.length; i++) {
+                pending[i]();
+            }
+        }
+
+        function stopTimer() {
+            if (timer !== null) {
+                clearInterval(timer);
+                timer = null;
+            }
+        }
+
+        function tick() {
+            var chunk = buffer.slice(0, REVEAL_CHARS_PER_TICK);
+            buffer = buffer.slice(chunk.length);
+            if (chunk) {
+                zone.append(chunk);
+            }
+            var capped = (Date.now() - startedAt) >= REVEAL_CAP_MS;
+            if (capped && buffer.length > 0) {
+                // Force-flush the remainder rather than let a large backlog
+                // keep gating the answer past the documented cap.
+                zone.append(buffer);
+                buffer = '';
+            }
+            if (buffer.length === 0) {
+                stopTimer();
+                notifyWaiters();
+            }
+        }
+
+        return {
+            // Buffers `delta` and (re)starts the drain timer if it is not
+            // already running.
+            push: function (delta) {
+                if (prefersReducedMotion()) {
+                    zone.append(delta);
+                    return;
+                }
+                buffer += delta;
+                if (timer === null) {
+                    startedAt = Date.now();
+                    timer = setInterval(tick, REVEAL_TICK_MS);
+                }
+            },
+            // Resolves once the buffer has fully drained, or REVEAL_CAP_MS
+            // has elapsed since the current drain started (whichever comes
+            // first -- tick() above force-flushes any remainder at the cap
+            // before resolving). Resolves immediately if nothing is
+            // pending.
+            waitForDrain: function () {
+                if (timer === null) {
+                    return Promise.resolve();
+                }
+                return new Promise(function (resolve) {
+                    waiters.push(resolve);
+                });
+            },
+            // Hard stop for reset()/error paths, where the zone itself is
+            // about to be detached: clears the timer and drops the buffer
+            // without revealing it, so no further tick can mutate the (soon
+            // detached) zone -- same "null the handle" cleanup discipline as
+            // #208's stopThinking().
+            stop: function () {
+                stopTimer();
+                buffer = '';
+                notifyWaiters();
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------
     // P3.8 verification layer: verdict badge, citation chips, warning banner.
     //
     // Renders the `verification` SSE frame (app/chat.py
@@ -807,7 +924,15 @@
             // support -- see app.planner's module docstring) never shows an
             // empty zone.
             var reasoningZone = null;
+            // #219: paces reasoningZone.append() calls -- see
+            // createReasoningRevealer above. null until the first
+            // reasoning_delta frame creates the zone, alongside it.
+            var reasoningRevealer = null;
             function clearReasoningZone() {
+                if (reasoningRevealer) {
+                    reasoningRevealer.stop();
+                    reasoningRevealer = null;
+                }
                 if (reasoningZone) {
                     reasoningZone.remove();
                     reasoningZone = null;
@@ -876,9 +1001,12 @@
                             // redundantly alongside it.
                             stopThinking();
                             reasoningZone = createReasoningZone(options.messagesEl);
+                            reasoningRevealer = createReasoningRevealer(reasoningZone);
                             activeReasoningZone = { stop: clearReasoningZone };
                         }
-                        reasoningZone.append(frame.data.text);
+                        // #219: paced reveal, not an immediate append -- see
+                        // createReasoningRevealer.
+                        reasoningRevealer.push(frame.data.text);
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
                     } else if (frame.event === 'verification' && frame.data) {
@@ -888,30 +1016,42 @@
                         hadError = true;
                     }
                 }).then(function () {
-                    stopThinking();
                     if (answerText) {
-                        // #213: the verified answer has arrived -- stop the
-                        // zone's "actively streaming" cursor treatment, but
-                        // keep it visible above the answer bubble (minimal
-                        // post-answer treatment; see the module docstring).
-                        if (reasoningZone) {
-                            reasoningZone.finalize();
-                        }
-                        activeReasoningZone = null;
-                        appendMessage(options.messagesEl, 'assistant', answerText);
-                        // Pending verification payloads (verdict null) render
-                        // nothing; a populated one adds the badge/chips/banner.
-                        renderVerification(options.messagesEl, verificationData);
-                        if (responseCorrelationId) {
-                            var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
-                            attachFeedbackHandlers(widget, responseCorrelationId, {
-                                context: options.context,
-                                ensureToken: ensureToken,
-                                fetchImpl: options.fetchImpl,
-                                feedbackUrl: options.feedbackUrl
-                            });
-                        }
-                    } else if (hadError) {
+                        // #219: the verified answer must not be blocked on
+                        // the full paced reveal -- wait only up to
+                        // REVEAL_CAP_MS (waitForDrain force-flushes and
+                        // resolves at the cap; resolves immediately if no
+                        // reasoning was ever streamed).
+                        var drainWait = reasoningRevealer ? reasoningRevealer.waitForDrain() : Promise.resolve();
+                        return drainWait.then(function () {
+                            stopThinking();
+                            // #213: the verified answer has arrived -- stop
+                            // the zone's "actively streaming" cursor
+                            // treatment, but keep it visible above the
+                            // answer bubble (minimal post-answer treatment;
+                            // see the module docstring).
+                            if (reasoningZone) {
+                                reasoningZone.finalize();
+                            }
+                            activeReasoningZone = null;
+                            appendMessage(options.messagesEl, 'assistant', answerText);
+                            // Pending verification payloads (verdict null)
+                            // render nothing; a populated one adds the
+                            // badge/chips/banner.
+                            renderVerification(options.messagesEl, verificationData);
+                            if (responseCorrelationId) {
+                                var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
+                                attachFeedbackHandlers(widget, responseCorrelationId, {
+                                    context: options.context,
+                                    ensureToken: ensureToken,
+                                    fetchImpl: options.fetchImpl,
+                                    feedbackUrl: options.feedbackUrl
+                                });
+                            }
+                        });
+                    }
+                    stopThinking();
+                    if (hadError) {
                         // #213: an errored turn never gets a verified answer,
                         // so any in-flight (necessarily unverified/partial)
                         // reasoning text is cleared rather than left stuck
@@ -1061,6 +1201,7 @@
         appendMessage: appendMessage,
         createThinkingIndicator: createThinkingIndicator,
         createReasoningZone: createReasoningZone,
+        createReasoningRevealer: createReasoningRevealer,
         createChatController: createChatController,
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,
