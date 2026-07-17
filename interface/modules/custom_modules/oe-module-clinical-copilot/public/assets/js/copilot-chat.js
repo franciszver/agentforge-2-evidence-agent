@@ -149,10 +149,30 @@
     // user taps to reveal the underlying record.
     // -------------------------------------------------------------------
     var VERDICT_BADGES = {
-        verified: { label: 'Verified', icon: '✓', className: 'copilot-verdict-verified' },
-        partially_verified: { label: 'Partially verified', icon: '⚠', className: 'copilot-verdict-partial' },
-        blocked: { label: 'Blocked', icon: '✕', className: 'copilot-verdict-blocked' }
+        verified: {
+            label: 'Verified',
+            icon: '✓',
+            className: 'copilot-verdict-verified',
+            meaning: 'Every claim matched an exact record value.'
+        },
+        partially_verified: {
+            label: 'Partially verified',
+            icon: '⚠',
+            className: 'copilot-verdict-partial',
+            meaning: 'Some claims could not be fully confirmed.'
+        },
+        blocked: {
+            label: 'Blocked',
+            icon: '✕',
+            className: 'copilot-verdict-blocked',
+            meaning: 'A safety conflict stopped the answer.'
+        }
     };
+
+    // Fixed display order for the first-open legend (P2.20) -- matches the
+    // severity progression a user would expect: best case first, worst case
+    // last.
+    var VERDICT_ORDER = ['verified', 'partially_verified', 'blocked'];
 
     function verdictBadgeInfo(verdict) {
         if (typeof verdict !== 'string' || !Object.prototype.hasOwnProperty.call(VERDICT_BADGES, verdict)) {
@@ -183,6 +203,33 @@
         badge.appendChild(label);
 
         return badge;
+    }
+
+    // -------------------------------------------------------------------
+    // P2.20 first-open "about" state: a compact legend of the verdict
+    // badges, reusing VERDICT_BADGES/renderVerdictBadge (above) so the
+    // legend's badge markup and copy never diverge from what a real answer
+    // renders. Populates `container` (the server-rendered, initially empty
+    // <ul id="copilot-chat-about-legend">) once on init.
+    // -------------------------------------------------------------------
+    function renderAboutLegend(container) {
+        for (var i = 0; i < VERDICT_ORDER.length; i++) {
+            var key = VERDICT_ORDER[i];
+            var row = document.createElement('li');
+            row.className = 'copilot-about-legend-row';
+
+            var badge = renderVerdictBadge(key);
+            if (badge) {
+                row.appendChild(badge);
+            }
+
+            var meaning = document.createElement('span');
+            meaning.className = 'copilot-about-legend-meaning';
+            meaning.textContent = VERDICT_BADGES[key].meaning;
+            row.appendChild(meaning);
+
+            container.appendChild(row);
+        }
     }
 
     function appendRecordField(record, label, value) {
@@ -564,6 +611,13 @@
         }
 
         function sendMessage(text) {
+            // The first-open "about" explainer (P2.20) gives way to the
+            // transcript as soon as a conversation starts -- a no-op on
+            // every send after the first (already hidden) and if no about
+            // element was wired (e.g. tests that omit it).
+            if (options.aboutEl) {
+                options.aboutEl.classList.add('copilot-hidden');
+            }
             appendMessage(options.messagesEl, 'user', text);
             // Per-turn, not per-conversation (unlike conversationId above): a
             // fresh P4.1 correlation id arrives on every `conversation` frame,
@@ -682,6 +736,12 @@
         function reset() {
             conversationId = null;
             options.messagesEl.textContent = '';
+            // A fresh conversation is a fresh first-open: bring the about
+            // explainer back so the P2.17 global launcher's never-reloaded
+            // panel shows it again after a patient switch.
+            if (options.aboutEl) {
+                options.aboutEl.classList.remove('copilot-hidden');
+            }
         }
 
         return { init: init, sendMessage: sendMessage, reset: reset };
@@ -701,6 +761,14 @@
             return;
         }
 
+        // P2.20 first-open "about" explainer -- optional elements (older
+        // cached markup could lack them), so init tolerates their absence.
+        var aboutEl = document.getElementById('copilot-chat-about');
+        var aboutLegendEl = document.getElementById('copilot-chat-about-legend');
+        if (aboutLegendEl) {
+            renderAboutLegend(aboutLegendEl);
+        }
+
         // This script's own URL gives us the module's public/ base path
         // without needing the server to thread it through CopilotContext.
         var baseUrl = CURRENT_SCRIPT_SRC.replace(/\/assets\/js\/copilot-chat\.js(\?.*)?$/, '');
@@ -709,6 +777,7 @@
             messagesEl: messagesEl,
             formEl: formEl,
             inputEl: inputEl,
+            aboutEl: aboutEl,
             context: window.CopilotContext,
             brokerUrl: baseUrl + '/ajax.php',
             proxyUrl: baseUrl + '/chat-proxy.php',
@@ -740,6 +809,7 @@
         createChatController: createChatController,
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,
+        renderAboutLegend: renderAboutLegend,
         renderWarningBanner: renderWarningBanner,
         renderVerification: renderVerification,
         buildFeedbackPayload: buildFeedbackPayload,

@@ -95,12 +95,21 @@ final class CopilotPanelController
     }
 
     /**
-     * Render the chat panel itself: message list, input, and send button.
-     * Shared by the embedded dashboard panel (P2.14, toggled hidden/visible
-     * by the open-chat button above) and the standalone PWA page (P2.15,
-     * where the panel *is* the page and there is no button to toggle it) --
-     * both consumers point copilot-chat.js at the exact same element ids,
-     * so its behavior (submit handling, SSE consumption) is never forked.
+     * Render the chat panel itself: first-open explainer, message list,
+     * input, and send button. Shared by the embedded dashboard panel (P2.14,
+     * toggled hidden/visible by the open-chat button above) and the
+     * standalone PWA page (P2.15, where the panel *is* the page and there is
+     * no button to toggle it) -- both consumers point copilot-chat.js at the
+     * exact same element ids, so its behavior (submit handling, SSE
+     * consumption) is never forked.
+     *
+     * The #copilot-chat-about block (P2.20) is a static, PHI-free explainer
+     * shown before any message is sent -- a one-line tagline plus a verdict
+     * badge legend (populated client-side into the empty
+     * #copilot-chat-about-legend list by copilot-chat.js, reusing its
+     * VERDICT_BADGES vocabulary so the legend never diverges from what a
+     * real answer renders). copilot-chat.js hides it once the first message
+     * is sent.
      *
      * @param bool $visible Whether the panel starts open (standalone page)
      *                      or closed behind the toggle button (embedded panel).
@@ -112,6 +121,10 @@ final class CopilotPanelController
         ob_start();
         ?>
         <div id="copilot-chat-panel" class="copilot-chat-panel<?php echo $hiddenClass; ?>" aria-hidden="<?php echo $ariaHidden; ?>">
+            <div id="copilot-chat-about" class="copilot-chat-about">
+                <p class="copilot-chat-about-tagline"><?php echo xlt('Local, self-verifying clinical AI — no cloud calls'); ?></p>
+                <ul id="copilot-chat-about-legend" class="copilot-chat-about-legend"></ul>
+            </div>
             <div id="copilot-chat-messages" class="copilot-chat-messages" role="log" aria-live="polite" aria-label="<?php echo xla('Co-Pilot conversation'); ?>"></div>
             <form id="copilot-chat-form" class="copilot-chat-form">
                 <label for="copilot-chat-input" class="sr-only"><?php echo xlt('Message'); ?></label>

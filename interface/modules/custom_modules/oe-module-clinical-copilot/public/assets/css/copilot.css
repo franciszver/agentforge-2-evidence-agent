@@ -90,6 +90,44 @@
     display: none;
 }
 
+/**
+ * P2.20 first-open "about" explainer -- shown before any message is sent,
+ * hidden (via .copilot-hidden) once the first message goes out. Static,
+ * PHI-free copy only. Compact by design: it must not compete with the
+ * transcript for space at the 360px breakpoint.
+ */
+.copilot-chat-about {
+    padding: 0.75rem;
+    border-bottom: 1px solid #dee2e6;
+    font-size: 0.85rem;
+}
+
+.copilot-chat-about-tagline {
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+
+.copilot-chat-about-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.copilot-about-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.copilot-about-legend-meaning {
+    color: #495057;
+    font-size: 0.8rem;
+}
+
 .copilot-chat-messages {
     flex: 1 1 auto;
     min-height: 8rem;

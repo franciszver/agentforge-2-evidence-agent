@@ -41,7 +41,8 @@ const {
     createSSEFrameParser,
     consumeSSEStream,
     appendMessage,
-    createChatController
+    createChatController,
+    renderAboutLegend
 } = global.window.CopilotChat;
 
 const encoder = new TextEncoder();
@@ -531,5 +532,139 @@ describe('createChatController error self-heal', () => {
         // Self-heal: the next send starts fresh (null), not wedged on 'A'.
         await controller.sendMessage('q3');
         expect(proxyBodies[2].conversation_id).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// renderAboutLegend — P2.20 first-open explainer legend
+//
+// Reuses VERDICT_BADGES/renderVerdictBadge (the same vocabulary a real
+// answer's badge is built from) so the legend copy can never diverge.
+// ---------------------------------------------------------------------------
+describe('renderAboutLegend', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    test('renders one row per verdict, each with a badge and a one-line meaning', () => {
+        const list = document.createElement('ul');
+        document.body.appendChild(list);
+
+        renderAboutLegend(list);
+
+        expect(list.children).toHaveLength(3);
+
+        const rowText = Array.from(list.children).map((row) => row.textContent);
+        expect(rowText[0]).toContain('Verified');
+        expect(rowText[1]).toContain('Partially verified');
+        expect(rowText[2]).toContain('Blocked');
+
+        // Each row's badge is the exact markup renderVerdictBadge produces
+        // for a real answer -- no divergent legend-only copy/classes.
+        list.children[0].querySelectorAll('.copilot-verdict-badge').forEach((badge) => {
+            expect(badge.className).toContain('copilot-verdict-verified');
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — P2.20 first-open "about" explainer gives way
+//
+// The about block (rendered by CopilotPanelController, wired via
+// options.aboutEl) is visible before any message is sent. It must hide on
+// the first send and stay hidden through the rest of the conversation, but
+// come back after reset() (a fresh conversation is a fresh first-open).
+// ---------------------------------------------------------------------------
+describe('createChatController about-state give-way', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(frames) {
+        return { ok: true, status: 200, body: { getReader: () => fakeReader(frames) } };
+    }
+
+    function makeController() {
+        const messagesEl = document.createElement('div');
+        const aboutEl = document.createElement('div');
+        document.body.appendChild(aboutEl);
+        document.body.appendChild(messagesEl);
+
+        const fetchImpl = jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp([
+                'event: conversation\ndata: {"conversation_id":"A"}\n\n',
+                'event: answer\ndata: {"answer":"hi"}\n\n'
+            ]));
+        });
+
+        return {
+            aboutEl: aboutEl,
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                aboutEl: aboutEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    test('is visible before the first send, hidden after it, and stays hidden on a later send', async () => {
+        const { aboutEl, controller } = makeController();
+
+        expect(aboutEl.classList.contains('copilot-hidden')).toBe(false);
+
+        await controller.sendMessage('q1');
+        expect(aboutEl.classList.contains('copilot-hidden')).toBe(true);
+
+        await controller.sendMessage('q2');
+        expect(aboutEl.classList.contains('copilot-hidden')).toBe(true);
+    });
+
+    test('reset() brings the about block back for a fresh conversation', async () => {
+        const { aboutEl, controller } = makeController();
+
+        await controller.sendMessage('q1');
+        expect(aboutEl.classList.contains('copilot-hidden')).toBe(true);
+
+        controller.reset();
+        expect(aboutEl.classList.contains('copilot-hidden')).toBe(false);
+    });
+
+    test('sendMessage does not throw when no aboutEl is wired (e.g. older markup)', async () => {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        const fetchImpl = jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp([
+                'event: conversation\ndata: {"conversation_id":"A"}\n\n',
+                'event: answer\ndata: {"answer":"hi"}\n\n'
+            ]));
+        });
+        const controller = createChatController({
+            messagesEl: messagesEl,
+            formEl: document.createElement('form'),
+            inputEl: document.createElement('textarea'),
+            context: { csrfToken: 'csrf' },
+            brokerUrl: 'https://host/base/ajax.php',
+            proxyUrl: 'https://host/base/chat-proxy.php',
+            feedbackUrl: 'https://host/base/feedback-proxy.php',
+            authorizeUrl: 'https://host/base/oauth-authorize.php',
+            fetchImpl: fetchImpl
+        });
+
+        await expect(controller.sendMessage('q1')).resolves.not.toThrow();
+        expect(() => controller.reset()).not.toThrow();
     });
 });
