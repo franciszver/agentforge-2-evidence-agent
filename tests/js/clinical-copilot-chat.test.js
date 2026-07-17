@@ -42,7 +42,8 @@ const {
     consumeSSEStream,
     appendMessage,
     createChatController,
-    renderAboutLegend
+    renderAboutLegend,
+    createThinkingIndicator
 } = global.window.CopilotChat;
 
 const encoder = new TextEncoder();
@@ -64,6 +65,50 @@ function fakeReader(chunks) {
             return Promise.resolve({ done: true, value: undefined });
         }
     };
+}
+
+/**
+ * A reader whose read() only resolves once the test explicitly pushes a
+ * chunk (or finishes the stream) -- lets a test observe the thinking
+ * indicator's status text BETWEEN frames rather than only before/after the
+ * whole stream resolves (unlike fakeReader, which resolves every chunk on
+ * an already-settled promise).
+ */
+function pausableReader() {
+    const queue = [];
+    let pendingResolve = null;
+
+    function deliver(result) {
+        if (pendingResolve) {
+            const resolve = pendingResolve;
+            pendingResolve = null;
+            resolve(result);
+        } else {
+            queue.push(result);
+        }
+    }
+
+    return {
+        push: function (chunk) {
+            deliver({ done: false, value: encode(chunk) });
+        },
+        finish: function () {
+            deliver({ done: true, value: undefined });
+        },
+        read: function () {
+            if (queue.length > 0) {
+                return Promise.resolve(queue.shift());
+            }
+            return new Promise((resolve) => {
+                pendingResolve = resolve;
+            });
+        }
+    };
+}
+
+/** Flushes pending microtasks (promise chains) queued by the code under test. */
+function flushMicrotasks() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -666,5 +711,302 @@ describe('createChatController about-state give-way', () => {
 
         await expect(controller.sendMessage('q1')).resolves.not.toThrow();
         expect(() => controller.reset()).not.toThrow();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createThinkingIndicator — #208 staged progress indicator's DOM primitive.
+//
+// A spinner + status line appended to a container, with a setStage(key)
+// that swaps the status text and a remove() that detaches it. Every status
+// string is static copy (no interpolation of response/record data), and an
+// unrecognized stage key falls back to a generic label rather than showing
+// nothing or stale text -- see the "Graceful fallback" acceptance criterion
+// on issue #208.
+// ---------------------------------------------------------------------------
+describe('createThinkingIndicator', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function makeContainer() {
+        const div = document.createElement('div');
+        document.body.appendChild(div);
+        return div;
+    }
+
+    test('appends a spinner + status element and sets each staged status text, all static/PHI-free', () => {
+        const container = makeContainer();
+        const indicator = createThinkingIndicator(container);
+
+        const el = container.querySelector('.copilot-thinking');
+        expect(el).not.toBeNull();
+
+        indicator.setStage('consulting');
+        expect(el.textContent).toContain('Consulting the chart');
+
+        indicator.setStage('reasoning');
+        expect(el.textContent).toContain('Reasoning locally');
+        expect(el.textContent).toContain('Qwen3-4B');
+
+        indicator.setStage('verifying');
+        expect(el.textContent).toContain('Verifying claims against the record');
+
+        // No stage text ever carries a patient name, medication, or other
+        // record value -- every assertion above is a fixed substring of
+        // static copy, never an interpolated value from a response.
+    });
+
+    test('falls back to a generic "Thinking" label for an unrecognized/indeterminate stage', () => {
+        const container = makeContainer();
+        const indicator = createThinkingIndicator(container);
+
+        indicator.setStage('some-stage-that-does-not-exist');
+
+        expect(container.querySelector('.copilot-thinking').textContent).toContain('Thinking');
+    });
+
+    test('remove() detaches the indicator from its container', () => {
+        const container = makeContainer();
+        const indicator = createThinkingIndicator(container);
+
+        expect(container.querySelector('.copilot-thinking')).not.toBeNull();
+        indicator.remove();
+        expect(container.querySelector('.copilot-thinking')).toBeNull();
+
+        // Idempotent: a second remove() (e.g. both an error path and a
+        // reset() racing to clean up) must not throw.
+        expect(() => indicator.remove()).not.toThrow();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — #208 staged progress indicator wired into sendMessage
+//
+// The ~18-20s local-model wait was previously silent dead-air (nothing
+// rendered between the user's message and the answer). A thinking indicator
+// now appears immediately on send and advances its status as the real SSE
+// frames arrive (tool_call -> reasoning; verification -> verifying), then is
+// removed exactly when the answer renders. Cleared the same way on the
+// hadError branch and on reset().
+// ---------------------------------------------------------------------------
+describe('createChatController staged thinking indicator (#208)', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    test('shows the indicator immediately on send, before any network response arrives', () => {
+        // A fetchImpl that never resolves -- proves the indicator appears
+        // synchronously on send, not once a frame is first parsed (i.e. no
+        // more silent dead-air while waiting on the token broker either).
+        const fetchImpl = jest.fn(() => new Promise(() => {}));
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+
+        const indicator = messagesEl.querySelector('.copilot-thinking');
+        expect(indicator).not.toBeNull();
+        expect(indicator.textContent).toContain('Consulting the chart');
+    });
+
+    test('advances consulting -> reasoning -> verifying as tool_call/verification frames arrive, then clears on the answer', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        let indicator = messagesEl.querySelector('.copilot-thinking');
+        expect(indicator).not.toBeNull();
+        expect(indicator.textContent).toContain('Consulting the chart');
+
+        reader.push('event: conversation\ndata: {"conversation_id":"c1"}\n\n');
+        reader.push('event: tool_call\ndata: {"tool":"get_medications","args":{},"error":null}\n\n');
+        await flushMicrotasks();
+        expect(indicator.textContent).toContain('Reasoning locally');
+
+        reader.push('event: verification\ndata: {"verdict":"verified","segments":[],"warnings":{}}\n\n');
+        await flushMicrotasks();
+        expect(indicator.textContent).toContain('Verifying claims against the record');
+
+        reader.push('event: answer\ndata: {"answer":"She takes lisinopril."}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+        expect(messagesEl.textContent).toContain('She takes lisinopril.');
+    });
+
+    test('falls back to the generic "thinking" state when no tool_call frame ever arrives to signal a specific stage', async () => {
+        // The planner can answer with zero tool calls -- no frame ever
+        // signals the consulting->reasoning boundary in that case. The
+        // indicator still shows a status (never blank/stale) and still
+        // clears cleanly once the answer renders.
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What is the diagnosis?');
+        await flushMicrotasks();
+
+        const indicator = messagesEl.querySelector('.copilot-thinking');
+        expect(indicator.textContent.trim().length).toBeGreaterThan(0);
+
+        reader.push('event: conversation\ndata: {"conversation_id":"c1"}\n\n');
+        reader.push('event: answer\ndata: {"answer":"Hypertension."}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+    });
+
+    test('clears the indicator on an error frame (hadError branch)', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+        expect(messagesEl.querySelector('.copilot-thinking')).not.toBeNull();
+
+        reader.push('event: error\ndata: {"status":409}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+        expect(messagesEl.textContent).toContain('unavailable');
+    });
+
+    test('clears an in-flight indicator on reset()', () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        expect(messagesEl.querySelector('.copilot-thinking')).not.toBeNull();
+
+        controller.reset();
+
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+        expect(messagesEl.textContent).toBe('');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — #208 reasoning fallback timer (direct coverage)
+//
+// The dev stack batches the whole SSE stream at the end of the wait (see the
+// createThinkingIndicator docstring), so the 1.5s fallback timer -- not frame
+// arrival -- is what actually delivers the "Reasoning locally..." stage
+// through the long gap. It is the load-bearing mechanism and gets direct
+// coverage here via jest.useFakeTimers(): one test proves the timer fires and
+// flips the stage on its own; one proves stopThinking()'s clearTimeout
+// prevents a late mutation after an exit (removing that clearTimeout must turn
+// the second test red).
+// ---------------------------------------------------------------------------
+describe('createChatController reasoning fallback timer (#208)', () => {
+    // THINKING_REASONING_FALLBACK_MS in copilot-chat.js -- the module keeps it
+    // private, so the timing is mirrored here (kept in sync with the source).
+    const FALLBACK_MS = 1500;
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    test('the fallback timer alone advances consulting -> reasoning (no tool_call frame needed)', () => {
+        jest.useFakeTimers();
+        // The request never resolves -- so the ONLY thing that can advance the
+        // stage is the timer, proving it is wired and fires.
+        const fetchImpl = jest.fn(() => new Promise(() => {}));
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+
+        const indicator = messagesEl.querySelector('.copilot-thinking');
+        expect(indicator.textContent).toContain('Consulting the chart');
+
+        jest.advanceTimersByTime(FALLBACK_MS);
+
+        expect(indicator.textContent).toContain('Reasoning locally');
+    });
+
+    test('reset() mid-flight clears the timer so it cannot mutate the stage afterwards', () => {
+        jest.useFakeTimers();
+        const fetchImpl = jest.fn(() => new Promise(() => {}));
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+
+        // Hold a reference to the status node BEFORE reset detaches it -- the
+        // fallback timer's callback closes over this same element, so if the
+        // timer is not cleared it will still flip this node's text even after
+        // it has been removed from the DOM.
+        const status = messagesEl.querySelector('.copilot-thinking-status');
+        expect(status.textContent).toContain('Consulting the chart');
+
+        // Exit mid-flight, BEFORE the fallback fires.
+        controller.reset();
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+
+        jest.advanceTimersByTime(FALLBACK_MS);
+
+        // With stopThinking()'s clearTimeout in place the callback never runs,
+        // so the detached node's text is unchanged. Remove that clearTimeout
+        // and the timer fires setStage('reasoning') on this node -> red.
+        expect(status.textContent).not.toContain('Reasoning locally');
+        expect(status.textContent).toContain('Consulting the chart');
     });
 });

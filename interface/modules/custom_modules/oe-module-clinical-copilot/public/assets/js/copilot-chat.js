@@ -138,6 +138,73 @@
     }
 
     // -------------------------------------------------------------------
+    // #208 staged progress indicator: replaces the ~18-20s silent dead-air
+    // between send and the answer with a spinner + status line that
+    // advances through the real pipeline stages. Every status string below
+    // is STATIC copy -- never interpolated with response/record data (no
+    // PHI in this element, ever).
+    //
+    // Investigation finding (driving this design -- see the #208 PR): the
+    // dev stack does NOT deliver SSE frames incrementally end-to-end. A
+    // live capture (chrome devtools against a real /chat request) showed
+    // every frame -- including `conversation`, which app/chat.py yields
+    // BEFORE the planner even runs -- arriving in a single batch at the
+    // very end of the wait; even the fetch() response headers do not
+    // resolve until the whole request completes. So there is no real
+    // signal available to mark the boundary between "dispatching tool
+    // calls" and "the long local-model inference" -- by the time a
+    // `tool_call` frame is observed, the entire wait is already over. The
+    // REASONING_FALLBACK_MS timer below is what actually delivers the
+    // "Reasoning locally..." stage during the long gap; a `tool_call` frame
+    // (should the stack ever start flushing incrementally) advances the
+    // same stage immediately and just pre-empts the timer.
+    // -------------------------------------------------------------------
+    var THINKING_STAGE_LABELS = {
+        consulting: 'Consulting the chart…',
+        reasoning: 'Reasoning locally (Qwen3-4B)…',
+        verifying: 'Verifying claims against the record…'
+    };
+    var THINKING_GENERIC_LABEL = 'Thinking…';
+
+    // How long to hold "Consulting the chart..." before assuming the wait
+    // has moved into the long local-inference stage, absent any earlier
+    // real signal (see the investigation note above). Small relative to
+    // observed real-model latencies (~9-29s per chat-proxy's own comment).
+    var THINKING_REASONING_FALLBACK_MS = 1500;
+
+    function createThinkingIndicator(container) {
+        var el = document.createElement('div');
+        el.className = 'copilot-thinking';
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+
+        var spinner = document.createElement('span');
+        spinner.className = 'copilot-thinking-spinner';
+        spinner.setAttribute('aria-hidden', 'true');
+        el.appendChild(spinner);
+
+        var status = document.createElement('span');
+        status.className = 'copilot-thinking-status';
+        el.appendChild(status);
+
+        container.appendChild(el);
+        container.scrollTop = container.scrollHeight;
+
+        return {
+            setStage: function (stage) {
+                status.textContent = Object.prototype.hasOwnProperty.call(THINKING_STAGE_LABELS, stage)
+                    ? THINKING_STAGE_LABELS[stage]
+                    : THINKING_GENERIC_LABEL;
+            },
+            remove: function () {
+                if (el.parentNode) {
+                    el.parentNode.removeChild(el);
+                }
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------
     // P3.8 verification layer: verdict badge, citation chips, warning banner.
     //
     // Renders the `verification` SSE frame (app/chat.py
@@ -579,6 +646,11 @@
     function createChatController(options) {
         var cachedToken = null;
         var conversationId = null;
+        // #208: the thinking indicator's stop() for the in-flight send, if
+        // any -- null when no send is outstanding. Lets reset() clear a
+        // mid-flight indicator (and its fallback timer) even though the
+        // indicator itself is a local var inside sendMessage.
+        var activeThinking = null;
         var redirect = options.redirectImpl || function (url) {
             window.location.assign(url);
         };
@@ -625,6 +697,22 @@
             // answer specifically.
             var responseCorrelationId = null;
 
+            // #208: shown immediately on send -- no more silent dead-air
+            // while the request is in flight. See the createThinkingIndicator
+            // docstring for why a fallback timer (not just frame arrival)
+            // drives the "Reasoning locally..." transition.
+            var thinking = createThinkingIndicator(options.messagesEl);
+            thinking.setStage('consulting');
+            var reasoningFallbackTimer = setTimeout(function () {
+                thinking.setStage('reasoning');
+            }, THINKING_REASONING_FALLBACK_MS);
+            function stopThinking() {
+                clearTimeout(reasoningFallbackTimer);
+                thinking.remove();
+                activeThinking = null;
+            }
+            activeThinking = { stop: stopThinking };
+
             return ensureToken().then(function (token) {
                 return options.fetchImpl(options.proxyUrl, {
                     method: 'POST',
@@ -644,6 +732,7 @@
                 // generic.
                 if (resp.status === 400) {
                     return resp.json().then(function (data) {
+                        stopThinking();
                         var noPatient = data && data.reason === 'no_patient_in_session';
                         appendMessage(
                             options.messagesEl,
@@ -651,6 +740,7 @@
                             noPatient ? NO_PATIENT_MESSAGE : UNAVAILABLE_MESSAGE
                         );
                     }).catch(function () {
+                        stopThinking();
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                     });
                 }
@@ -668,14 +758,24 @@
                         if (typeof frame.data.correlation_id === 'string') {
                             responseCorrelationId = frame.data.correlation_id;
                         }
+                    } else if (frame.event === 'tool_call') {
+                        // The planner has moved past the chart-lookup tool
+                        // dispatch it is documented to run before any real
+                        // frame is emitted -- see the createThinkingIndicator
+                        // docstring for why the fallback timer, not this
+                        // frame, does the actual work of the transition in
+                        // the current dev stack.
+                        thinking.setStage('reasoning');
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
                     } else if (frame.event === 'verification' && frame.data) {
                         verificationData = frame.data;
+                        thinking.setStage('verifying');
                     } else if (frame.event === 'error') {
                         hadError = true;
                     }
                 }).then(function () {
+                    stopThinking();
                     if (answerText) {
                         appendMessage(options.messagesEl, 'assistant', answerText);
                         // Pending verification payloads (verdict null) render
@@ -706,6 +806,7 @@
                     }
                 });
             }).catch(function () {
+                stopThinking();
                 appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
             });
         }
@@ -734,6 +835,13 @@
         // rejects a mismatched pid. The cached bearer token is user-scoped,
         // not patient-scoped, so it is intentionally kept.
         function reset() {
+            // #208: a reset() during an in-flight send (e.g. a patient
+            // switch mid-wait) must stop the fallback timer too, not just
+            // rely on the textContent clear below to visually drop the
+            // indicator's DOM node.
+            if (activeThinking) {
+                activeThinking.stop();
+            }
             conversationId = null;
             options.messagesEl.textContent = '';
             // A fresh conversation is a fresh first-open: bring the about
@@ -806,6 +914,7 @@
         createSSEFrameParser: createSSEFrameParser,
         consumeSSEStream: consumeSSEStream,
         appendMessage: appendMessage,
+        createThinkingIndicator: createThinkingIndicator,
         createChatController: createChatController,
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,
