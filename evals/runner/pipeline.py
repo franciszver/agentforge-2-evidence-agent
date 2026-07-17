@@ -24,6 +24,16 @@ could otherwise coincidentally collide with a foreign patient number).
 the recordings' authored date (mid-2026) so every OTHER category's
 freshly-dated fixtures stay "fresh" while ``stale_data``'s 2014 fixtures are
 unambiguously stale.
+
+**Even earlier than the subject-check: the PRE-dispatch cross-patient guard
+(#223).** ``app.extraction.detect_foreign_patient_reference`` is checked
+BEFORE the fake registry / ``Planner`` are even constructed -- unlike #194's
+subject-check, which runs after the planner has already dispatched tools and
+can only rewrite the answer text, this hardens the actual dispatch: a
+detected foreign-patient reference short-circuits straight to
+``app.extraction.cross_patient_refusal_result()`` (empty trace, no tool ever
+run, no model ever called), which is what lets ``must_refuse``/``no_phi``
+actually pass -- both require the forbidden tool to NEVER dispatch.
 """
 
 from __future__ import annotations
@@ -33,7 +43,14 @@ from datetime import datetime
 
 import httpx
 
-from app.extraction import ClaimExtractor, apply_recency_notice, apply_subject_check, run_verification
+from app.extraction import (
+    ClaimExtractor,
+    apply_recency_notice,
+    apply_subject_check,
+    cross_patient_refusal_result,
+    detect_foreign_patient_reference,
+    run_verification,
+)
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer
@@ -91,19 +108,26 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     """Run ``case`` end to end: the real ``Planner`` loop, then (if needed)
     the real claim-extraction + verification stack. ``ollama_client`` is
     whatever satisfies ``OllamaLike`` -- the live model, or a replay."""
-    registry = build_fake_registry(case.tool_data, case.patient_id)
-    planner = Planner(
-        ollama_client=ollama_client,  # type: ignore[arg-type]
-        openemr_client=_offline_openemr_client(),
-        token=_EVAL_TOKEN,
-        patient_id=case.patient_id,
-        registry=registry,
-    )
-    planner_result = planner.run(case.question)
-    # apply_subject_check runs BEFORE apply_recency_notice -- see app.chat's
-    # wiring comment for why (it must only ever scan the model's own prose,
-    # never text a later deterministic step appends).
-    planner_result = apply_subject_check(planner_result, question=case.question, patient_id=case.patient_id)
+    # #223: PRE-dispatch cross-patient guard, checked BEFORE the fake
+    # registry / Planner are even constructed -- see module docstring. A
+    # detected foreign-patient reference never reaches a tool dispatch or a
+    # model call.
+    if detect_foreign_patient_reference(case.question, case.patient_id):
+        planner_result = cross_patient_refusal_result()
+    else:
+        registry = build_fake_registry(case.tool_data, case.patient_id)
+        planner = Planner(
+            ollama_client=ollama_client,  # type: ignore[arg-type]
+            openemr_client=_offline_openemr_client(),
+            token=_EVAL_TOKEN,
+            patient_id=case.patient_id,
+            registry=registry,
+        )
+        planner_result = planner.run(case.question)
+        # apply_subject_check runs BEFORE apply_recency_notice -- see
+        # app.chat's wiring comment for why (it must only ever scan the
+        # model's own prose, never text a later deterministic step appends).
+        planner_result = apply_subject_check(planner_result, question=case.question, patient_id=case.patient_id)
     planner_result = apply_recency_notice(planner_result, now=_EVAL_FIXED_NOW)
 
     if not needs_verification(case):

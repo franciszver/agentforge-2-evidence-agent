@@ -91,6 +91,8 @@ from app.extraction import (
     ClaimExtractorLike,
     apply_recency_notice,
     apply_subject_check,
+    cross_patient_refusal_result,
+    detect_foreign_patient_reference,
     run_verification,
 )
 from app.introspection import TokenIntrospector
@@ -669,9 +671,20 @@ def _stream_chat(
         # ``getattr`` (not a direct attribute access) so a ``PlannerProtocol``
         # double that only implements ``run()`` (all 8 existing fake-planner
         # tests) falls back to that path untouched, rather than erroring on a
-        # missing attribute the protocol never promised.
+        # missing attribute the protocol never promised. Computed
+        # unconditionally (a cheap attribute lookup, no side effect) so it is
+        # available below regardless of which branch runs next.
         run_streaming = getattr(planner, "run_streaming", None)
-        if run_streaming is not None:
+        # #223: deterministic PRE-dispatch cross-patient refusal guard,
+        # checked BEFORE the planner runs at all. Unlike #194's
+        # apply_subject_check below (which only rewrites the answer TEXT
+        # after tools have already been dispatched), this short-circuits
+        # BEFORE any tool dispatch or model call -- the only way to
+        # guarantee a forbidden tool never runs. See
+        # app.extraction.detect_foreign_patient_reference.
+        if detect_foreign_patient_reference(message, conversation.patient_id):
+            result = cross_patient_refusal_result()
+        elif run_streaming is not None:
             result = None
             for event in run_streaming(message):
                 if isinstance(event, ToolDispatched):
@@ -689,6 +702,7 @@ def _stream_chat(
                 raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
         else:
             result = planner.run(message)
+        assert result is not None  # mypy: the elif branch's loop widens result
         # Deterministic cross-patient subject-check (#194, follow-up to
         # #121): a small model can verbally attribute the bound patient's
         # data to a different, unqueried patient the question named/numbered
@@ -698,7 +712,11 @@ def _stream_chat(
         # Applied BEFORE the recency notice below (not after) so it only ever
         # scans the model's own prose -- never text a later deterministic step
         # appends (e.g. a stale record's literal date), which could otherwise
-        # coincidentally collide with a foreign patient number.
+        # coincidentally collide with a foreign patient number. Safe (a
+        # guaranteed no-op) to run unconditionally even when the #223 guard
+        # above already fired: ``cross_patient_refusal_result()``'s generic
+        # answer never echoes the foreign patient it detected, so this never
+        # finds anything to strip.
         result = apply_subject_check(result, question=message, patient_id=conversation.patient_id)
         # Deterministic recency notice (#153): append a caveat naming the
         # record's date for any stale record the planner returned this turn,

@@ -582,3 +582,73 @@ def apply_subject_check(result: PlannerResult, *, question: str, patient_id: int
 
     scope_notice = f"I can only answer about the currently open patient (patient {patient_id})."
     return _with_answer(result, scope_notice)
+
+
+# Dosing/quantity nouns that turn a "patient <N>" number into a DOSE
+# instruction ("give patient 2 tablets", "patient 5 mg") rather than a
+# reference to a different patient. When one immediately follows the number,
+# the guard must NOT fire -- otherwise an ordinary dosing question about the
+# bound patient would be wrongly refused. See ``_GUARD_PATIENT_NUMBER_RE``.
+_DOSING_NOUNS = (
+    r"tablets?|tabs?|pills?|capsules?|caps?|mg|mcg|ml|g|units?|"
+    r"doses?|times|puffs?|drops?|days?|weeks?|months?"
+)
+
+# The guard's OWN foreign-patient-number pattern: identical to #194's
+# ``_PATIENT_NUMBER_RE`` but with a trailing negative lookahead so a
+# "patient <N>" whose number is immediately followed by a dosing/quantity
+# noun (a dosing instruction, not a patient reference) does NOT match. Kept
+# SEPARATE from ``_PATIENT_NUMBER_RE`` deliberately -- #194's
+# ``apply_subject_check`` runs POST-answer and only ever rewrites text, so
+# its looser number match is harmless there; this guard runs PRE-dispatch and
+# a false positive here hard-refuses a legitimate question, so it must be
+# tighter. Sharing one pattern would force #194's tests and this guard's to
+# move in lockstep for no benefit.
+_GUARD_PATIENT_NUMBER_RE = re.compile(
+    rf"\bpatient\s*(?:id\s*)?#?\s*(\d+)\b(?!\s+(?:{_DOSING_NOUNS})\b)",
+    re.IGNORECASE,
+)
+
+
+def detect_foreign_patient_reference(question: str, bound_patient_id: int) -> bool:
+    """Deterministic PRE-dispatch guard (#223): does ``question`` explicitly
+    reference a DIFFERENT patient than ``bound_patient_id`` by NUMBER?
+
+    This hardens #194's ``apply_subject_check`` above, which only runs AFTER
+    ``Planner.run()`` has already dispatched tools and can merely rewrite the
+    answer TEXT. That is structurally too late to satisfy the eval suite's
+    ``must_refuse`` (the forbidden tool must NEVER dispatch) and ``no_phi``
+    (which also scans the quarantined tool-call trace, where a real record
+    value legitimately reappears once a tool actually runs) assertions.
+    Detected here, the caller (``app.chat._stream_chat``,
+    ``runner.pipeline.run_case``) short-circuits to a refusal BEFORE the
+    planner runs at all -- no tool dispatch, no model call.
+
+    The single signal is an explicit foreign patient NUMBER ("patient 999",
+    "patient #999", "patient id 999") whose value differs from the bound id,
+    via ``_GUARD_PATIENT_NUMBER_RE`` (which excludes dosing forms like "give
+    patient 2 tablets"). Name-based detection ("switch to <Name>") is
+    DELIBERATELY out of scope: a bare capitalized name cannot be told apart
+    from an ordinary clinical medication switch ("switch to Lisinopril") or a
+    named provider without knowing the bound patient's own name -- the same
+    name-binding problem deferred to #224. Detecting it here would wrongly
+    refuse routine clinical questions, a worse regression than the case it
+    would fix.
+    """
+    return any(
+        int(match.group(1)) != bound_patient_id for match in _GUARD_PATIENT_NUMBER_RE.finditer(question)
+    )
+
+
+_CROSS_PATIENT_REFUSAL_ANSWER = (
+    "I can only answer about the patient whose chart is currently open. "
+    "Please open the other patient's chart to ask about them."
+)
+
+
+def cross_patient_refusal_result() -> PlannerResult:
+    """The refusal ``PlannerResult`` for ``detect_foreign_patient_reference``
+    (#223): empty trace, empty raw_results, empty llm_calls -- no tool was
+    ever dispatched and no model was ever called -- carrying a clean, generic
+    decline that names neither the foreign patient nor the bound one."""
+    return PlannerResult(answer=_CROSS_PATIENT_REFUSAL_ANSWER, trace=[], raw_results=[], llm_calls=[])

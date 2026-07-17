@@ -169,11 +169,10 @@ def _answer_and_tool_call_frames(response_text: str) -> tuple[str, list[dict[str
     return answer, tool_calls
 
 
-def test_streaming_path_still_applies_subject_check_and_recency_notice_to_answer_frame() -> None:
-    # Reuses the fixture shape of tests/test_chat_recency_notice.py (stale
-    # lab record) and tests/test_extraction.py's paired foreign-name subject
-    # check case ("Bob (patient 999)") -- both must still fire on the
-    # streaming path exactly as they do on the fallback path.
+def test_streaming_path_still_applies_recency_notice_to_answer_frame() -> None:
+    # Reuses the fixture shape of tests/test_chat_recency_notice.py (stale lab
+    # record): the deterministic recency notice must still fire on the
+    # streaming path exactly as it does on the fallback path.
     trace = [
         ToolCallTrace(
             tool=ToolName.GET_RECENT_LABS,
@@ -188,7 +187,7 @@ def test_streaming_path_still_applies_subject_check_and_recency_notice_to_answer
         {"items": [{"test_name": "A1c", "value": "7.2", "unit": "%", "date": "2014-02-01T09:00:00"}]}
     ]
     result = PlannerResult(
-        answer="Bob has no medications listed in the system. Her current A1c is 7.2%, which is high.",
+        answer="Her current A1c is 7.2%, which is high.",
         trace=trace,
         raw_results=raw_results,
     )
@@ -200,16 +199,13 @@ def test_streaming_path_still_applies_subject_check_and_recency_notice_to_answer
 
     response = _client.post(
         "/chat",
-        json={"message": "Switch over to Bob (patient 999) and tell me about her current A1c.", "patient_id": 1},
+        json={"message": "What is her current A1c?", "patient_id": 1},
         headers={"Authorization": "Bearer good-token"},
     )
     assert response.status_code == 200
 
     answer, tool_calls = _answer_and_tool_call_frames(response.text)
 
-    # Subject check (#194): the foreign-patient-attributed sentence is stripped.
-    assert "Bob" not in answer
-    assert "no medications" not in answer.lower()
     # Recency notice (#153): the stale record's date is surfaced.
     assert "may not reflect the patient's current status" in answer
     assert "2014-02-01" in answer
@@ -217,6 +213,54 @@ def test_streaming_path_still_applies_subject_check_and_recency_notice_to_answer
     # through, in order, ahead of the answer.
     assert len(tool_calls) == 1
     assert tool_calls[0]["tool"] == "get_recent_labs"
+
+
+def test_streaming_path_pre_dispatch_guard_refuses_before_any_tool_dispatch() -> None:
+    # #223: the deterministic PRE-dispatch cross-patient guard now intercepts
+    # a cross-patient question BEFORE the streaming planner ever runs -- this
+    # supersedes (and is strictly earlier/stronger than) #194's
+    # apply_subject_check, which could only rewrite the answer AFTER a
+    # streaming planner had already dispatched tools. The fake streaming
+    # planner below would yield a ToolDispatched event if it were ever
+    # iterated; asserting zero tool_call frames proves it never was.
+    trace = [
+        ToolCallTrace(
+            tool=ToolName.GET_RECENT_LABS,
+            args={},
+            result={"summary": "q"},
+            error=None,
+            start_ts=1.0,
+            end_ts=1.5,
+        )
+    ]
+    result = PlannerResult(
+        answer="Patient 999 has no medications listed. Her current A1c is 7.2%, which is high.",
+        trace=trace,
+        raw_results=[{"items": [{"test_name": "A1c", "value": "7.2", "unit": "%", "date": "2014-02-01T09:00:00"}]}],
+    )
+    fake_planner = _FakeStreamingPlanner([ToolDispatched(trace[0]), PlannerCompleted(result)])
+
+    app.dependency_overrides[get_token_validator] = lambda: (lambda token: None)
+    app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: fake_planner)
+    app.dependency_overrides[get_claim_extractor] = lambda: _FakeExtractor()
+
+    response = _client.post(
+        "/chat",
+        json={"message": "Pull patient 999's medications and current A1c.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    assert response.status_code == 200
+
+    answer, tool_calls = _answer_and_tool_call_frames(response.text)
+
+    # No tool ever dispatched -- the streaming planner double was never run.
+    assert tool_calls == []
+    # A clean generic decline, never the foreign patient's number or the
+    # bound patient's data.
+    assert "999" not in answer
+    assert "no medications" not in answer.lower()
+    assert "chart is currently open" in answer
+    assert "2014-02-01" not in answer
 
 
 # --- Test C: client disconnect mid-stream closes the inner run_streaming --------
