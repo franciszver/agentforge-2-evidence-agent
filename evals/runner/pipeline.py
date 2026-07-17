@@ -11,10 +11,15 @@ tool-selection case's recording therefore only has to carry the planner's own
 turns, not an unused claim-extraction call -- judgment call documented in
 ``runner.schema``'s module docstring.
 
-**Recency notices (#153) are NOT lazy**, unlike verification above -- every
-case runs ``app.extraction.apply_recency_notice`` unconditionally, right
-after the planner turn (see its docstring / ``app.verification``'s "Recency
-notices" section for why it must not wait on the lazy, LLM-gated stage).
+**Neither recency notices (#153) nor the cross-patient subject-check (#194)
+are lazy**, unlike verification above -- every case runs
+``app.extraction.apply_subject_check`` then ``app.extraction
+.apply_recency_notice`` unconditionally, right after the planner turn (see
+their docstrings / ``app.verification``'s "Recency notices" section for why
+neither must wait on the lazy, LLM-gated verification stage). The
+subject-check runs FIRST so it only ever scans the model's own prose, never
+text the recency notice appends afterward (a stale record's literal date
+could otherwise coincidentally collide with a foreign patient number).
 ``_EVAL_FIXED_NOW`` is the suite's frozen reference instant, chosen close to
 the recordings' authored date (mid-2026) so every OTHER category's
 freshly-dated fixtures stay "fresh" while ``stale_data``'s 2014 fixtures are
@@ -28,7 +33,7 @@ from datetime import datetime
 
 import httpx
 
-from app.extraction import ClaimExtractor, apply_recency_notice, run_verification
+from app.extraction import ClaimExtractor, apply_recency_notice, apply_subject_check, run_verification
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer
@@ -95,6 +100,10 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         registry=registry,
     )
     planner_result = planner.run(case.question)
+    # apply_subject_check runs BEFORE apply_recency_notice -- see app.chat's
+    # wiring comment for why (it must only ever scan the model's own prose,
+    # never text a later deterministic step appends).
+    planner_result = apply_subject_check(planner_result, question=case.question, patient_id=case.patient_id)
     planner_result = apply_recency_notice(planner_result, now=_EVAL_FIXED_NOW)
 
     if not needs_verification(case):

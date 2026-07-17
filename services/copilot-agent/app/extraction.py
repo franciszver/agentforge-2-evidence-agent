@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Protocol
@@ -366,6 +367,13 @@ def run_verification(
     return verdict_result, rendered
 
 
+def _with_answer(result: PlannerResult, answer: str) -> PlannerResult:
+    """A copy of ``result`` with only ``answer`` replaced -- the passthrough
+    construction shared by ``apply_recency_notice`` and ``apply_subject_check``,
+    the two deterministic text-level post-processors over ``PlannerResult``."""
+    return PlannerResult(answer=answer, trace=result.trace, raw_results=result.raw_results, llm_calls=result.llm_calls)
+
+
 def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResult:
     """Append deterministic recency notices (``app.verification
     .recency_notices``, #153) to ``result.answer`` for every stale record
@@ -412,5 +420,165 @@ def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResu
     notices = recency_notices(tools, result.raw_results, now)
     if not notices:
         return result
-    answer = result.answer + "\n\n" + "\n".join(notices)
-    return PlannerResult(answer=answer, trace=result.trace, raw_results=result.raw_results, llm_calls=result.llm_calls)
+    return _with_answer(result, result.answer + "\n\n" + "\n".join(notices))
+
+
+# Explicit foreign patient NUMBER the question introduces: "patient 999",
+# "patient #999", "patient id 999". Deterministic and unambiguous -- a
+# number is never confusable with a legitimately-named provider or family
+# member.
+_PATIENT_NUMBER_RE = re.compile(r"\bpatient\s*(?:id\s*)?#?\s*(\d+)\b", re.IGNORECASE)
+
+# A NAME the question binds to a foreign patient number via apposition, e.g.
+# "Bob (patient 999)" -- up to three capitalized words immediately followed
+# by "(patient <N>)". Deliberately narrow: a name is only ever treated as a
+# subject-check signal when the question itself ties it to an explicit
+# foreign patient number, never when it merely appears somewhere in the text
+# (that would be indistinguishable from a legitimately-named provider or
+# family member -- see #194's scoping discussion).
+_PAIRED_NAME_NUMBER_RE = re.compile(
+    # Only "patient" is matched case-insensitively (scoped inline flag, py3.11+)
+    # -- the name-capture group's [A-Z] stays case-SENSITIVE, so a lowercase
+    # word before "(...)" (e.g. "the (patient 999)") is never mistaken for a name.
+    r"((?:[A-Z][A-Za-z'\-]*\s+){0,2}[A-Z][A-Za-z'\-]*)\s*\(\s*(?i:patient)\s*#?\s*(\d+)\s*\)"
+)
+
+# Subject-position verbs/auxiliaries: a foreign patient number IMMEDIATELY
+# followed by one of these reads as "<patient> <verb> ..." (a claim ABOUT
+# that patient), as opposed to a value position ("5 mg", "999 mg/dL"). Used
+# only on the ANSWER side. See ``_answer_attributes_to_foreign``.
+_SUBJECT_VERB = (
+    r"(?:has|have|had|is|are|was|were|takes?|took|does|do|"
+    r"isn't|aren't|wasn't|weren't|hasn't|haven't|doesn't)"
+)
+
+
+def _foreign_patient_references(question: str, patient_id: int) -> tuple[set[str], set[str]]:
+    """The foreign patient numbers and paired names ``question`` explicitly
+    introduces -- i.e. NOT the bound ``patient_id``. Returned separately
+    because the two are matched DIFFERENTLY on the answer side (see
+    ``_answer_attributes_to_foreign``): a number must sit in an attributive
+    position to count, a paired name counts on a bare whole-word occurrence."""
+    numbers = {
+        match.group(1) for match in _PATIENT_NUMBER_RE.finditer(question) if int(match.group(1)) != patient_id
+    }
+    names = {
+        match.group(1).strip()
+        for match in _PAIRED_NAME_NUMBER_RE.finditer(question)
+        if int(match.group(2)) != patient_id
+    }
+    return numbers, names
+
+
+def _answer_attributes_to_foreign(answer: str, numbers: set[str], names: set[str]) -> bool:
+    """Whether ``answer`` attributes something to a foreign patient.
+
+    A paired NAME (already tied by the question to a foreign patient number
+    via apposition) counts on a bare, whole-word, case-insensitive
+    occurrence -- "Bob has no meds" when the question said "Bob (patient
+    999)". A foreign NUMBER counts ONLY in an attributive/subject position,
+    never as a bare digit, because dosages ("5 mg"), lab values ("999
+    mg/dL"), years ("in 1999") and ids routinely collide with small patient
+    numbers and would otherwise nuke a correct answer about the bound
+    patient. A number is attributive when it is:
+      - preceded by "patient"/"pt" ("patient 999", "pt 999"), or
+      - in possessive position ("999's allergies"), or
+      - immediately followed by a subject verb ("999 has ...", "999 is on ...").
+    A bare number-subject with none of these (e.g. "999, no meds") is
+    deliberately out of scope -- catching it reliably needs exactly the
+    fragile NLP #194 rules out, and the common real forms are "patient N ..."
+    and the paired name."""
+    for name in names:
+        if re.search(rf"\b{re.escape(name)}\b", answer, re.IGNORECASE):
+            return True
+    for number in numbers:
+        n = re.escape(number)
+        attributive = (
+            rf"\b(?:patient|pt)\.?\s*#?\s*{n}\b"  # patient 999 / pt 999
+            rf"|\b{n}(?:['’]s)\b"  # 999's ...
+            rf"|\b{n}\s+{_SUBJECT_VERB}\b"  # 999 has / 999 is / ...
+        )
+        if re.search(attributive, answer, re.IGNORECASE):
+            return True
+    return False
+
+
+def apply_subject_check(result: PlannerResult, *, question: str, patient_id: int) -> PlannerResult:
+    """Deterministic post-answer guard against cross-patient misattribution
+    (#194, follow-up to #121). #121 found that a small model can answer a
+    cross-patient question by verbally attributing the BOUND patient's
+    (possibly empty) result to a different, unqueried patient -- e.g. bound
+    to patient 1, asked about "Bob (patient 999)", answering "Bob has no
+    medications." No PHI necessarily leaks (the fetch, if any, still only
+    ever ran against the bound patient -- P2.16), but the prose is a false
+    claim about a patient the agent never looked at. #121's fix was prompt
+    hardening, which is inherently non-deterministic on a small local model;
+    this is the model-independent backstop.
+
+    **The signal.** Deterministic and scoped to PATIENT references only:
+      1. A foreign patient NUMBER the question explicitly names ("patient
+         999", "patient #999") -- unambiguous, never confusable with a
+         provider or family member.
+      2. A NAME the question binds to such a number via "<Name> (patient
+         <N>)" apposition ("Bob (patient 999)") -- only ever used as a
+         signal when paired with an explicit foreign number in the
+         question, never as a bare name search. An unpaired name (e.g. a
+         referring provider mentioned in the answer) is never touched.
+
+    **Answer-side matching (see ``_answer_attributes_to_foreign``).** A
+    paired NAME counts on a bare whole-word occurrence ("Bob has no meds").
+    A NUMBER counts ONLY in an attributive/subject position (preceded by
+    "patient"/"pt", possessive "999's", or followed by a subject verb) --
+    NOT as a bare digit, so a dosage ("5 mg"), lab value ("999 mg/dL") or
+    year ("in 1999") that coincidentally equals a foreign patient number the
+    question mentioned does NOT nuke an otherwise-correct answer about the
+    bound patient. On a hit the answer is replaced outright with a fixed
+    scope notice naming only the bound patient.
+
+    One thing this deliberately does NOT try to distinguish, accepted as a
+    fail-closed tradeoff (consistent with this trust layer's existing bias --
+    e.g. ``app.verification``'s ``NO_ASSERTED_VALUE`` also fails closed
+    rather than guessing): a genuine misattribution vs. an already-correct
+    refusal that merely *mentions* the foreign patient in subject position
+    while declining (e.g. "I cannot discuss patient 999"). Both are replaced
+    uniformly -- re-deriving that distinction would require exactly the
+    NLP-ish, false-positive-prone heuristics #194 rules out, and the
+    replacement is itself always a valid refusal either way.
+
+    Deliberately independent of ``run_verification``/claim extraction, same
+    reasoning as ``apply_recency_notice``: a pure function of the planner
+    output, no LLM call. Returns ``result`` unchanged (same object) when
+    nothing fires, so callers can call this unconditionally with no cost on
+    the common case. Wired into both ``app.chat._stream_chat`` and the
+    offline eval harness (``runner.pipeline.run_case``), mirroring
+    ``apply_recency_notice`` -- and run BEFORE it (see both call sites'
+    comments): this must only ever scan the model's own prose, not text a
+    later step appends.
+
+    FOLLOW-UP (known, deliberately deferred, not this PR): when this DOES
+    fire, ``result.raw_results`` is untouched, so a downstream
+    ``run_verification`` call still computes ``allergy_conflicts``/
+    ``mentioned_interactions`` (``app.extraction.collect_medications``/
+    ``collect_allergies``) from the BOUND patient's real fetched data,
+    independent of the now-generic ``result.answer``. That data belongs to
+    the bound patient (already-authorized, not a cross-patient leak), and
+    the allergy/interaction safety check is intentionally prose-independent
+    everywhere else in this pipeline (it must fire even when the model's own
+    text never mentions the interaction) -- but the SSE verification frame
+    can then show an allergy/interaction warning chip alongside a scope
+    notice that never discusses it, which reads as disconnected from the
+    visible answer. Fixing this cleanly needs either suppressing
+    verification's safety chips specifically when this guard fires, or
+    reworking ``compute_verdict`` to key off the rendered answer -- both
+    larger changes than this deterministic text-level guard; out of scope
+    here.
+    """
+    numbers, names = _foreign_patient_references(question, patient_id)
+    if not numbers and not names:
+        return result
+
+    if not _answer_attributes_to_foreign(result.answer, numbers, names):
+        return result
+
+    scope_notice = f"I can only answer about the currently open patient (patient {patient_id})."
+    return _with_answer(result, scope_notice)

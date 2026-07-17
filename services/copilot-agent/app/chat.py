@@ -75,7 +75,13 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.correlation import get_correlation_id
 from app.dev_token_bridge import DevTokenBridge
-from app.extraction import ClaimExtractor, ClaimExtractorLike, apply_recency_notice, run_verification
+from app.extraction import (
+    ClaimExtractor,
+    ClaimExtractorLike,
+    apply_recency_notice,
+    apply_subject_check,
+    run_verification,
+)
 from app.introspection import TokenIntrospector
 from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
@@ -624,6 +630,17 @@ def _stream_chat(
         )
 
         result = planner.run(message)
+        # Deterministic cross-patient subject-check (#194, follow-up to
+        # #121): a small model can verbally attribute the bound patient's
+        # data to a different, unqueried patient the question named/numbered
+        # -- this is a model-independent backstop that strips any such
+        # reference from the final answer BEFORE it is emitted, regardless of
+        # the model's phrasing. See ``app.extraction.apply_subject_check``.
+        # Applied BEFORE the recency notice below (not after) so it only ever
+        # scans the model's own prose -- never text a later deterministic step
+        # appends (e.g. a stale record's literal date), which could otherwise
+        # coincidentally collide with a foreign patient number.
+        result = apply_subject_check(result, question=message, patient_id=conversation.patient_id)
         # Deterministic recency notice (#153): append a caveat naming the
         # record's date for any stale record the planner returned this turn,
         # BEFORE the answer is emitted -- so a real user never sees years-old
