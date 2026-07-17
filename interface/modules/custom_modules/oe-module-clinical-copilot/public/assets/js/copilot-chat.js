@@ -10,12 +10,26 @@
  * the P2.13 token broker (public/ajax.php) and cached for the panel session.
  *
  * "Streaming" here means incremental rendering of the SSE stream's named
- * events as they arrive over the wire (conversation ack, then the tool_call/
- * answer/done frames once the planner loop completes) -- the agent's
- * `answer` frame carries the complete final text in one event, not
- * token-by-token deltas (see app/chat.py's SSE frame contract), so there is
- * no typewriter effect to render; the UI reflects the real granularity of
- * the backend contract instead of faking one it doesn't have.
+ * events as they arrive over the wire (conversation ack, tool_call frames,
+ * reasoning_delta frames, then answer/verification/done once the planner
+ * loop completes). The `answer` frame still only ever carries the complete,
+ * VERIFIED final text in one event -- that is a deliberate safety property
+ * (see the P213 reasoning zone below), not a missing feature: the
+ * `extract(FinalAnswer)` call that produces it cannot stream (schema decode
+ * needs the whole JSON). The `reasoning_delta` frame is what streams
+ * token-by-token, into its own clearly-labeled surface.
+ *
+ * P213 reasoning zone: the model's free-text reasoning (`reasoning_delta`
+ * frames, `app/chat.py`'s SSE frame contract) types into a separate
+ * "Reasoning locally (Qwen3-4B)..." zone as it arrives, distinct from the
+ * answer bubble -- see createReasoningZone below. This is UNVERIFIED,
+ * provisional model text; the answer bubble renders ONLY from the `answer`
+ * frame's already-verified text, never from any reasoning_delta text. The
+ * #208 generic "Reasoning locally..." spinner stage hands off to this live
+ * zone the instant the first reasoning_delta frame arrives, so the two are
+ * never shown redundantly at once. Once the answer renders, the reasoning
+ * zone stays visible above it (no collapse/toggle -- the simplest option
+ * that satisfies "don't hide it, don't show a redundant spinner").
  *
  * Security: assistant/user text is always rendered via `textContent`
  * (appendMessage below), never `innerHTML` -- model output and patient
@@ -195,6 +209,75 @@
                 status.textContent = Object.prototype.hasOwnProperty.call(THINKING_STAGE_LABELS, stage)
                     ? THINKING_STAGE_LABELS[stage]
                     : THINKING_GENERIC_LABEL;
+            },
+            remove: function () {
+                if (el.parentNode) {
+                    el.parentNode.removeChild(el);
+                }
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------
+    // #213 live reasoning zone: the `reasoning_delta` SSE frame's text
+    // types into this SEPARATE, clearly-labeled surface -- never the answer
+    // bubble. This is the owner's non-negotiable UX rule: unverified,
+    // provisional model text must never occupy the authoritative answer
+    // slot (see the module docstring). `append` uses `textContent +=`, not
+    // innerHTML, so streamed reasoning renders as inert text exactly like
+    // every other model/record-derived string in this file.
+    // -------------------------------------------------------------------
+    function createReasoningZone(container) {
+        var el = document.createElement('div');
+        el.className = 'copilot-reasoning copilot-reasoning-active';
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+
+        var label = document.createElement('div');
+        label.className = 'copilot-reasoning-label';
+        label.textContent = THINKING_STAGE_LABELS.reasoning;
+        el.appendChild(label);
+
+        var text = document.createElement('div');
+        text.className = 'copilot-reasoning-text';
+        el.appendChild(text);
+
+        container.appendChild(el);
+        container.scrollTop = container.scrollHeight;
+
+        // Reading scrollHeight forces a synchronous reflow; a reasoning
+        // response streams hundreds of tokens, so coalesce the auto-scroll
+        // to at most one reflow per animation frame instead of one per
+        // token. The text append itself stays synchronous (callers/tests
+        // observe it immediately). Falls back to an immediate scroll where
+        // requestAnimationFrame is unavailable.
+        var raf = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+        var scrollPending = false;
+        function scheduleScroll() {
+            if (!raf) {
+                container.scrollTop = container.scrollHeight;
+                return;
+            }
+            if (scrollPending) {
+                return;
+            }
+            scrollPending = true;
+            raf(function () {
+                scrollPending = false;
+                container.scrollTop = container.scrollHeight;
+            });
+        }
+
+        return {
+            append: function (delta) {
+                text.textContent += delta;
+                scheduleScroll();
+            },
+            // Stops the "actively streaming" cursor treatment once the
+            // verified answer has arrived -- the zone itself stays visible
+            // (see the module docstring's post-answer treatment note).
+            finalize: function () {
+                el.classList.remove('copilot-reasoning-active');
             },
             remove: function () {
                 if (el.parentNode) {
@@ -651,6 +734,11 @@
         // mid-flight indicator (and its fallback timer) even though the
         // indicator itself is a local var inside sendMessage.
         var activeThinking = null;
+        // #213: same pattern as activeThinking, for the live reasoning zone
+        // -- null when no send has streamed any reasoning yet. Lets reset()
+        // clear a mid-flight zone even though it is a local var inside
+        // sendMessage.
+        var activeReasoningZone = null;
         var redirect = options.redirectImpl || function (url) {
             window.location.assign(url);
         };
@@ -713,6 +801,20 @@
             }
             activeThinking = { stop: stopThinking };
 
+            // #213: created lazily on the FIRST reasoning_delta frame (see
+            // the frame handler below), so a turn with no reasoning ever
+            // streamed (or a fallback planner double with no reasoning_delta
+            // support -- see app.planner's module docstring) never shows an
+            // empty zone.
+            var reasoningZone = null;
+            function clearReasoningZone() {
+                if (reasoningZone) {
+                    reasoningZone.remove();
+                    reasoningZone = null;
+                }
+                activeReasoningZone = null;
+            }
+
             return ensureToken().then(function (token) {
                 return options.fetchImpl(options.proxyUrl, {
                     method: 'POST',
@@ -766,6 +868,17 @@
                         // frame, does the actual work of the transition in
                         // the current dev stack.
                         thinking.setStage('reasoning');
+                    } else if (frame.event === 'reasoning_delta' && frame.data && typeof frame.data.text === 'string') {
+                        if (!reasoningZone) {
+                            // #213/#208 handoff: the generic spinner gives
+                            // way to the live typing zone the instant real
+                            // reasoning tokens start arriving -- never shown
+                            // redundantly alongside it.
+                            stopThinking();
+                            reasoningZone = createReasoningZone(options.messagesEl);
+                            activeReasoningZone = { stop: clearReasoningZone };
+                        }
+                        reasoningZone.append(frame.data.text);
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
                     } else if (frame.event === 'verification' && frame.data) {
@@ -777,6 +890,14 @@
                 }).then(function () {
                     stopThinking();
                     if (answerText) {
+                        // #213: the verified answer has arrived -- stop the
+                        // zone's "actively streaming" cursor treatment, but
+                        // keep it visible above the answer bubble (minimal
+                        // post-answer treatment; see the module docstring).
+                        if (reasoningZone) {
+                            reasoningZone.finalize();
+                        }
+                        activeReasoningZone = null;
                         appendMessage(options.messagesEl, 'assistant', answerText);
                         // Pending verification payloads (verdict null) render
                         // nothing; a populated one adds the badge/chips/banner.
@@ -791,6 +912,12 @@
                             });
                         }
                     } else if (hadError) {
+                        // #213: an errored turn never gets a verified answer,
+                        // so any in-flight (necessarily unverified/partial)
+                        // reasoning text is cleared rather than left stuck
+                        // above the error bubble -- same treatment as the
+                        // #208 spinner on this branch.
+                        clearReasoningZone();
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                         // Self-heal: drop the conversation id so the NEXT send
                         // starts a fresh conversation instead of retrying the
@@ -803,10 +930,20 @@
                         // that still-open panel repeats the identical rejection
                         // and the panel wedges permanently.
                         conversationId = null;
+                    } else {
+                        // #213: neither a verified answer nor an error frame
+                        // (e.g. an empty-string answer payload, or a clean
+                        // mid-stream truncation after reasoning). Any zone
+                        // built from the streamed reasoning would otherwise be
+                        // orphaned in the DOM with its cursor still blinking,
+                        // and activeReasoningZone left dangling -- clear it,
+                        // like the hadError branch does.
+                        clearReasoningZone();
                     }
                 });
             }).catch(function () {
                 stopThinking();
+                clearReasoningZone();
                 appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
             });
         }
@@ -841,6 +978,14 @@
             // indicator's DOM node.
             if (activeThinking) {
                 activeThinking.stop();
+            }
+            // #213: same reasoning as activeThinking above -- clear a
+            // mid-flight reasoning zone explicitly (not just relying on the
+            // messagesEl.textContent wipe below) so a late, stale
+            // reasoning_delta from an abandoned request cannot mutate a
+            // detached node's text for no visible effect.
+            if (activeReasoningZone) {
+                activeReasoningZone.stop();
             }
             conversationId = null;
             options.messagesEl.textContent = '';
@@ -915,6 +1060,7 @@
         consumeSSEStream: consumeSSEStream,
         appendMessage: appendMessage,
         createThinkingIndicator: createThinkingIndicator,
+        createReasoningZone: createReasoningZone,
         createChatController: createChatController,
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,

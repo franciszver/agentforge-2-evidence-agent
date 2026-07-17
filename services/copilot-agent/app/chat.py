@@ -41,7 +41,18 @@ SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
                          posted to ``POST /feedback`` (P4.3) linked to it.
   * ``tool_call``    -- one per planner tool dispatch, in order, carrying
                          ``{"tool": str, "args": dict, "error": str | None}``.
-  * ``answer``        -- the final answer, ``{"answer": str}``.
+  * ``reasoning_delta`` -- zero or more, BEFORE the ``answer`` frame: one per
+                         incremental piece of the model's free-text reasoning
+                         (``app.planner.ReasoningDelta``, P213), carrying
+                         ``{"text": str}``. This is UNVERIFIED, provisional
+                         text -- the UI renders it into a separate "thinking"
+                         surface, NEVER the answer slot. Emitted only on the
+                         streaming path (``run_streaming``); the fallback
+                         replay path (a planner double implementing only
+                         ``run()``) never emits it, same as ``tool_call``.
+  * ``answer``        -- the final, VERIFIED answer, ``{"answer": str}`` --
+                         always the post-extraction ``FinalAnswer`` text,
+                         never reasoning-delta text.
   * ``verification`` -- the P3.8 verification result for this response (verdict
                          badge, citation chips, warning banner). See
                          ``build_verification_payload`` for the payload shape.
@@ -87,7 +98,7 @@ from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
-from app.planner import Planner, PlannerCompleted, PlannerResult, ToolCallTrace, ToolDispatched
+from app.planner import Planner, PlannerCompleted, PlannerResult, ReasoningDelta, ToolCallTrace, ToolDispatched
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.trace_store import TraceStore
 from app.verdict import VerdictResult, to_trace_record
@@ -100,6 +111,7 @@ class ChatEvent(StrEnum):
 
     CONVERSATION = "conversation"
     TOOL_CALL = "tool_call"
+    REASONING_DELTA = "reasoning_delta"
     ANSWER = "answer"
     VERIFICATION = "verification"
     DONE = "done"
@@ -664,6 +676,13 @@ def _stream_chat(
             for event in run_streaming(message):
                 if isinstance(event, ToolDispatched):
                     yield _tool_call_frame(trace_store, correlation_id, event.trace)
+                elif isinstance(event, ReasoningDelta):
+                    # Unverified, provisional text -- forwarded as-is into
+                    # its own SSE frame so the UI can render it into a
+                    # separate "thinking" surface. It must never reach the
+                    # ``answer`` frame below, which only ever carries
+                    # ``result.answer`` (the post-extraction, verified text).
+                    yield _sse(ChatEvent.REASONING_DELTA, {"text": event.text})
                 elif isinstance(event, PlannerCompleted):
                     result = event.result
             if result is None:

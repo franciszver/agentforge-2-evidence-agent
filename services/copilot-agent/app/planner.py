@@ -37,7 +37,24 @@ Two-call final answer (P2.9): once the planner decides to answer, it does
 NOT return the decision's ``final_answer`` directly. It reasons in free text
 (a ``chat`` call) and then extracts the final answer into the
 ``FinalAnswer`` schema via constrained decoding (an ``extract`` call) --
-constraining only the extraction, not the reasoning. See ``_finalize_answer``.
+constraining only the extraction, not the reasoning. See
+``_finalize_answer_streaming``.
+
+Streamed reasoning (P213): the free-text reasoning half of that two-call
+pattern is the only step in the whole planner loop that CAN stream -- the
+``extract(FinalAnswer)`` call cannot (schema decode needs the whole JSON).
+``_finalize_answer_streaming`` yields a ``ReasoningDelta`` event per
+reasoning token (via ``OllamaClient.chat_stream``, when the injected client
+implements it) before returning the verified ``FinalAnswer``, so a streaming
+caller (``app.chat._stream_chat``) can render the model's in-progress
+reasoning into a separate "thinking" surface as it arrives -- NEVER into the
+authoritative answer slot, which only ever carries the post-extraction,
+verified text. A double that only implements ``chat`` (no ``chat_stream`` --
+every fake in ``tests/test_planner.py`` and the eval runner's
+``ReplayOllamaClient``) falls back to one blocking ``chat`` call and yields
+no ``ReasoningDelta`` events at all; either way the reasoning text fed into
+the ``extract(FinalAnswer)`` call is identical, so ``run()``'s result never
+depends on which path was taken.
 """
 
 from __future__ import annotations
@@ -46,7 +63,7 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -171,6 +188,25 @@ class ToolDispatched:
 
 
 @dataclass(frozen=True)
+class ReasoningDelta:
+    """A ``run_streaming`` event: one incremental piece of the model's
+    free-text reasoning from the two-call final-answer step (P2.9's
+    ``_finalize_answer_streaming``), as it streams off Ollama (P213).
+
+    This is UNVERIFIED, provisional text -- the model's in-progress
+    reasoning toward an answer, not the answer itself. It exists so a
+    streaming caller (``app.chat._stream_chat``) can render it into a
+    separate, clearly-labeled "thinking" surface as it arrives, distinct
+    from the authoritative ``answer`` frame that only ever carries the
+    VERIFIED ``FinalAnswer`` text the subsequent constrained ``extract``
+    call produces. Never fed back into a prompt, never persisted as the
+    answer, never logged -- purely a UI progress signal.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
 class PlannerCompleted:
     """A ``run_streaming`` event: the loop is done. Carries the same
     ``PlannerResult`` that ``run()`` returns directly -- always the LAST
@@ -181,7 +217,7 @@ class PlannerCompleted:
 
 # Tagged union of everything ``Planner.run_streaming`` can yield -- mirrors
 # ``app.rendering.AnswerSegment``'s plain-union-of-frozen-dataclasses style.
-PlannerEvent = ToolDispatched | PlannerCompleted
+PlannerEvent = ToolDispatched | ReasoningDelta | PlannerCompleted
 
 
 TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
@@ -446,7 +482,7 @@ class Planner:
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
-                final = self._finalize_answer(messages)
+                final = yield from self._finalize_answer_streaming(messages)
                 yield PlannerCompleted(
                     PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
                 )
@@ -542,16 +578,39 @@ class Planner:
         ``AttributeError``."""
         return list(getattr(self._ollama, "call_stats", []))
 
-    def _finalize_answer(self, messages: list[dict[str, str]]) -> FinalAnswer:
-        """Produce the final answer via the two-call pattern (P2.9).
+    def _finalize_answer_streaming(
+        self, messages: list[dict[str, str]]
+    ) -> Generator[ReasoningDelta, None, FinalAnswer]:
+        """Produce the final answer via the two-call pattern (P2.9), streaming
+        the free-text reasoning half as ``ReasoningDelta`` events (P213).
 
-        First a free-text reasoning ``chat`` call (unconstrained, so reasoning
-        quality is not taxed by the grammar), then a constrained ``extract``
-        call that pins the answer to ``FinalAnswer``. The reasoning is fed
-        into the extraction call so the extractor only has to transcribe, not
+        First a free-text reasoning call (unconstrained, so reasoning quality
+        is not taxed by the grammar), then a constrained ``extract`` call
+        that pins the answer to ``FinalAnswer``. The reasoning is fed into
+        the extraction call so the extractor only has to transcribe, not
         re-derive.
+
+        When ``self._ollama`` exposes ``chat_stream`` (the real
+        ``OllamaClient``), the reasoning call streams: each delta is yielded
+        as a ``ReasoningDelta`` event as it arrives, and the reasoning text
+        fed to the extraction call is assembled from exactly those deltas --
+        byte-identical to what a plain ``chat`` call would have returned
+        (see ``OllamaClient.chat_stream``'s docstring). Falls back to one
+        blocking ``chat`` call with no ``ReasoningDelta`` events for a
+        double that only implements ``chat`` (every fake in
+        ``tests/test_planner.py`` and the eval runner) -- this is what keeps
+        those 18 direct-``run()`` tests and the eval replay suite green.
         """
-        reasoning = self._ollama.chat(messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}])
+        reason_messages = messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}]
+        chat_stream = getattr(self._ollama, "chat_stream", None)
+        if chat_stream is not None:
+            reasoning_parts: list[str] = []
+            for delta in chat_stream(reason_messages):
+                reasoning_parts.append(delta)
+                yield ReasoningDelta(delta)
+            reasoning = "".join(reasoning_parts)
+        else:
+            reasoning = self._ollama.chat(reason_messages)
         extract_messages = messages + [
             {"role": "assistant", "content": reasoning},
             {"role": "user", "content": _FINAL_EXTRACT_PROMPT},

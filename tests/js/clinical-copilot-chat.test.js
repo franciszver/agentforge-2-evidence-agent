@@ -43,7 +43,8 @@ const {
     appendMessage,
     createChatController,
     renderAboutLegend,
-    createThinkingIndicator
+    createThinkingIndicator,
+    createReasoningZone
 } = global.window.CopilotChat;
 
 const encoder = new TextEncoder();
@@ -1008,5 +1009,283 @@ describe('createChatController reasoning fallback timer (#208)', () => {
         // and the timer fires setStage('reasoning') on this node -> red.
         expect(status.textContent).not.toContain('Reasoning locally');
         expect(status.textContent).toContain('Consulting the chart');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createReasoningZone (#213) -- the live token-by-token "thinking" surface.
+//
+// A separate, clearly-labeled zone (NEVER the answer bubble) that the
+// reasoning_delta SSE frame's text streams into progressively. This is the
+// owner's non-negotiable UX rule: unverified/provisional model text must
+// never occupy the authoritative answer slot -- it gets its own zone.
+// ---------------------------------------------------------------------------
+describe('createReasoningZone', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function makeContainer() {
+        const div = document.createElement('div');
+        document.body.appendChild(div);
+        return div;
+    }
+
+    test('appends a labeled zone and streams appended text progressively', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+
+        const el = container.querySelector('.copilot-reasoning');
+        expect(el).not.toBeNull();
+        expect(el.textContent).toContain('Reasoning locally');
+        expect(el.textContent).toContain('Qwen3-4B');
+
+        zone.append('Let me check ');
+        zone.append('the medication list.');
+
+        expect(el.textContent).toContain('Let me check the medication list.');
+    });
+
+    test('renders a <script> payload as inert text, never as a DOM element (XSS safety)', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+        const payload = '<script>window.__pwned = true;</script>';
+
+        zone.append(payload);
+
+        expect(container.querySelector('script')).toBeNull();
+        expect(window.__pwned).toBeUndefined();
+        expect(container.textContent).toContain(payload);
+    });
+
+    test('remove() detaches the zone from its container and is idempotent', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+
+        expect(container.querySelector('.copilot-reasoning')).not.toBeNull();
+        zone.remove();
+        expect(container.querySelector('.copilot-reasoning')).toBeNull();
+
+        expect(() => zone.remove()).not.toThrow();
+    });
+
+    test('finalize() marks the zone as no longer actively streaming', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+        const el = container.querySelector('.copilot-reasoning');
+
+        expect(el.className).toContain('copilot-reasoning-active');
+        zone.finalize();
+        expect(el.className).not.toContain('copilot-reasoning-active');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — reasoning_delta streaming (#213)
+//
+// reasoning_delta frames append into a dedicated thinking zone, distinct
+// from the answer bubble. The #208 generic spinner hands off to this live
+// zone the instant reasoning tokens start arriving (no redundant "Reasoning
+// locally..." spinner shown alongside a real typing stream). The answer
+// bubble renders ONLY from the `answer` frame -- this is the hard safety
+// regression guard: draft reasoning text must never land in the answer slot.
+// ---------------------------------------------------------------------------
+describe('createChatController reasoning_delta streaming (#213)', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    test('reasoning_delta frames append into the thinking zone token-by-token, never into the answer bubble', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: conversation\ndata: {"conversation_id":"c1"}\n\n');
+        reader.push('event: reasoning_delta\ndata: {"text":"Let me check "}\n\n');
+        await flushMicrotasks();
+
+        let zone = messagesEl.querySelector('.copilot-reasoning');
+        expect(zone).not.toBeNull();
+        expect(zone.textContent).toContain('Let me check');
+
+        reader.push('event: reasoning_delta\ndata: {"text":"the medication list..."}\n\n');
+        await flushMicrotasks();
+        expect(zone.textContent).toContain('Let me check the medication list...');
+
+        // The answer has not arrived yet -- no assistant bubble carrying the
+        // final text should exist, and the reasoning text must never be
+        // treated as the answer.
+        expect(messagesEl.querySelector('.copilot-chat-message-assistant')).toBeNull();
+
+        reader.push('event: answer\ndata: {"answer":"She takes lisinopril."}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        const assistantBubble = messagesEl.querySelector('.copilot-chat-message-assistant');
+        expect(assistantBubble).not.toBeNull();
+        expect(assistantBubble.textContent).toBe('She takes lisinopril.');
+        // The verified answer bubble never contains the draft reasoning text.
+        expect(assistantBubble.textContent).not.toContain('Let me check');
+        expect(assistantBubble.textContent).not.toContain('medication list');
+    });
+
+    test('hands off from the #208 spinner to the reasoning zone -- no redundant spinner once reasoning starts', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        expect(messagesEl.querySelector('.copilot-thinking')).not.toBeNull();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Let me check."}\n\n');
+        await flushMicrotasks();
+
+        // The generic spinner is gone -- replaced by the live zone, not
+        // shown redundantly alongside it.
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        reader.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader.finish();
+        await sendPromise;
+    });
+
+    test('the reasoning zone stays visible above the answer once the answer renders (minimal post-answer treatment)', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushMicrotasks();
+
+        reader.push('event: answer\ndata: {"answer":"Final answer."}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        const zone = messagesEl.querySelector('.copilot-reasoning');
+        expect(zone).not.toBeNull();
+        expect(zone.textContent).toContain('Reasoning text.');
+        expect(zone.className).not.toContain('copilot-reasoning-active');
+    });
+
+    test('clears an in-flight reasoning zone on an error frame', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushMicrotasks();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        reader.push('event: error\ndata: {"status":409}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+        expect(messagesEl.textContent).toContain('unavailable');
+    });
+
+    test('reset() mid-flight clears an in-flight reasoning zone', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushMicrotasks();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        controller.reset();
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+        expect(messagesEl.textContent).toBe('');
+    });
+
+    test('no reasoning_delta frames -- no reasoning zone is ever created (planner answered with zero reasoning streamed)', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+    });
+
+    test('a stream ending with reasoning but no truthy answer and no error clears the zone (no orphaned blinking cursor)', async () => {
+        // Edge case: the answer frame carries an empty string (falsy), or the
+        // stream completes cleanly after reasoning with no answer/error at
+        // all. The zone must not be left in the DOM still "actively
+        // streaming" (permanent cursor) with activeReasoningZone dangling.
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushMicrotasks();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"thinking..."}\n\n');
+        await flushMicrotasks();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        // Empty-string answer (falsy) then clean end -- neither the answer
+        // branch nor the error branch fires.
+        reader.push('event: answer\ndata: {"answer":""}\n\n');
+        reader.finish();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+
+        // And a subsequent reset() must not throw on a dangling handle.
+        expect(() => controller.reset()).not.toThrow();
     });
 });

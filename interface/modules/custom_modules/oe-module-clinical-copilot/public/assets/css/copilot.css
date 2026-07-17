@@ -168,10 +168,10 @@
  * pending response, not a separate UI element. Pure CSS spinner -- no
  * external deps/images.
  */
-.copilot-thinking {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+/* Shared "assistant is working" bubble surface -- the pending-response look
+   worn by both the #208 staged indicator and the #213 live reasoning zone. */
+.copilot-thinking,
+.copilot-reasoning {
     max-width: 85%;
     margin: 0 0 0.5rem;
     margin-right: auto;
@@ -181,6 +181,12 @@
     border-bottom-left-radius: 0.15rem;
     color: #495057;
     font-size: 0.85rem;
+}
+
+.copilot-thinking {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 .copilot-thinking-spinner {
@@ -207,6 +213,47 @@
 
 .copilot-thinking-status {
     line-height: 1.3;
+}
+
+/**
+ * #213 live reasoning zone -- the reasoning_delta SSE frame's text types
+ * into this SEPARATE surface, never the answer bubble (see copilot-chat.js
+ * createReasoningZone). Shares the assistant-working bubble surface above
+ * so it reads as part of the same "the assistant is working" visual
+ * language, but its own label keeps it legible as unverified/provisional
+ * text distinct from a real response.
+ */
+.copilot-reasoning-label {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: #6c757d;
+}
+
+.copilot-reasoning-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+/* A blinking text cursor while tokens are actively streaming in -- removed
+   (via .finalize()) once the verified answer arrives. */
+.copilot-reasoning-active .copilot-reasoning-text::after {
+    content: '\258C';
+    display: inline-block;
+    margin-left: 0.1rem;
+    animation: copilot-reasoning-cursor-blink 1s step-start infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .copilot-reasoning-active .copilot-reasoning-text::after {
+        animation: none;
+    }
+}
+
+@keyframes copilot-reasoning-cursor-blink {
+    50% {
+        opacity: 0;
+    }
 }
 
 .copilot-chat-form {
