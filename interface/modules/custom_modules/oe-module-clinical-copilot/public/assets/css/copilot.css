@@ -12,6 +12,59 @@
     margin-left: 0.5rem;
 }
 
+/**
+ * P2.17 mobile heading fix: the in-context open-chat button lives in the
+ * page-heading nav alongside a non-wrapping, potentially long patient-name
+ * heading (.navbar-brand has Bootstrap's default white-space: nowrap),
+ * which can push the nav's content wider than a narrow viewport. Forcing
+ * the button onto its own full-width row below the sm breakpoint keeps it
+ * on-screen regardless of heading length, rather than relying on it
+ * happening to wrap into view.
+ */
+@media (max-width: 575.98px) {
+    nav.navbar .copilot-open-chat-btn {
+        flex-basis: 100%;
+        margin-left: 0;
+        margin-top: 0.25rem;
+    }
+}
+
+/**
+ * P2.17 global floating launcher: injected into the outer frameset chrome
+ * (main.php, via RenderEvent::EVENT_BODY_RENDER_POST) so Co-Pilot is
+ * discoverable on every page, not just the patient dashboard. Fixed
+ * bottom-right, above the version footer (z-index: 4) and below
+ * .modal-backdrop (1040) -- same tier as .copilot-chat-panel below, so the
+ * panel (rendered after the button in the same wrapper) visually covers
+ * the button when open. bottom: 2rem (rather than the panel's 1rem) clears
+ * #versionFooter's own footprint (main.php: bottom:4px, ~15px tall) so the
+ * two never visually overlap, not just differ in z-index.
+ */
+.copilot-global-launcher {
+    position: fixed;
+    right: 1rem;
+    bottom: 2rem;
+    z-index: 1035;
+}
+
+.copilot-global-launcher .copilot-open-chat-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    /* >=44px minimum tap target (matches the send button's rationale),
+       pill-shaped rather than a bare icon circle so the "Co-Pilot" label
+       stays visible -- discoverability is the entire point of this button. */
+    height: 3rem;
+    min-width: 3rem;
+    margin: 0;
+    padding: 0 1rem;
+    border-radius: 999px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    background: var(--white, #fff);
+}
+
 .copilot-chat-panel {
     position: fixed;
     right: 1rem;

@@ -15,6 +15,7 @@ declare(strict_types=1);
 namespace OpenEMR\Modules\ClinicalCopilot;
 
 use OpenEMR\Common\Session\PatientSessionUtil;
+use OpenEMR\Events\Main\Tabs\RenderEvent;
 use OpenEMR\Events\PatientDemographics\RenderEvent as PatientDemographicsRenderEvent;
 use OpenEMR\Events\UserInterface\PageHeadingRenderEvent;
 use OpenEMR\Modules\ClinicalCopilot\Controller\CopilotPanelController;
@@ -33,7 +34,7 @@ class Bootstrap
 
     /**
      * The module's CSS/JS asset tags only need to be emitted once per
-     * page, from whichever of the two listeners below fires first.
+     * page, from whichever of the listeners below fires first.
      */
     private bool $assetsRendered = false;
 
@@ -61,6 +62,10 @@ class Bootstrap
         $this->eventDispatcher->addListener(
             PageHeadingRenderEvent::EVENT_PAGE_HEADING_RENDER,
             $this->renderOpenChatButton(...)
+        );
+        $this->eventDispatcher->addListener(
+            RenderEvent::EVENT_BODY_RENDER_POST,
+            $this->renderGlobalLauncher(...)
         );
     }
 
@@ -113,6 +118,41 @@ class Bootstrap
         $event->appendTitleNavContent($this->renderAssetsOnce($controller) . $controller->renderOpenChatButton());
 
         return $event;
+    }
+
+    /**
+     * Inject a fixed-position floating launcher into the outer frameset
+     * chrome (interface/main/tabs/main.php) so the Co-Pilot is discoverable
+     * on every page -- calendar, patients, admin -- not just the patient
+     * dashboard the other two listeners are gated on.
+     *
+     * EVENT_BODY_RENDER_POST fires in main.php's own document, a separate
+     * top-level frame from the patient-content iframe the other two
+     * listeners render into, so this reuses the exact same element ids
+     * (copilot-open-chat-btn / copilot-chat-panel) as renderOpenChatButton()
+     * without any DOM collision -- and copilot.js's existing toggle wiring
+     * (which queries those ids) works here unmodified.
+     *
+     * The launcher always renders the real chat panel, never a patient-gated
+     * empty-state baked in at render time: main.php is a long-lived SPA shell
+     * whose own document never reloads when the user selects a patient (only
+     * the content iframe navigates), so any has-patient decision made here
+     * would be frozen at login (no patient) forever. Instead the chat binds
+     * to the *current* patient at send time -- ChatProxyController reads the
+     * pid from the session per request, never from client input -- and
+     * cleanly answers "open a patient chart first" when none is selected
+     * (see copilot-chat.js's no_patient_in_session handling).
+     *
+     * @param RenderEvent $event
+     * @return void
+     */
+    public function renderGlobalLauncher(RenderEvent $event): void
+    {
+        $controller = new CopilotPanelController();
+        echo $this->renderAssetsOnce($controller);
+        echo '<div class="copilot-global-launcher">';
+        echo $controller->renderOpenChatButton();
+        echo '</div>';
     }
 
     private function renderAssetsOnce(CopilotPanelController $controller): string

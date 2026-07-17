@@ -119,7 +119,11 @@ final class ChatProxyController
 
         $pid = PatientSessionUtil::getPid();
         if ($pid <= 0) {
-            $this->sendJsonError('No patient in session', 400);
+            // The global launcher (P2.17) opens this panel on every page,
+            // including ones with no patient selected. Signal that case with
+            // a stable machine-readable reason so the panel can show the
+            // "open a patient chart first" hint instead of a generic error.
+            $this->sendJsonError('No patient in session', 400, 'no_patient_in_session');
             return;
         }
 
@@ -190,10 +194,14 @@ final class ChatProxyController
         return is_string($configured) && $configured !== '' ? $configured : self::DEFAULT_AGENT_URL;
     }
 
-    private function sendJsonError(string $message, int $code): void
+    private function sendJsonError(string $message, int $code, ?string $reason = null): void
     {
         header('Content-Type: application/json');
         http_response_code($code);
-        echo json_encode(['error' => $message]);
+        $payload = ['error' => $message];
+        if ($reason !== null) {
+            $payload['reason'] = $reason;
+        }
+        echo json_encode($payload);
     }
 }

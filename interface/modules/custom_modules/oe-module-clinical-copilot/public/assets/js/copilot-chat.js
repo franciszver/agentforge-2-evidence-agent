@@ -521,6 +521,13 @@
     // Orchestration.
     // -------------------------------------------------------------------
     var UNAVAILABLE_MESSAGE = 'Sorry, the Co-Pilot is unavailable right now.';
+    // Shown when the proxy reports no patient bound to the session (the P2.17
+    // global launcher opens this panel on every page, including ones with no
+    // patient selected). The pid is resolved server-side per request
+    // (ChatProxyController), so this is the honest, always-current answer to
+    // "you opened the Co-Pilot without a patient" -- no stale render-time
+    // bake-in in the outer SPA shell.
+    var NO_PATIENT_MESSAGE = 'Open a patient chart first to start a Co-Pilot conversation.';
 
     function createChatController(options) {
         var cachedToken = null;
@@ -576,6 +583,23 @@
                     })
                 });
             }).then(function (resp) {
+                // The proxy rejects a request with no patient in session as a
+                // 400 JSON body (not an SSE stream). Surface the specific
+                // "open a patient first" hint for that case rather than the
+                // generic unavailable message; any other JSON error stays
+                // generic.
+                if (resp.status === 400) {
+                    return resp.json().then(function (data) {
+                        var noPatient = data && data.reason === 'no_patient_in_session';
+                        appendMessage(
+                            options.messagesEl,
+                            'assistant',
+                            noPatient ? NO_PATIENT_MESSAGE : UNAVAILABLE_MESSAGE
+                        );
+                    }).catch(function () {
+                        appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
+                    });
+                }
                 if (!resp.ok || !resp.body) {
                     throw new Error('chat proxy request failed');
                 }
@@ -614,6 +638,17 @@
                         }
                     } else if (hadError) {
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
+                        // Self-heal: drop the conversation id so the NEXT send
+                        // starts a fresh conversation instead of retrying the
+                        // same failed one. Load-bearing for the global launcher
+                        // (P2.17): if the panel is left OPEN across a patient
+                        // switch, no open-time reset fires, and the stale
+                        // conversation id + new session pid is hard-rejected by
+                        // the agent's pid-binding check (chat.py) as an `error`
+                        // frame. Without this clear, every subsequent send in
+                        // that still-open panel repeats the identical rejection
+                        // and the panel wedges permanently.
+                        conversationId = null;
                     }
                 });
             }).catch(function () {
@@ -636,8 +671,26 @@
             options.formEl.addEventListener('submit', handleSubmit);
         }
 
-        return { init: init, sendMessage: sendMessage };
+        // Start a fresh conversation: drop the cached conversation id (the
+        // next send opens a new agent conversation bound to the CURRENT
+        // patient) and clear the visible transcript. Used by the P2.17 global
+        // launcher, whose panel lives in the never-reloaded main.php shell and
+        // so must not carry one patient's conversation into another's after a
+        // patient switch -- the agent binds a conversation to its patient and
+        // rejects a mismatched pid. The cached bearer token is user-scoped,
+        // not patient-scoped, so it is intentionally kept.
+        function reset() {
+            conversationId = null;
+            options.messagesEl.textContent = '';
+        }
+
+        return { init: init, sendMessage: sendMessage, reset: reset };
     }
+
+    // The single chat controller wired to the live DOM panel, captured so the
+    // launcher toggle (copilot.js) can reset it on open via
+    // window.CopilotChat.resetActiveConversation() below.
+    var activeController = null;
 
     function initFromDom() {
         var panel = document.getElementById('copilot-chat-panel');
@@ -652,7 +705,7 @@
         // without needing the server to thread it through CopilotContext.
         var baseUrl = CURRENT_SCRIPT_SRC.replace(/\/assets\/js\/copilot-chat\.js(\?.*)?$/, '');
 
-        var controller = createChatController({
+        activeController = createChatController({
             messagesEl: messagesEl,
             formEl: formEl,
             inputEl: inputEl,
@@ -663,7 +716,15 @@
             authorizeUrl: baseUrl + '/oauth-authorize.php',
             fetchImpl: window.fetch.bind(window)
         });
-        controller.init();
+        activeController.init();
+    }
+
+    // Reset the live panel's conversation (see createChatController.reset).
+    // A no-op before the DOM panel is wired or if it has no chat form.
+    function resetActiveConversation() {
+        if (activeController) {
+            activeController.reset();
+        }
     }
 
     if (document.readyState === 'loading') {
@@ -686,6 +747,7 @@
         applyFeedbackPendingState: applyFeedbackPendingState,
         applyFeedbackSuccessState: applyFeedbackSuccessState,
         applyFeedbackErrorState: applyFeedbackErrorState,
-        attachFeedbackHandlers: attachFeedbackHandlers
+        attachFeedbackHandlers: attachFeedbackHandlers,
+        resetActiveConversation: resetActiveConversation
     };
 })(window, document);

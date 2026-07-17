@@ -15,6 +15,7 @@ declare(strict_types=1);
 namespace OpenEMR\Tests\Isolated\Modules\ClinicalCopilot;
 
 use OpenEMR\Core\ModulesClassLoader;
+use OpenEMR\Events\Main\Tabs\RenderEvent;
 use OpenEMR\Events\PatientDemographics\RenderEvent as PatientDemographicsRenderEvent;
 use OpenEMR\Events\UserInterface\PageHeadingRenderEvent;
 use PHPUnit\Framework\Attributes\Test;
@@ -60,6 +61,22 @@ class BootstrapRegistrationTest extends TestCase
         $this->assertNotEmpty(
             $eventDispatcher->getListeners(PageHeadingRenderEvent::EVENT_PAGE_HEADING_RENDER),
             'Bootstrap should register a listener for PageHeadingRenderEvent::EVENT_PAGE_HEADING_RENDER (open-chat button injection)'
+        );
+    }
+
+    #[Test]
+    public function testBootstrapRegistersGlobalLauncherListener(): void
+    {
+        $eventDispatcher = new EventDispatcher();
+        $bootstrapClass = 'OpenEMR\\Modules\\ClinicalCopilot\\Bootstrap';
+        $bootstrap = new $bootstrapClass($eventDispatcher);
+
+        $bootstrap->subscribeToEvents();
+
+        $this->assertNotEmpty(
+            $eventDispatcher->getListeners(RenderEvent::EVENT_BODY_RENDER_POST),
+            'Bootstrap should register a listener for RenderEvent::EVENT_BODY_RENDER_POST '
+                . '(global floating launcher injected into the outer frameset chrome, P2.17)'
         );
     }
 }

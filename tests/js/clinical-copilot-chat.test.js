@@ -316,3 +316,220 @@ describe('createChatController consent-required handling', () => {
         expect(messagesEl.textContent).not.toContain('unavailable');
     });
 });
+
+// ---------------------------------------------------------------------------
+// createChatController — no-patient handling (P2.17 global launcher)
+//
+// The launcher opens this panel on every page, including ones with no patient
+// selected. ChatProxyController resolves the pid server-side per request and
+// returns a 400 { reason: 'no_patient_in_session' } when none is bound, so the
+// panel shows a specific "open a patient chart first" hint rather than the
+// generic unavailable message.
+// ---------------------------------------------------------------------------
+describe('createChatController no-patient handling', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    // fetchImpl that issues a token from the broker, then answers the proxy
+    // with the given (status, body) pair.
+    function brokerThenProxy(proxyStatus, proxyBody) {
+        return jest.fn((url) => {
+            if (url === 'https://host/base/ajax.php') {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve({
+                ok: proxyStatus >= 200 && proxyStatus < 300,
+                status: proxyStatus,
+                json: () => Promise.resolve(proxyBody)
+            });
+        });
+    }
+
+    test('a 400 no_patient_in_session proxy response shows the open-a-patient hint, not the generic error', async () => {
+        const fetchImpl = brokerThenProxy(400, { error: 'No patient in session', reason: 'no_patient_in_session' });
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        await controller.sendMessage('What meds is she on?');
+
+        expect(messagesEl.textContent).toContain('Open a patient chart first');
+        expect(messagesEl.textContent).not.toContain('unavailable');
+    });
+
+    test('a 400 without the no_patient reason falls back to the generic unavailable message', async () => {
+        const fetchImpl = brokerThenProxy(400, { error: 'Invalid request' });
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        await controller.sendMessage('What meds is she on?');
+
+        expect(messagesEl.textContent).toContain('unavailable');
+        expect(messagesEl.textContent).not.toContain('Open a patient chart first');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — conversation reset (P2.17 global launcher)
+//
+// The launcher's panel lives in the never-reloaded main.php shell, so after a
+// patient switch it must NOT carry the prior patient's conversation id into
+// the next request (the agent binds a conversation to its patient and rejects
+// a mismatched pid). reset() drops the cached id and clears the transcript so
+// the next send opens a fresh conversation bound to the current patient.
+// ---------------------------------------------------------------------------
+describe('createChatController conversation reset', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(frames) {
+        return { ok: true, status: 200, body: { getReader: () => fakeReader(frames) } };
+    }
+
+    test('reset() drops the conversation id (and clears the transcript) so the next send starts fresh', async () => {
+        const proxyBodies = [];
+        const fetchImpl = jest.fn((url, opts) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            proxyBodies.push(JSON.parse(opts.body));
+            return Promise.resolve(streamResp([
+                'event: conversation\ndata: {"conversation_id":"A"}\n\n',
+                'event: answer\ndata: {"answer":"hi"}\n\n'
+            ]));
+        });
+
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        const controller = createChatController({
+            messagesEl: messagesEl,
+            formEl: document.createElement('form'),
+            inputEl: document.createElement('textarea'),
+            context: { csrfToken: 'csrf' },
+            brokerUrl: 'https://host/base/ajax.php',
+            proxyUrl: 'https://host/base/chat-proxy.php',
+            feedbackUrl: 'https://host/base/feedback-proxy.php',
+            authorizeUrl: 'https://host/base/oauth-authorize.php',
+            fetchImpl: fetchImpl
+        });
+
+        // First send has no prior id; the answer frame sets it to 'A'.
+        await controller.sendMessage('q1');
+        expect(proxyBodies[0].conversation_id).toBeNull();
+
+        // Without a reset the id is carried forward (this is the cross-patient
+        // leak the launcher must avoid).
+        await controller.sendMessage('q2');
+        expect(proxyBodies[1].conversation_id).toBe('A');
+
+        // reset() clears both the id and the visible transcript.
+        controller.reset();
+        expect(messagesEl.textContent).toBe('');
+
+        await controller.sendMessage('q3');
+        expect(proxyBodies[2].conversation_id).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — self-heal after an error frame
+//
+// If the launcher panel is left OPEN across a patient switch, no open-time
+// reset fires, and the stale conversation id + new session pid is hard-
+// rejected by the agent's pid-binding check as an `error` frame. Clearing the
+// conversation id in that branch lets the NEXT send start fresh and recover,
+// instead of the still-open panel repeating the identical rejection forever.
+// ---------------------------------------------------------------------------
+describe('createChatController error self-heal', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(frames) {
+        return { ok: true, status: 200, body: { getReader: () => fakeReader(frames) } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    test('an error frame clears the conversation id so the next send starts a fresh conversation', async () => {
+        const proxyBodies = [];
+        let call = 0;
+        const fetchImpl = jest.fn((url, opts) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            proxyBodies.push(JSON.parse(opts.body));
+            call += 1;
+            if (call === 1) {
+                // First send succeeds and establishes conversation 'A'.
+                return Promise.resolve(streamResp([
+                    'event: conversation\ndata: {"conversation_id":"A"}\n\n',
+                    'event: answer\ndata: {"answer":"hi"}\n\n'
+                ]));
+            }
+            if (call === 2) {
+                // Second send (panel left open across a patient switch) is
+                // rejected by the agent -> an error frame, no answer.
+                return Promise.resolve(streamResp([
+                    'event: error\ndata: {"status":409}\n\n'
+                ]));
+            }
+            // Third send would wedge (repeat 'A') without the self-heal clear.
+            return Promise.resolve(streamResp([
+                'event: conversation\ndata: {"conversation_id":"B"}\n\n',
+                'event: answer\ndata: {"answer":"ok"}\n\n'
+            ]));
+        });
+
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        await controller.sendMessage('q1');
+        expect(proxyBodies[0].conversation_id).toBeNull();
+
+        // The rejected send still reuses 'A' (this is the request the agent
+        // rejects); the error branch then clears the id.
+        await controller.sendMessage('q2');
+        expect(proxyBodies[1].conversation_id).toBe('A');
+        expect(messagesEl.textContent).toContain('unavailable');
+
+        // Self-heal: the next send starts fresh (null), not wedged on 'A'.
+        await controller.sendMessage('q3');
+        expect(proxyBodies[2].conversation_id).toBeNull();
+    });
+});
