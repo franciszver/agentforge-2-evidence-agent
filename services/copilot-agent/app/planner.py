@@ -271,6 +271,10 @@ named in a tool's description above (e.g. {{"limit": "3"}}). Omit it \
   - Answer only from tool results already returned in this conversation. \
 If they don't contain the answer yet, call another tool rather than \
 guessing.
+  - Every answer describes patient {patient_id} only. If the clinician \
+names or numbers a different patient, do not repeat that other name or \
+number anywhere in your answer, and do not state any fact as if it were \
+about them.
 
 Examples (question -> decision):
 {few_shot_examples}
@@ -291,7 +295,9 @@ def _build_system_prompt(patient_id: int, registry: Mapping[ToolName, ToolSpec])
 _FINAL_REASON_PROMPT = (
     "You now have everything you need. Think through the clinician's question "
     "using ONLY the tool results already in this conversation, and write the "
-    "answer in plain prose. Do not invent facts or mention other patients. "
+    "answer in plain prose. Do not invent facts. Do not name or attribute any "
+    "fact to a patient other than the one this conversation is bound to, even "
+    "if the clinician's question named a different patient. "
     "/no_think"
 )
 _FINAL_EXTRACT_PROMPT = "Extract the final answer for the clinician as JSON."
