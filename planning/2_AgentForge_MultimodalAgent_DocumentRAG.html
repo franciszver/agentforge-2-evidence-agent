@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Week_2_AgentForge_Updated</title>
+    <style>
+        body {
+            font-family: Calibri, Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #2c3e50;
+            margin-top: 20px;
+        }
+        p {
+            margin: 10px 0;
+        }
+        ul, ol {
+            margin: 10px 0;
+            padding-left: 30px;
+        }
+        li {
+            margin: 5px 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        strong {
+            font-weight: bold;
+        }
+        em {
+            font-style: italic;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <p>AgentForge</p>
+    <p>Clinical Co-Pilot - Week 2</p>
+    <p>Multimodal Evidence Agent: seeing clinical documents, routing work, and gating changes with evals</p>
+    <p>Project Requirements Document</p>
+    <p>Gauntlet AI - Austin Admission Track</p>
+    <h1>How to Use This Assignment</h1>
+    <p>Your Week 1 agent already reads structured OpenEMR data, attributes claims, logs tool behavior, and has a starter eval suite. This week, you add two new capabilities: the agent can read real-world clinical documents, and it can route work across a small multi-agent graph without losing grounding.</p>
+    <h1>The Scenario</h1>
+    <p>A primary care physician is prepping for a follow-up visit. The chart has structured OpenEMR data, but the important recent information is buried in a scanned lab PDF and a patient intake form uploaded by the front desk. The physician asks: What changed, what should I pay attention to, and what evidence supports the recommendation?</p>
+    <p>Your Week 2 Clinical Co-Pilot must ingest the lab PDF and intake form, extract structured facts with citations, retrieve relevant guideline evidence, and return a grounded answer. The answer should be useful even if the document scan is imperfect, the patient record is incomplete, or the user asks a follow-up question.</p>
+    <h1>The Hard Problems</h1>
+    <h2>Vision extraction without invention</h2>
+    <p>A VLM can read a scanned form, but it can also hallucinate field labels or overstate confidence. Your schema, source links, and verification strategy must make unsupported extracted facts visible.</p>
+    <h2>Evidence grounding</h2>
+    <p>Every answer must separate patient-record facts from guideline evidence. A medication or lab claim is not acceptable unless it points back to a source.</p>
+    <h2>Multi-agent architecture</h2>
+    <p>The goal is to give multiple workers clear responsibilities and make the supervisor's routing decisions inspectable.</p>
+    <h2>Eval-driven development</h2>
+    <p>You will use a 50-case golden set with boolean rubrics. The CI gate must catch regressions before they reach the demo.</p>
+    <h2>FHIR and OpenEMR integrity</h2>
+    <p>Uploaded documents and derived observations must round-trip through OpenEMR without creating duplicate or untraceable records.</p>
+    <h2>HIPAA-minded development</h2>
+    <p>Use only demo or synthetic data. Do not log raw PHI. Treat prompts, extracted fields, document images, traces, and screenshots as sensitive.</p>
+    <h1>The Codebase</h1>
+    <p>Build on the Week 1 fork, auth flow, tool layer, verification strategy, observability, and eval harness. Good Week 1 architecture should compound here; technical debt from Week 1 should be documented and resolved before adding new surface area.</p>
+    <p>The Week 2 repo may stay inside the same OpenEMR fork, but your README must clearly separate Week 1 baseline behavior from Week 2 multimodal behavior. Graders should be able to run the core Week 2 flow without guessing which branch, environment variable, or service is required.</p>
+    <h1>Project Schedule</h1>
+    <p>Hard gates. This is a one-week sprint with four checkpoints. All times are Central (Austin).</p>
+    <h1>MVP: Recommended Steps</h1>
+    <p>The MVP is not a full medical-document AI platform. It is a controlled expansion of the Week 1 agent into two document types, two workers, and one regression gate.</p>
+    <h2>Stage 1 - Ingest Lab PDF and Intake Form</h2>
+    <p>Implement a document ingestion flow that accepts a file, associates it with a patient, stores the source document in OpenEMR, extracts structured JSON, and links every derived fact back to the source. Required document types are a lab PDF and an intake form.</p>
+    <h2>Stage 2 - Build Basic Hybrid RAG</h2>
+    <p>Create a small clinical-guideline corpus relevant to your user profile. Use keyword plus vector retrieval, rerank the candidate chunks, and return evidence snippets with source metadata. ColQwen2 and multi-vector indexing are stretch; the core requirement is a reliable hybrid retriever.</p>
+    <h2>Stage 3 - Add Supervisor + 2 Workers</h2>
+    <p>Implement a small graph: one supervisor, one intake-extractor worker, and one evidence-retriever worker. The supervisor should decide when extraction is needed, when evidence retrieval is needed, and when the final answer is ready. Keep handoffs explicit.</p>
+    <h2>Stage 4 - Build the Eval Gate</h2>
+    <p>Create 50 synthetic or demo cases that exercise extraction, evidence retrieval, citations, refusals, and missing-data behavior. Use boolean rubrics, not 1-10 ratings. CI must fail on meaningful regression.</p>
+    <h2>Stage 5 - Integrate, Deploy, and Defend</h2>
+    <p>Expose the Week 2 flow in the deployed app, capture observability traces, record a demo, and prepare to explain why each capability maps back to the Week 1 user and workflow.</p>
+    <h1>Core Agent Requirements</h1>
+    <h2>1. Document ingestion and extraction</h2>
+    <p>Implement attach_and_extract(patient_id, file_path, doc_type) or an equivalent tool. It must support lab_pdf and intake_form. It must store the source document in OpenEMR, return strict-schema JSON, and persist derived facts as appropriate FHIR resources or OpenEMR records.</p>
+    <h2>2. Structured schemas</h2>
+    <p>Use Pydantic, Zod, or equivalent strict schemas. Required lab fields include at least test name, value, unit, reference range, collection date, abnormal flag, and source citation. Required intake fields include demographics fields, chief concern, current medications, allergies, family history, and source citation.</p>
+    <h2>3. Basic hybrid RAG plus rerank</h2>
+    <p>Index a small clinical-guideline corpus. Retrieve with sparse+dense search, rerank candidate chunks with Cohere Rerank or an equivalent reranker, and feed only the top grounded evidence to the answer model.</p>
+    <h2>4. Supervisor plus two workers</h2>
+    <p>Use LangGraph, the OpenAI Agents SDK, or another inspectable orchestration framework. Required workers are intake-extractor and evidence-retriever. A critic agent is extension work, not core.</p>
+    <h2>5. Citation contract</h2>
+    <p>Every clinical claim in the final response must include machine-readable citation metadata. Minimum citation shape: {source_type, source_id, page_or_section, field_or_chunk_id, quote_or_value}. A visual PDF bounding-box overlay is required.</p>
+    <h2>6. Eval-driven CI gate</h2>
+    <p>Build a 50-case golden set and a PR-blocking Git Hook. Boolean rubric categories must include schema_valid, citation_present, factually_consistent, safe_refusal, and no_phi_in_logs. The build must fail if any category regresses by more than 5% or drops below the pass threshold.</p>
+    <h2>7. Observability and cost tracking</h2>
+    <p>Each encounter must log tool sequence, latency by step, token usage, cost estimate, retrieval hits, extraction confidence, and eval outcome. Logs must not contain raw PHI.</p>
+    <h1>Core Deliverables</h1>
+    <p>Two document types: lab PDF and intake form.</p>
+    <p>One supervisor and two workers: intake-extractor and evidence-retriever.</p>
+    <p>Basic hybrid RAG plus rerank over a small guideline corpus.</p>
+    <p>50-case golden dataset with boolean rubrics.</p>
+    <p>PR-blocking eval CI and an observable deployed demo.</p>
+    <p>Critic agent that rejects uncited claims or unsafe action suggestions.</p>
+    <p>Click-to-source UI for citation snippets, with a simple document preview.</p>
+    <p>A third document type such as referral fax or medication list.</p>
+    <p>Lab trend chart widget that uses extracted Observation data.</p>
+    <p>Contextual retrieval improvements such as better chunking, query rewriting, or domain-specific filters.</p>
+    <h1>Engineering Requirements</h1>
+    <p>The following requirements apply in addition to the project-specific deliverables above. They are graded alongside the core submission and are not optional.</p>
+    <p>API and event contracts, schema evolution, migration safety, data authority. Every interface between Week 2 components — document ingestion, RAG retrieval, supervisor handoffs, FHIR writes — must have a typed contract (Pydantic/Zod schema or equivalent). Any schema change from Week 1 must be accompanied by a migration note. Data authority must be explicit: one source of truth per data type, no silent overwrites.</p>
+    <p>Logs, metrics, traces, dashboards — SLOs, queues, retries, timeouts, circuit breakers. Extend Week 1 observability to cover Week 2 flows: document ingestion latency, extraction confidence per document, RAG retrieval hit rate, supervisor routing decisions, and per-worker latency. Add SLOs for document ingestion (p95 < X seconds) and evidence retrieval. All outbound LLM and retrieval calls must have timeouts and retry logic.</p>
+    <p>Produce canonical API/event/schema contracts from cleaned requirements. The extraction schemas (lab_pdf, intake_form) are the canonical contracts. Do not let raw VLM output bypass schema validation. The schema is the source of truth — not what the model happens to return.</p>
+    <p>Every request or event carries a correlation ID across service boundaries. The correlation ID from Week 1 must propagate into Week 2 document ingestion flows, worker handoffs, and FHIR writes. A full multi-agent trace must be reconstructable from the correlation ID alone.</p>
+    <p>Structured logs searchable by case ID, event ID, and correlation ID. Extend Week 1 log schema to cover Week 2 events: document ingestion start/complete, extraction outcome per field, retrieval hit/miss, worker handoff, and eval run outcome. All logs must remain PHI-free.</p>
+    <p>Dashboards: request count, error count, latency, queue depth, event retries, decision outcomes. Add Week 2 metrics to the Week 1 dashboard: document ingestion count, extraction field-level pass rate, retrieval hit rate, worker routing decisions, eval pass/fail rate per category. The dashboard should tell a grader whether the system is healthy without reading logs.</p>
+    <p>CI pipeline: build, lint/typecheck, tests, coverage, dependency audit, security scan. The Week 1 eval CI gate must be extended to cover Week 2: add schema validation tests, contract tests for the supervisor-worker interface, and extraction regression tests to the PR-blocking suite. Dependency audit and security scan must run on every PR.</p>
+    <p>Testing strategy and implementation. Document your testing strategy in W2_ARCHITECTURE.md: what is unit-tested (schema validators, tool functions), what is integration-tested (ingestion flow, RAG pipeline), what is evaluated via the golden set (agent behavior), and what is not tested and why. Every test must have a documented failure mode it guards against.</p>
+    <p>Observability, debugging, and incident response. Extend your ARCHITECTURE.md to cover Week 2 failure modes: document ingestion failures, extraction schema violations, RAG retrieval returning no results, and supervisor routing errors. Each entry must describe how to identify the failure in logs and what the recovery action is.</p>
+    <p>Commonly used API calls in Postman, Bruno, or equivalent runnable API collection. Update the Week 1 API collection to include Week 2 endpoints: document upload, extraction status, evidence retrieval, and the full Week 2 agent flow. Graders must be able to run any Week 2 workflow from the collection.</p>
+    <p>Baseline CPU, memory, latency, and throughput profiles. Record baseline metrics for Week 2 flows: document ingestion, extraction, RAG retrieval, and full multi-agent run. Compare against Week 1 baselines to verify the new components have not introduced unexpected regressions in shared paths.</p>
+    <p>Consistent structured logging. Week 2 logging must follow the same structured format established in Week 1. No plain-text log output from Week 2 components. Extend the log schema for new event types; do not create a parallel logging convention.</p>
+    <p>Correlation/request IDs across services. Propagate the correlation ID into all Week 2 worker invocations, VLM calls, retrieval calls, and FHIR writes. A grader must be able to reconstruct a full Week 2 request trace using only the correlation ID.</p>
+    <p>Distributed tracing for internal diagnosis. Extend Week 1 distributed tracing to cover the Week 2 supervisor/worker graph. Each worker invocation must be a child span of the supervisor span. Extraction and retrieval sub-calls must be traceable within their worker spans.</p>
+    <p>Separate /health and /ready endpoints; readiness must validate meaningful dependencies. Update /ready to check Week 2 dependencies: document storage, vector index, and reranker API reachability. /ready should return degraded status if any dependency is unavailable, not just a binary up/down.</p>
+    <p>Dashboard and alert definitions. Add Week 2 alerts: extraction failure rate, RAG retrieval latency, eval regression detection (more than 5% drop in any category triggers an alert). Alerts must be documented with expected response actions.</p>
+    <p>OpenAPI 3.0 / Swagger definitions. Publish an OpenAPI 3.0 spec for all Week 2 HTTP endpoints. The spec must be committed to the repo and kept in sync with the implementation. Contract tests must verify the implementation matches the spec.</p>
+    <p>Integration tests with fixtures and stubs. Write integration tests that exercise the full ingestion-to-answer path using fixture documents (stored PDFs and form images) and stubbed LLM/VLM responses. These tests must pass in CI without live API access.</p>
+    <p>Data modeling, ingestion, validation, lineage, access control, reporting, data quality. Document the data model for Week 2 artifacts: extracted lab observations, intake facts, guideline chunks, and citation records. Each type must have a defined owner (which system is authoritative), lineage (where it came from), access control (who can read/write it), and validation rules.</p>
+    <p>Privacy and records implications of analytics workflows. Audit the Week 2 observability data for PHI leakage. Traces, logs, eval datasets, and cost reports must not contain patient identifiers, raw document text, or extracted clinical values. Document the scrubbing approach and verify it in CI with a PHI-detection check.</p>
+    <p>Backup and recovery plan — automatic and manual. Document how extracted documents, derived FHIR records, and the eval golden set are backed up. Describe the manual recovery procedure if automated backup fails. Include RPO and RTO estimates. The eval golden set in particular must be reproducible from the repo alone — it should not live only in a database that has no recovery path.</p>
+    <h1>Common Pitfalls and Watch-Outs</h1>
+    <p>Trying to support five document types before two work reliably.</p>
+    <p>Using a VLM answer directly without schema validation or source metadata.</p>
+    <p>Letting the supervisor become a black box. Handoffs must be logged and explainable.</p>
+    <p>Using llm-as-a-judge without clear rubric. Use boolean rubrics so failures are actionable.</p>
+    <p>Logging raw document text, patient identifiers, or screenshots to SaaS observability tools.</p>
+    <h1>Final Note</h1>
+    <p>Week 2 is not a contest to integrate the most AI frameworks. It is a test of whether you can add multimodal inputs, keep the agent architecture comprehensible, and prove quality with a CI gate. The best submissions will feel narrower than the original spec and stronger because of it.</p>
+    <table>
+        <tr>
+            <td>GATE</td>
+            <td>Eval-driven CI is non-negotiable. A working demo that cannot block regressions has not met the Week 2 standard.</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>WHY THIS MATTERS</td>
+            <td>Clinical agents fail when they cannot handle the messy inputs clinicians actually receive. Week 2 is about making the agent see, keeping the architecture small enough to reason about, and proving quality through automated evals.</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>Checkpoint</td>
+            <td>Deadline</td>
+            <td>Focus</td>
+        </tr>
+        <tr>
+            <td>Architecture Defense</td>
+            <td>4 hours</td>
+            <td>Document schemas, RAG and eval design, security concerns</td>
+        </tr>
+        <tr>
+            <td>MVP</td>
+            <td>Tuesday @ 11:59PM</td>
+            <td>Lab PDF and intake form ingestion working locally; first extraction and first evidence retrieval demo.</td>
+        </tr>
+        <tr>
+            <td>Early Submission</td>
+            <td>Thursday @ 11:59PM</td>
+            <td>Supervisor plus 2 workers, 50-case eval suite, PR-blocking CI, deployed app, demo video.</td>
+        </tr>
+        <tr>
+            <td>Final</td>
+            <td>Sunday @ Noon</td>
+            <td>Production-ready Week 2 agent, source-grounded demo, cost/latency report, and interview readiness.</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>Name</td>
+            <td>Deliverable</td>
+        </tr>
+        <tr>
+            <td>Ingest two document types</td>
+            <td>Upload and extract a lab PDF and an intake form using strict schemas.</td>
+        </tr>
+        <tr>
+            <td>Build basic hybrid RAG</td>
+            <td>Small guideline corpus indexed with keyword+dense retrieval and Cohere rerank or equivalent.</td>
+        </tr>
+        <tr>
+            <td>Add supervisor + 2 workers</td>
+            <td>Supervisor routes to intake-extractor and evidence-retriever with logged handoffs.</td>
+        </tr>
+        <tr>
+            <td>Gate with eval-driven CI</td>
+            <td>50-case golden set, boolean rubrics, PR-blocking Git Hook.</td>
+        </tr>
+        <tr>
+            <td>Integrate and demo</td>
+            <td>Deployed app, source-grounded UI, latency/cost report, walkthrough video.</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>HARD GATE</td>
+            <td>During grading, we will introduce a small regression and confirm your CI gate fails. If the eval gate does not block the regression, the Week 2 build does not pass.</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td>Deliverable</td>
+            <td>Requirements</td>
+        </tr>
+        <tr>
+            <td>GitLab Repository</td>
+            <td>Week 1 fork with Week 2 changes, setup guide, deployed link, and clear environment-variable documentation.</td>
+        </tr>
+        <tr>
+            <td>W2 Architecture Doc</td>
+            <td>A ./W2_ARCHITECTURE.md file explaining the document ingestion flow, worker graph, RAG design, eval gate, risks, and tradeoffs.</td>
+        </tr>
+        <tr>
+            <td>Schemas</td>
+            <td>Pydantic/Zod schemas for lab_pdf and intake_form, including source citation fields and validation tests.</td>
+        </tr>
+        <tr>
+            <td>Eval Dataset</td>
+            <td>50 synthetic/demo cases with expected behavior, boolean rubrics, judge configuration, and results.</td>
+        </tr>
+        <tr>
+            <td>CI Evidence</td>
+            <td>Git Hook or equivalent that runs the eval suite and blocks regressions.</td>
+        </tr>
+        <tr>
+            <td>Demo Video</td>
+            <td>3-5 minutes showing document upload, extraction, evidence retrieval, citations, eval results, and observability.</td>
+        </tr>
+        <tr>
+            <td>Cost and Latency Report</td>
+            <td>Actual dev spend, projected production cost, p50/p95 latency, and bottleneck analysis.</td>
+        </tr>
+        <tr>
+            <td>Deployed Application</td>
+            <td>Publicly accessible deployed app with the Week 2 core flow working.</td>
+        </tr>
+    </table>
+</body>
+</html>
