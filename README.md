@@ -29,6 +29,17 @@ blindly trust with patient data. PHI never leaves the machine — there's no
 outbound network path for the model or the agent to leak it through, and
 nothing to send to a cloud vendor in the first place.
 
+## Part of the AgentForge series
+
+**Phase 1 of 3.** AgentForge is a three-phase healthcare-AI project; each phase
+builds on the one before it:
+
+1. **agentforge-1-clinical-copilot** — Clinical Co-Pilot Foundation *(this repo)*
+2. [agentforge-2-evidence-agent](https://github.com/franciszver/agentforge-2-evidence-agent) — Multimodal Evidence Agent & Document RAG (continues this repo)
+3. [agentforge-3-redteam](https://github.com/franciszver/agentforge-3-redteam) — Adversarial Security & Red-Team Platform (attacks the Phase 2 Co-Pilot)
+
+*Phases 2 and 3 become public as the series is released.*
+
 ---
 
 [![CI](https://github.com/franciszver/agentforge-1-clinical-copilot/actions/workflows/copilot-ci.yml/badge.svg)](https://github.com/franciszver/agentforge-1-clinical-copilot/actions/workflows/copilot-ci.yml)
