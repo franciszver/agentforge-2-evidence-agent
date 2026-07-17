@@ -322,6 +322,16 @@ function menuActionClick(data,evt)
         return popMenuDialog(webroot_url + data.url(), title);
     }
 
+    // target 'blank' opens a genuine new browser tab/window (rather than
+    // loading the url into an in-app SPA tab like every other menu item).
+    // Used by oe-module-clinical-copilot's top-nav entry, whose target page
+    // is a standalone PWA that needs a real top-level browsing context for
+    // its manifest/service-worker registration to work (see issue #201).
+    if (data.target === 'blank') {
+        window.open(webroot_url + data.url(), '_blank', 'noopener');
+        return;
+    }
+
     if(data.enabled())
     {
         if(data.requirement===2)
