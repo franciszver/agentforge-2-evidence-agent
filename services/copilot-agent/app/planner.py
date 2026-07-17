@@ -46,7 +46,7 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -154,6 +154,34 @@ class PlannerResult:
     # Empty for an ``ollama_client`` double with no ``call_stats`` (see
     # ``Planner.run``'s defensive ``getattr``).
     llm_calls: list[LlmCallStats] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolDispatched:
+    """A ``run_streaming`` event: one tool dispatch just completed (success,
+    API error, or binding-violation refusal), carrying its ``ToolCallTrace``.
+
+    Yielded immediately after the dispatch, so a streaming caller (P2.12,
+    ``app.chat._stream_chat``) can emit the ``tool_call`` SSE frame and
+    record the tool span AS each tool runs, instead of replaying the whole
+    trace after the loop finishes.
+    """
+
+    trace: ToolCallTrace
+
+
+@dataclass(frozen=True)
+class PlannerCompleted:
+    """A ``run_streaming`` event: the loop is done. Carries the same
+    ``PlannerResult`` that ``run()`` returns directly -- always the LAST
+    event ``run_streaming`` yields, exactly once."""
+
+    result: PlannerResult
+
+
+# Tagged union of everything ``Planner.run_streaming`` can yield -- mirrors
+# ``app.rendering.AnswerSegment``'s plain-union-of-frozen-dataclasses style.
+PlannerEvent = ToolDispatched | PlannerCompleted
 
 
 TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
@@ -385,6 +413,27 @@ class Planner:
         self._summarizer = QuarantinedSummarizer(ollama_client=ollama_client)
 
     def run(self, question: str) -> PlannerResult:
+        """Run the loop to completion and return the finished result.
+
+        Delegates to ``run_streaming`` and returns only its terminal event's
+        result, discarding the intermediate ``ToolDispatched`` events -- so
+        this stays byte-identical to the pre-P2.12 implementation from the
+        caller's perspective.
+        """
+        for event in self.run_streaming(question):
+            if isinstance(event, PlannerCompleted):
+                return event.result
+        raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
+
+    def run_streaming(self, question: str) -> Iterator[PlannerEvent]:
+        """Same single-tool-per-turn loop as ``run()``, but yields a
+        ``ToolDispatched`` event immediately after each tool dispatch
+        completes (success, API error, or binding-violation refusal) instead
+        of only returning the full trace once the loop finishes. Always
+        yields exactly one terminal ``PlannerCompleted`` event, last, whose
+        ``result`` is identical to what ``run()`` returns for the same
+        inputs (P2.12).
+        """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _build_system_prompt(self._patient_id, self._registry)},
             {"role": "user", "content": question},
@@ -398,7 +447,10 @@ class Planner:
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
                 final = self._finalize_answer(messages)
-                return PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
+                yield PlannerCompleted(
+                    PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
+                )
+                return
 
             messages.append({"role": "assistant", "content": decision.model_dump_json()})
 
@@ -413,17 +465,17 @@ class Planner:
             try:
                 enforce_patient_binding(bound_patient_id=self._patient_id, tool_args=decision.tool_args)
             except PatientBindingViolation:
-                trace.append(
-                    ToolCallTrace(
-                        tool=decision.tool,
-                        args={},
-                        result=None,
-                        error="patient_binding_violation",
-                        start_ts=binding_check_ts,
-                        end_ts=time.time(),
-                    )
+                call_trace = ToolCallTrace(
+                    tool=decision.tool,
+                    args={},
+                    result=None,
+                    error="patient_binding_violation",
+                    start_ts=binding_check_ts,
+                    end_ts=time.time(),
                 )
+                trace.append(call_trace)
                 raw_results.append(None)
+                yield ToolDispatched(call_trace)
                 _logger.warning("tool_call refused: patient_binding_violation", extra={"tool": decision.tool.value})
                 messages.append(
                     {
@@ -442,17 +494,17 @@ class Planner:
             try:
                 output = spec.func(self._openemr, self._token, self._patient_id, **call_kwargs)
             except OpenEmrApiError as exc:
-                trace.append(
-                    ToolCallTrace(
-                        tool=decision.tool,
-                        args=call_kwargs,
-                        result=None,
-                        error=exc.category.value,
-                        start_ts=tool_start_ts,
-                        end_ts=time.time(),
-                    )
+                call_trace = ToolCallTrace(
+                    tool=decision.tool,
+                    args=call_kwargs,
+                    result=None,
+                    error=exc.category.value,
+                    start_ts=tool_start_ts,
+                    end_ts=time.time(),
                 )
+                trace.append(call_trace)
                 raw_results.append(None)
+                yield ToolDispatched(call_trace)
                 _logger.warning(
                     "tool_call failed", extra={"tool": decision.tool.value, "error": exc.category.value}
                 )
@@ -465,16 +517,21 @@ class Planner:
             # client-facing trace still only ever see the quarantined summary.
             raw_results.append(output.model_dump(mode="json"))
             summary = quarantine_tool_result(self._summarizer, decision.tool, output)
-            trace.append(
-                ToolCallTrace(
-                    tool=decision.tool, args=call_kwargs, result=summary, error=None, start_ts=tool_start_ts, end_ts=tool_end_ts
-                )
+            call_trace = ToolCallTrace(
+                tool=decision.tool, args=call_kwargs, result=summary, error=None, start_ts=tool_start_ts, end_ts=tool_end_ts
             )
+            trace.append(call_trace)
+            yield ToolDispatched(call_trace)
             _logger.info("tool_call dispatched", extra={"tool": decision.tool.value})
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
-        return PlannerResult(
-            answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls()
+        yield PlannerCompleted(
+            PlannerResult(
+                answer=_best_effort_answer(trace, self._max_turns),
+                trace=trace,
+                raw_results=raw_results,
+                llm_calls=self._collect_llm_calls(),
+            )
         )
 
     def _collect_llm_calls(self) -> list[LlmCallStats]:

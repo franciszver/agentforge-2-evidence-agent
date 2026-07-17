@@ -87,7 +87,7 @@ from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
-from app.planner import Planner, PlannerResult, ToolCallTrace
+from app.planner import Planner, PlannerCompleted, PlannerResult, ToolCallTrace, ToolDispatched
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.trace_store import TraceStore
 from app.verdict import VerdictResult, to_trace_record
@@ -580,6 +580,28 @@ def _record_span_best_effort(operation: str, write: Callable[[], object]) -> Non
         )
 
 
+def _tool_call_frame(trace_store: TraceStore, correlation_id: str, call: ToolCallTrace) -> str:
+    """Build the ``tool_call`` SSE frame for one dispatch and record its tool
+    span (best-effort), shared by both the streaming path (P2.12, called once
+    per ``ToolDispatched`` event AS it arrives) and the fallback replay path
+    (called once per ``result.trace`` entry after ``run()`` returns, for a
+    planner double that only implements ``run()``)."""
+
+    def _write_tool_span(call: ToolCallTrace = call) -> int:
+        return trace_store.record_tool_span(
+            correlation_id=correlation_id,
+            start_ts=call.start_ts,
+            end_ts=call.end_ts,
+            ok=call.error is None,
+            tool_name=call.tool.value,
+            args=call.args,
+            error_category=call.error,
+        )
+
+    _record_span_best_effort("tool_span", _write_tool_span)
+    return _sse(ChatEvent.TOOL_CALL, {"tool": call.tool.value, "args": call.args, "error": call.error})
+
+
 def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: list[LlmCallStats]) -> None:
     """Record one ``llm`` span per completed Ollama call (P4/#149), best-effort.
 
@@ -629,7 +651,25 @@ def _stream_chat(
             {"conversation_id": conversation.conversation_id, "correlation_id": correlation_id},
         )
 
-        result = planner.run(message)
+        # P2.12: prefer the real-time streaming path -- ``run_streaming``
+        # yields a ``tool_call`` frame as each tool actually dispatches,
+        # instead of replaying the whole trace after the loop finishes.
+        # ``getattr`` (not a direct attribute access) so a ``PlannerProtocol``
+        # double that only implements ``run()`` (all 8 existing fake-planner
+        # tests) falls back to that path untouched, rather than erroring on a
+        # missing attribute the protocol never promised.
+        run_streaming = getattr(planner, "run_streaming", None)
+        if run_streaming is not None:
+            result = None
+            for event in run_streaming(message):
+                if isinstance(event, ToolDispatched):
+                    yield _tool_call_frame(trace_store, correlation_id, event.trace)
+                elif isinstance(event, PlannerCompleted):
+                    result = event.result
+            if result is None:
+                raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
+        else:
+            result = planner.run(message)
         # Deterministic cross-patient subject-check (#194, follow-up to
         # #121): a small model can verbally attribute the bound patient's
         # data to a different, unqueried patient the question named/numbered
@@ -655,24 +695,12 @@ def _stream_chat(
         # splicing answer text -- deferred (see ``apply_recency_notice``).
         result = apply_recency_notice(result, now=clock())
 
-        for call in result.trace:
-            yield _sse(
-                ChatEvent.TOOL_CALL,
-                {"tool": call.tool.value, "args": call.args, "error": call.error},
-            )
-
-            def _write_tool_span(call: ToolCallTrace = call) -> int:
-                return trace_store.record_tool_span(
-                    correlation_id=correlation_id,
-                    start_ts=call.start_ts,
-                    end_ts=call.end_ts,
-                    ok=call.error is None,
-                    tool_name=call.tool.value,
-                    args=call.args,
-                    error_category=call.error,
-                )
-
-            _record_span_best_effort("tool_span", _write_tool_span)
+        if run_streaming is None:
+            # Fallback path: the planner double only implements ``run()``, so
+            # the whole trace is only available now -- replay it as
+            # ``tool_call`` frames (bunched, same as pre-P2.12 behavior).
+            for call in result.trace:
+                yield _tool_call_frame(trace_store, correlation_id, call)
 
         _emit_llm_spans(trace_store, correlation_id, result.llm_calls)
 
