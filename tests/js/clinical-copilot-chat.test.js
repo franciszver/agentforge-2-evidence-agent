@@ -43,7 +43,9 @@ const {
     appendMessage,
     createChatController,
     renderAboutLegend,
-    createThinkingIndicator
+    createThinkingIndicator,
+    createReasoningZone,
+    createReasoningRevealer
 } = global.window.CopilotChat;
 
 const encoder = new TextEncoder();
@@ -1008,5 +1010,1009 @@ describe('createChatController reasoning fallback timer (#208)', () => {
         // and the timer fires setStage('reasoning') on this node -> red.
         expect(status.textContent).not.toContain('Reasoning locally');
         expect(status.textContent).toContain('Consulting the chart');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createReasoningZone (#213) -- the live token-by-token "thinking" surface.
+//
+// A separate, clearly-labeled zone (NEVER the answer bubble) that the
+// reasoning_delta SSE frame's text streams into progressively. This is the
+// owner's non-negotiable UX rule: unverified/provisional model text must
+// never occupy the authoritative answer slot -- it gets its own zone.
+// ---------------------------------------------------------------------------
+describe('createReasoningZone', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function makeContainer() {
+        const div = document.createElement('div');
+        document.body.appendChild(div);
+        return div;
+    }
+
+    test('appends a labeled zone and streams appended text progressively', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+
+        const el = container.querySelector('.copilot-reasoning');
+        expect(el).not.toBeNull();
+        expect(el.textContent).toContain('Reasoning locally');
+        expect(el.textContent).toContain('Qwen3-4B');
+
+        zone.append('Let me check ');
+        zone.append('the medication list.');
+
+        expect(el.textContent).toContain('Let me check the medication list.');
+    });
+
+    test('renders a <script> payload as inert text, never as a DOM element (XSS safety)', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+        const payload = '<script>window.__pwned = true;</script>';
+
+        zone.append(payload);
+
+        expect(container.querySelector('script')).toBeNull();
+        expect(window.__pwned).toBeUndefined();
+        expect(container.textContent).toContain(payload);
+    });
+
+    test('remove() detaches the zone from its container and is idempotent', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+
+        expect(container.querySelector('.copilot-reasoning')).not.toBeNull();
+        zone.remove();
+        expect(container.querySelector('.copilot-reasoning')).toBeNull();
+
+        expect(() => zone.remove()).not.toThrow();
+    });
+
+    test('finalize() marks the zone as no longer actively streaming', () => {
+        const container = makeContainer();
+        const zone = createReasoningZone(container);
+        const el = container.querySelector('.copilot-reasoning');
+
+        expect(el.className).toContain('copilot-reasoning-active');
+        zone.finalize();
+        expect(el.className).not.toContain('copilot-reasoning-active');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — reasoning_delta streaming (#213)
+//
+// reasoning_delta frames append into a dedicated thinking zone, distinct
+// from the answer bubble. The #208 generic spinner hands off to this live
+// zone the instant reasoning tokens start arriving (no redundant "Reasoning
+// locally..." spinner shown alongside a real typing stream). The answer
+// bubble renders ONLY from the `answer` frame -- this is the hard safety
+// regression guard: draft reasoning text must never land in the answer slot.
+// ---------------------------------------------------------------------------
+describe('createChatController reasoning_delta streaming (#213)', () => {
+    // #219 paces the reveal instead of appending immediately, so every test
+    // below that expects streamed text to be visible needs fake timers
+    // advanced past the drain (a few seconds is always enough headroom for
+    // these short strings, well under real per-test timeouts).
+    beforeEach(() => {
+        jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    // Replaces the old real-timer flushMicrotasks() helper under fake
+    // timers: 0ms still lets the pending reader/consumeSSEStream promise
+    // chain settle without advancing the pacing timer.
+    function flushAsync(ms) {
+        return jest.advanceTimersByTimeAsync(ms || 0);
+    }
+
+    test('reasoning_delta frames append into the thinking zone token-by-token, never into the answer bubble', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: conversation\ndata: {"conversation_id":"c1"}\n\n');
+        reader.push('event: reasoning_delta\ndata: {"text":"Let me check "}\n\n');
+        // Give the paced drain enough time to reveal this short delta.
+        await flushAsync(2000);
+
+        let zone = messagesEl.querySelector('.copilot-reasoning');
+        expect(zone).not.toBeNull();
+        expect(zone.textContent).toContain('Let me check');
+
+        reader.push('event: reasoning_delta\ndata: {"text":"the medication list..."}\n\n');
+        await flushAsync(2000);
+        expect(zone.textContent).toContain('Let me check the medication list...');
+
+        // The answer has not arrived yet -- no assistant bubble carrying the
+        // final text should exist, and the reasoning text must never be
+        // treated as the answer.
+        expect(messagesEl.querySelector('.copilot-chat-message-assistant')).toBeNull();
+
+        reader.push('event: answer\ndata: {"answer":"She takes lisinopril."}\n\n');
+        reader.finish();
+        await flushAsync(2000);
+        await sendPromise;
+
+        const assistantBubble = messagesEl.querySelector('.copilot-chat-message-assistant');
+        expect(assistantBubble).not.toBeNull();
+        expect(assistantBubble.textContent).toBe('She takes lisinopril.');
+        // The verified answer bubble never contains the draft reasoning text.
+        expect(assistantBubble.textContent).not.toContain('Let me check');
+        expect(assistantBubble.textContent).not.toContain('medication list');
+    });
+
+    test('hands off from the #208 spinner to the reasoning zone -- no redundant spinner once reasoning starts', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        expect(messagesEl.querySelector('.copilot-thinking')).not.toBeNull();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Let me check."}\n\n');
+        await flushAsync();
+
+        // The generic spinner is gone -- replaced by the live zone, not
+        // shown redundantly alongside it. The zone itself (and the handoff)
+        // happens synchronously on frame arrival -- only its content reveal
+        // is paced.
+        expect(messagesEl.querySelector('.copilot-thinking')).toBeNull();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        reader.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader.finish();
+        await flushAsync(2000);
+        await sendPromise;
+    });
+
+    test('the reasoning zone stays visible above the answer once the answer renders (minimal post-answer treatment)', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushAsync();
+
+        reader.push('event: answer\ndata: {"answer":"Final answer."}\n\n');
+        reader.finish();
+        await flushAsync(2000);
+        await sendPromise;
+
+        const zone = messagesEl.querySelector('.copilot-reasoning');
+        expect(zone).not.toBeNull();
+        expect(zone.textContent).toContain('Reasoning text.');
+        expect(zone.className).not.toContain('copilot-reasoning-active');
+    });
+
+    test('clears an in-flight reasoning zone on an error frame', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushAsync();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        reader.push('event: error\ndata: {"status":409}\n\n');
+        reader.finish();
+        await flushAsync();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+        expect(messagesEl.textContent).toContain('unavailable');
+    });
+
+    test('reset() mid-flight clears an in-flight reasoning zone', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Reasoning text."}\n\n');
+        await flushAsync();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        controller.reset();
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+        expect(messagesEl.textContent).toBe('');
+    });
+
+    test('no reasoning_delta frames -- no reasoning zone is ever created (planner answered with zero reasoning streamed)', async () => {
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader.finish();
+        await flushAsync();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+    });
+
+    test('a stream ending with reasoning but no truthy answer and no error clears the zone (no orphaned blinking cursor)', async () => {
+        // Edge case: the answer frame carries an empty string (falsy), or the
+        // stream completes cleanly after reasoning with no answer/error at
+        // all. The zone must not be left in the DOM still "actively
+        // streaming" (permanent cursor) with activeReasoningZone dangling.
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await flushAsync();
+
+        reader.push('event: reasoning_delta\ndata: {"text":"thinking..."}\n\n');
+        await flushAsync();
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        // Empty-string answer (falsy) then clean end -- neither the answer
+        // branch nor the error branch fires.
+        reader.push('event: answer\ndata: {"answer":""}\n\n');
+        reader.finish();
+        await flushAsync();
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+
+        // And a subsequent reset() must not throw on a dangling handle.
+        expect(() => controller.reset()).not.toThrow();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// #219 paced reveal -- the reasoning "thinking zone" reveals its already-
+// received reasoning_delta text at a steady, readable rate instead of
+// appending it immediately, so the typewriter stays smoothly visible whether
+// Ollama delivers tokens spread out, in a sub-20ms burst, or as a single EOF
+// delta. Design: buffer incoming text and drain it via a fixed-rate timer
+// (REVEAL_TICK_MS / REVEAL_CHARS_PER_TICK below, mirroring the module's
+// private constants -- ~40 chars/sec, within the 30-45 cps target).
+// REVEAL_CAP_MS bounds how long a pending drain may block the verified
+// `answer` frame from rendering: createChatController awaits
+// revealer.waitForDrain() (which force-flushes and resolves at the cap)
+// before appending the answer bubble, so the answer is never blocked by
+// more than the cap. `prefers-reduced-motion` skips pacing entirely.
+// ---------------------------------------------------------------------------
+describe('createReasoningRevealer (#219 paced reveal)', () => {
+    // Mirrors copilot-chat.js's private REVEAL_* constants -- kept in sync
+    // with the source, same convention as FALLBACK_MS above (#208).
+    const REVEAL_TICK_MS = 50;
+    const REVEAL_CHARS_PER_TICK = 2;
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+        delete window.matchMedia;
+    });
+
+    function makeZone() {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const zone = createReasoningZone(container);
+        const textEl = container.querySelector('.copilot-reasoning-text');
+        return { zone: zone, textEl: textEl };
+    }
+
+    // (a) A single large delta (the "one EOF burst" scenario) is still
+    // revealed incrementally as timers advance -- not all at once.
+    test('reveals a single large delta incrementally as timers advance, not all at once', () => {
+        jest.useFakeTimers();
+        const { zone, textEl } = makeZone();
+        const revealer = createReasoningRevealer(zone);
+        const text = 'a'.repeat(60);
+
+        revealer.push(text);
+
+        // Nothing revealed synchronously -- only once timers advance.
+        expect(textEl.textContent.length).toBe(0);
+
+        jest.advanceTimersByTime(REVEAL_TICK_MS);
+        const afterOneTick = textEl.textContent.length;
+        expect(afterOneTick).toBeGreaterThan(0);
+        expect(afterOneTick).toBeLessThan(text.length);
+        expect(afterOneTick).toBe(REVEAL_CHARS_PER_TICK);
+
+        jest.advanceTimersByTime(REVEAL_TICK_MS * 4);
+        const afterFiveTicks = textEl.textContent.length;
+        expect(afterFiveTicks).toBeGreaterThan(afterOneTick);
+        expect(afterFiveTicks).toBeLessThan(text.length);
+
+        jest.advanceTimersByTime(5000);
+        expect(textEl.textContent).toBe(text);
+    });
+
+    // (b) prefers-reduced-motion: skip pacing entirely -> instant reveal,
+    // no pacing timer scheduled.
+    test('prefers-reduced-motion reveals instantly and schedules no pacing timer', () => {
+        jest.useFakeTimers();
+        window.matchMedia = jest.fn().mockReturnValue({ matches: true });
+        // Spy specifically on setInterval -- the zone's own auto-scroll
+        // uses requestAnimationFrame (also a fake-timer-visible timer), so
+        // asserting on jest.getTimerCount() would be a false positive
+        // unrelated to whether the *pacing* timer was scheduled.
+        const setIntervalSpy = jest.spyOn(window, 'setInterval');
+
+        const { zone, textEl } = makeZone();
+        const revealer = createReasoningRevealer(zone);
+
+        revealer.push('Reasoning text.');
+
+        expect(textEl.textContent).toBe('Reasoning text.');
+        // The reveal never went through the paced drain path -- no interval
+        // was scheduled at all.
+        expect(setIntervalSpy).not.toHaveBeenCalled();
+    });
+
+    // (c) stop() clears the pacing timer; a late tick must not mutate the
+    // zone. Mutation-tested: this assertion fails if revealer.stop() drops
+    // its clearInterval call.
+    test('stop() clears the pacing timer so a late tick cannot mutate the zone (mutation-tested)', () => {
+        jest.useFakeTimers();
+        const { zone, textEl } = makeZone();
+        const revealer = createReasoningRevealer(zone);
+
+        revealer.push('a'.repeat(60));
+        jest.advanceTimersByTime(REVEAL_TICK_MS);
+        const revealedBeforeStop = textEl.textContent.length;
+        expect(revealedBeforeStop).toBeGreaterThan(0);
+        expect(revealedBeforeStop).toBeLessThan(60);
+
+        revealer.stop();
+        jest.advanceTimersByTime(10000);
+
+        // If stop() stopped clearing its interval, this would now equal the
+        // full 60 chars -- proving the assertion actually exercises the
+        // cleanup rather than passing vacuously.
+        expect(textEl.textContent.length).toBe(revealedBeforeStop);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — #219 paced reveal wired into sendMessage: cleanup
+// on reset()/error, and the answer-frame cap.
+// ---------------------------------------------------------------------------
+describe('createChatController reasoning pacing (#219)', () => {
+    const REVEAL_TICK_MS = 50;
+    const REVEAL_CAP_MS = 1500;
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    // (c) cleared on reset(), mutation-tested at the controller level: hold a
+    // reference to the revealed text node BEFORE reset() (reset detaches the
+    // zone from messagesEl, so mutations on the detached node would
+    // otherwise be invisible to a messagesEl-only assertion).
+    test('reset() mid-reveal clears the pacing timer -- advancing timers afterward causes no further zone mutation', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader.push('event: reasoning_delta\ndata: {"text":"' + 'a'.repeat(60) + '"}\n\n');
+        await jest.advanceTimersByTimeAsync(REVEAL_TICK_MS);
+
+        const textEl = messagesEl.querySelector('.copilot-reasoning-text');
+        expect(textEl).not.toBeNull();
+        const revealedBeforeReset = textEl.textContent.length;
+        expect(revealedBeforeReset).toBeGreaterThan(0);
+        expect(revealedBeforeReset).toBeLessThan(60);
+
+        controller.reset();
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+
+        await jest.advanceTimersByTimeAsync(10000);
+
+        // Mutation guard: without the pacing timer's clear, this node (held
+        // from before reset(), now detached) would keep growing.
+        expect(textEl.textContent.length).toBe(revealedBeforeReset);
+    });
+
+    // (c) cleared on the error path, mutation-tested the same way.
+    test('an error frame clears the pacing timer -- advancing timers afterward causes no further zone mutation', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader.push('event: reasoning_delta\ndata: {"text":"' + 'a'.repeat(60) + '"}\n\n');
+        await jest.advanceTimersByTimeAsync(REVEAL_TICK_MS);
+
+        const textEl = messagesEl.querySelector('.copilot-reasoning-text');
+        expect(textEl).not.toBeNull();
+        const revealedBeforeError = textEl.textContent.length;
+        expect(revealedBeforeError).toBeGreaterThan(0);
+        expect(revealedBeforeError).toBeLessThan(60);
+
+        reader.push('event: error\ndata: {"status":409}\n\n');
+        reader.finish();
+        await jest.advanceTimersByTimeAsync(0);
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-reasoning')).toBeNull();
+
+        await jest.advanceTimersByTimeAsync(10000);
+
+        expect(textEl.textContent.length).toBe(revealedBeforeError);
+    });
+
+    // (d) the answer frame must not be blocked on the full drain -- it
+    // renders within the documented REVEAL_CAP_MS cap.
+    test('when the answer frame arrives mid-reveal, the answer renders within the documented cap, not blocked on the full drain', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        // At ~40 chars/sec this buffer alone would take ~10s to fully drain
+        // -- far past the 1.5s cap, so this proves the cap (not the drain)
+        // is what gates the answer render.
+        reader.push('event: reasoning_delta\ndata: {"text":"' + 'a'.repeat(400) + '"}\n\n');
+        reader.push('event: answer\ndata: {"answer":"Final answer."}\n\n');
+        reader.finish();
+
+        await jest.advanceTimersByTimeAsync(REVEAL_CAP_MS);
+        await sendPromise;
+
+        const assistantBubble = messagesEl.querySelector('.copilot-chat-message-assistant');
+        expect(assistantBubble).not.toBeNull();
+        expect(assistantBubble.textContent).toBe('Final answer.');
+    });
+
+    // No reasoning ever streamed -> no revealer created -> the answer is
+    // never gated on anything reveal-related.
+    test('an answer with no prior reasoning_delta renders immediately, with no pacing wait', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What is the diagnosis?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader.push('event: answer\ndata: {"answer":"Hypertension."}\n\n');
+        reader.finish();
+        await jest.advanceTimersByTimeAsync(0);
+        await sendPromise;
+
+        expect(messagesEl.querySelector('.copilot-chat-message-assistant').textContent).toBe('Hypertension.');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — #221 stale-turn guard (cross-patient display leak)
+//
+// Pre-existing bug found by the #219 gate: sendMessage()'s async chain
+// (stream frames -> waitForDrain() -> appendMessage(answer) + verification
+// render) keeps running even after reset() fires mid-wait (e.g. the global
+// launcher switches the active patient, which calls
+// CopilotChat.resetActiveConversation() / reset()). reset() stops the
+// timers/zone, but without a per-turn currency guard the pending
+// continuation still wrote the SUPERSEDED turn's answer/verification into
+// the freshly-cleared (new patient's) transcript.
+//
+// Fix: a monotonically incrementing turnSeq captured as `myTurn` at the
+// start of sendMessage(); reset() (and any later sendMessage()) bumps
+// turnSeq, so `myTurn !== turnSeq` marks the turn stale. Every DOM-mutating
+// continuation checks this before writing.
+// ---------------------------------------------------------------------------
+describe('createChatController stale-turn guard (#221)', () => {
+    const REVEAL_TICK_MS = 50;
+    const REVEAL_CAP_MS = 1500;
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    function makeController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        document.body.appendChild(messagesEl);
+        return {
+            messagesEl: messagesEl,
+            controller: createChatController({
+                messagesEl: messagesEl,
+                formEl: document.createElement('form'),
+                inputEl: document.createElement('textarea'),
+                context: { csrfToken: 'csrf' },
+                brokerUrl: 'https://host/base/ajax.php',
+                proxyUrl: 'https://host/base/chat-proxy.php',
+                feedbackUrl: 'https://host/base/feedback-proxy.php',
+                authorizeUrl: 'https://host/base/oauth-authorize.php',
+                fetchImpl: fetchImpl
+            })
+        };
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    function brokerThenReaders(readers) {
+        let call = 0;
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            const reader = readers[call];
+            call += 1;
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    // (a) reset() firing mid-waitForDrain (the exact #219-gate repro): the
+    // answer frame has already arrived and been captured, but the paced
+    // reveal is still draining a long reasoning buffer when reset() fires --
+    // the answer must not render into the (now cleared) transcript once the
+    // drain/cap eventually resolves.
+    test('reset() during waitForDrain (mid-wait patient switch) does not write the stale answer into the new transcript', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        // Long reasoning text so the revealer is still draining when the
+        // answer frame arrives -- waitForDrain() will be genuinely pending,
+        // not already resolved.
+        reader.push('event: reasoning_delta\ndata: {"text":"' + 'a'.repeat(400) + '"}\n\n');
+        await jest.advanceTimersByTimeAsync(REVEAL_TICK_MS);
+
+        reader.push('event: answer\ndata: {"answer":"STALE PATIENT A ANSWER"}\n\n');
+        reader.finish();
+        // Let consumeSSEStream resolve and sendMessage's continuation reach
+        // waitForDrain() -- still pending (buffer not drained, cap not hit).
+        await jest.advanceTimersByTimeAsync(0);
+
+        // Patient switch fires mid-wait, BEFORE the drain (or its cap)
+        // resolves.
+        controller.reset();
+        expect(messagesEl.textContent).toBe('');
+
+        // Advance past the cap so the superseded turn's continuation runs.
+        await jest.advanceTimersByTimeAsync(REVEAL_CAP_MS + 100);
+
+        expect(messagesEl.querySelector('.copilot-chat-message-assistant')).toBeNull();
+        expect(messagesEl.textContent).not.toContain('STALE PATIENT A ANSWER');
+    });
+
+    // (b) same race, but for the verification render -- a stale verdict
+    // badge/claims block must not appear post-reset either.
+    test('reset() during waitForDrain does not write a stale verification block either', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader.push('event: reasoning_delta\ndata: {"text":"' + 'a'.repeat(400) + '"}\n\n');
+        await jest.advanceTimersByTimeAsync(REVEAL_TICK_MS);
+
+        reader.push('event: verification\ndata: {"verdict":"verified","segments":[]}\n\n');
+        reader.push('event: answer\ndata: {"answer":"STALE ANSWER"}\n\n');
+        reader.finish();
+        await jest.advanceTimersByTimeAsync(0);
+
+        controller.reset();
+        expect(messagesEl.textContent).toBe('');
+
+        await jest.advanceTimersByTimeAsync(REVEAL_CAP_MS + 100);
+
+        expect(messagesEl.querySelector('.copilot-verification')).toBeNull();
+        expect(messagesEl.querySelector('.copilot-chat-message-assistant')).toBeNull();
+    });
+
+    // (c) a stale turn's reader is still being pumped after reset() (the
+    // fetch/reader itself is not aborted -- see the module docstring's note
+    // that overlapping sends are pre-existing/possible). A late frame from
+    // that abandoned turn -- reasoning_delta or tool_call -- must not mutate
+    // the NEW turn's zone/transcript once a fresh send has started.
+    test("a stale turn's late reasoning_delta/tool_call frame after reset() does not mutate the new turn's zone/transcript", async () => {
+        jest.useFakeTimers();
+        const reader1 = pausableReader();
+        const reader2 = pausableReader();
+        const fetchImpl = brokerThenReaders([reader1, reader2]);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        controller.sendMessage('q1 (patient A)');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader1.push('event: reasoning_delta\ndata: {"text":"turn one reasoning"}\n\n');
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(messagesEl.querySelector('.copilot-reasoning')).not.toBeNull();
+
+        // Patient switch: reset() clears the transcript/zone.
+        controller.reset();
+        expect(messagesEl.textContent).toBe('');
+
+        // A new turn starts for the new patient.
+        controller.sendMessage('q2 (patient B)');
+        await jest.advanceTimersByTimeAsync(0);
+        reader2.push('event: reasoning_delta\ndata: {"text":"turn two reasoning"}\n\n');
+        await jest.advanceTimersByTimeAsync(2000);
+
+        let zones = messagesEl.querySelectorAll('.copilot-reasoning');
+        expect(zones).toHaveLength(1);
+        expect(zones[0].textContent).toContain('turn two reasoning');
+
+        // The stale turn 1's reader (never aborted, left open on purpose --
+        // finishing it would let turn 1's own end-of-stream cleanup
+        // (clearReasoningZone in the no-answer/no-error branch) retroactively
+        // remove any leaked zone, masking the bug this test targets) delivers
+        // late frames.
+        reader1.push('event: tool_call\ndata: {"tool":"get_medications","args":{},"error":null}\n\n');
+        reader1.push('event: reasoning_delta\ndata: {"text":" STALE TURN ONE TEXT"}\n\n');
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Only turn 2's zone remains, unaffected by the stale frames -- no
+        // second zone was created, and turn 2's zone was not appended to.
+        zones = messagesEl.querySelectorAll('.copilot-reasoning');
+        expect(zones).toHaveLength(1);
+        expect(zones[0].textContent).toContain('turn two reasoning');
+        expect(zones[0].textContent).not.toContain('STALE');
+        expect(messagesEl.textContent).not.toContain('STALE');
+
+        reader1.finish();
+        reader2.finish();
+        await jest.advanceTimersByTimeAsync(2000);
+    });
+
+    // (d) regression: the normal, uninterrupted path (no reset() involved)
+    // must still render the answer and verification exactly as before.
+    test('normal uninterrupted path still renders answer + verification correctly (regression)', async () => {
+        jest.useFakeTimers();
+        const reader = pausableReader();
+        const fetchImpl = brokerThenReader(reader);
+        const { messagesEl, controller } = makeController(fetchImpl);
+
+        const sendPromise = controller.sendMessage('What meds is she on?');
+        await jest.advanceTimersByTimeAsync(0);
+
+        reader.push('event: reasoning_delta\ndata: {"text":"Checking the chart..."}\n\n');
+        await jest.advanceTimersByTimeAsync(2000);
+
+        reader.push('event: verification\ndata: {"verdict":"verified","segments":[]}\n\n');
+        reader.push('event: answer\ndata: {"answer":"She takes lisinopril."}\n\n');
+        reader.finish();
+        await jest.advanceTimersByTimeAsync(2000);
+        await sendPromise;
+
+        const assistantBubble = messagesEl.querySelector('.copilot-chat-message-assistant');
+        expect(assistantBubble).not.toBeNull();
+        expect(assistantBubble.textContent).toBe('She takes lisinopril.');
+        expect(messagesEl.querySelector('.copilot-verdict-badge')).not.toBeNull();
+        expect(messagesEl.querySelector('.copilot-reasoning').textContent).toContain('Checking the chart...');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// createChatController — #221 send-lock (regression found by the #221 gate)
+//
+// The turnSeq content-guard suppresses a superseded turn's stale WRITE, but a
+// superseded turn also skips its own end-of-life cleanup (stopThinking /
+// clearReasoningZone). For reset() that is fine -- reset() runs the cleanup
+// itself -- but an OVERLAPPING send (turn B superseding turn A with no reset,
+// reachable because nothing disabled the input/submit mid-send) would leave
+// turn A's spinner (or un-finalized reasoning zone) orphaned in messagesEl
+// forever. The fix disables the input + submit button while a send is in
+// flight and re-enables them on every exit path, removing the overlapping-send
+// scenario entirely; the only supersession left is reset(), which cleans up.
+// ---------------------------------------------------------------------------
+describe('createChatController send-lock (#221 regression)', () => {
+    beforeEach(() => {
+        jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    function streamResp(reader) {
+        return { ok: true, status: 200, body: { getReader: () => reader } };
+    }
+
+    // Wires a controller to a REAL form + textarea + submit button and calls
+    // init(), so the form-submit path (handleSubmit) -- the path the send-lock
+    // actually gates -- is exercised, not a direct sendMessage() call.
+    function makeWiredController(fetchImpl) {
+        const messagesEl = document.createElement('div');
+        const formEl = document.createElement('form');
+        const inputEl = document.createElement('textarea');
+        const submitBtn = document.createElement('button');
+        submitBtn.type = 'submit';
+        formEl.appendChild(inputEl);
+        formEl.appendChild(submitBtn);
+        document.body.appendChild(messagesEl);
+        document.body.appendChild(formEl);
+        const controller = createChatController({
+            messagesEl: messagesEl,
+            formEl: formEl,
+            inputEl: inputEl,
+            context: { csrfToken: 'csrf' },
+            brokerUrl: 'https://host/base/ajax.php',
+            proxyUrl: 'https://host/base/chat-proxy.php',
+            feedbackUrl: 'https://host/base/feedback-proxy.php',
+            authorizeUrl: 'https://host/base/oauth-authorize.php',
+            fetchImpl: fetchImpl
+        });
+        controller.init();
+        return { messagesEl, formEl, inputEl, submitBtn, controller };
+    }
+
+    function submitForm(inputEl, formEl, text) {
+        inputEl.value = text;
+        formEl.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    }
+
+    function flushAsync(ms) {
+        return jest.advanceTimersByTimeAsync(ms || 0);
+    }
+
+    function brokerThenReader(reader) {
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    function brokerThenReaders(readers) {
+        let call = 0;
+        return jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            const reader = readers[call];
+            call += 1;
+            return Promise.resolve(streamResp(reader));
+        });
+    }
+
+    test('disables the input + submit button while a send is in flight, re-enables them when the answer arrives', async () => {
+        const reader = pausableReader();
+        const { inputEl, submitBtn, formEl } = makeWiredController(brokerThenReader(reader));
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+
+        expect(inputEl.disabled).toBe(true);
+        expect(submitBtn.disabled).toBe(true);
+
+        reader.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader.finish();
+        await flushAsync(2000);
+
+        expect(inputEl.disabled).toBe(false);
+        expect(submitBtn.disabled).toBe(false);
+    });
+
+    test('re-enables the input on an error frame', async () => {
+        const reader = pausableReader();
+        const { inputEl, submitBtn, formEl } = makeWiredController(brokerThenReader(reader));
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+        expect(inputEl.disabled).toBe(true);
+
+        reader.push('event: error\ndata: {"status":409}\n\n');
+        reader.finish();
+        await flushAsync();
+
+        expect(inputEl.disabled).toBe(false);
+        expect(submitBtn.disabled).toBe(false);
+    });
+
+    test('re-enables the input on the 400 no-patient branch', async () => {
+        // Pending proxy response so the in-flight disabled state is observable
+        // BEFORE the 400 branch resolves and re-enables.
+        let resolveProxy;
+        const proxyPromise = new Promise((r) => { resolveProxy = r; });
+        const fetchImpl = jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return proxyPromise;
+        });
+        const { messagesEl, inputEl, submitBtn, formEl } = makeWiredController(fetchImpl);
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+        expect(inputEl.disabled).toBe(true);
+
+        resolveProxy({
+            status: 400,
+            json: () => Promise.resolve({ reason: 'no_patient_in_session' })
+        });
+        await flushAsync();
+
+        expect(inputEl.disabled).toBe(false);
+        expect(submitBtn.disabled).toBe(false);
+        expect(messagesEl.textContent).toContain('Open a patient chart first');
+    });
+
+    test('re-enables the input on the outer catch (proxy request failure)', async () => {
+        let resolveProxy;
+        const proxyPromise = new Promise((r) => { resolveProxy = r; });
+        const fetchImpl = jest.fn((url) => {
+            if (url.endsWith('/ajax.php')) {
+                return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'tok' }) });
+            }
+            return proxyPromise;
+        });
+        const { inputEl, submitBtn, formEl } = makeWiredController(fetchImpl);
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+        expect(inputEl.disabled).toBe(true);
+
+        // Not ok, no body -> throws inside the chain -> outer catch.
+        resolveProxy({ ok: false, status: 500 });
+        await flushAsync();
+
+        expect(inputEl.disabled).toBe(false);
+        expect(submitBtn.disabled).toBe(false);
+    });
+
+    test('reset() re-enables the input while a send is in flight', async () => {
+        const reader = pausableReader();
+        const { inputEl, submitBtn, formEl, controller } = makeWiredController(brokerThenReader(reader));
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+        expect(inputEl.disabled).toBe(true);
+
+        controller.reset();
+
+        expect(inputEl.disabled).toBe(false);
+        expect(submitBtn.disabled).toBe(false);
+    });
+
+    // The regression the gate found: a second (overlapping) send while the
+    // first is in flight must be ignored, so turn A is never superseded by a
+    // turn B that would strand turn A's spinner. Fails without the send-lock
+    // (turn B starts, leaving turn A's indicator orphaned after turn A's stale
+    // continuation skips its own stopThinking()).
+    test('ignores a second form submit while a send is in flight -- no orphaned spinner from a superseded turn', async () => {
+        const reader1 = pausableReader();
+        const reader2 = pausableReader();
+        const fetchImpl = brokerThenReaders([reader1, reader2]);
+        const { messagesEl, inputEl, formEl } = makeWiredController(fetchImpl);
+
+        submitForm(inputEl, formEl, 'q1');
+        await flushAsync();
+        expect(messagesEl.querySelectorAll('.copilot-thinking')).toHaveLength(1);
+        expect(inputEl.disabled).toBe(true);
+
+        // Overlapping send attempt via the form while the first is in flight.
+        submitForm(inputEl, formEl, 'q2');
+        await flushAsync();
+
+        // Turn B never started -- still exactly one thinking indicator.
+        expect(messagesEl.querySelectorAll('.copilot-thinking')).toHaveLength(1);
+
+        // Complete turn A; it cleans up its OWN indicator (no orphan left).
+        reader1.push('event: answer\ndata: {"answer":"ok"}\n\n');
+        reader1.finish();
+        await flushAsync(2000);
+
+        expect(messagesEl.querySelectorAll('.copilot-thinking')).toHaveLength(0);
+        expect(messagesEl.querySelectorAll('.copilot-reasoning')).toHaveLength(0);
+        const bubbles = messagesEl.querySelectorAll('.copilot-chat-message-assistant');
+        expect(bubbles).toHaveLength(1);
+        expect(bubbles[0].textContent).toBe('ok');
     });
 });

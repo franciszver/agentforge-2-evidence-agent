@@ -413,3 +413,127 @@ def test_validator_rejects_empty_token_without_introspecting():
     with pytest.raises(TokenValidationError):
         validator("")
     assert fake.seen == []  # short-circuited before any network round-trip
+
+
+# --- TokenIntrospector.peek_cached (#185) ----------------------------------
+
+
+def test_peek_cached_returns_none_on_miss(tmp_path):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+
+    assert introspector.peek_cached(_TOK) is None
+    assert len(calls) == 0  # a pure cache peek never touches the network
+
+
+def test_peek_cached_returns_result_after_a_warm_hit(tmp_path):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+    introspector.introspect(_TOK)  # warms the cache (one upstream call)
+
+    cached = introspector.peek_cached(_TOK)
+
+    assert cached is not None and cached.active
+    assert len(calls) == 1  # peek itself made no additional call
+
+
+# --- #185: validator dispatch stays off the event loop on a cache miss,
+# and skips the threadpool entirely on a cache hit -------------------------
+
+
+def test_validate_token_cache_miss_dispatches_to_threadpool(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+    validator = build_introspection_validator(introspector, clock=lambda: 1000.0)
+
+    import app.chat as chat_module
+
+    real_run_in_threadpool = chat_module.run_in_threadpool
+    dispatched: list[object] = []
+
+    async def spy(func, *args):
+        dispatched.append(func)
+        return await real_run_in_threadpool(func, *args)
+
+    monkeypatch.setattr(chat_module, "run_in_threadpool", spy)
+
+    import asyncio
+
+    asyncio.run(chat_module._validate_token(validator, _TOK))
+
+    assert dispatched  # cache miss -> the validator call was dispatched off-loop
+    assert len(calls) == 1  # the upstream introspection happened (inside the threadpool)
+
+
+def test_validate_token_cache_hit_skips_threadpool(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+    validator = build_introspection_validator(introspector, clock=lambda: 1000.0)
+
+    # Warm the cache first, exactly as a prior request in the same process
+    # would have (production: the FIRST /chat call for a token is a miss and
+    # dispatches off-loop; every subsequent call within the TTL is a hit).
+    introspector.introspect(_TOK)
+    assert len(calls) == 1
+
+    import app.chat as chat_module
+
+    dispatched: list[object] = []
+    monkeypatch.setattr(chat_module, "run_in_threadpool", lambda *a, **k: dispatched.append(1))
+
+    import asyncio
+
+    asyncio.run(chat_module._validate_token(validator, _TOK))
+
+    assert dispatched == []  # cache hit -> no threadpool round trip at all
+    assert len(calls) == 1  # and no additional upstream call either
+
+
+def test_validate_token_cache_miss_does_not_block_the_event_loop(tmp_path):
+    """Behavioral proof: a slow cache-miss introspection must not stall a
+    concurrent coroutine sharing the same event loop."""
+    import asyncio
+    import time as time_module
+
+    def slow_handler(request: httpx.Request) -> httpx.Response:
+        time_module.sleep(0.2)  # simulate a slow upstream RTT
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    calls: list[int] = []
+    introspector = _introspector(tmp_path, slow_handler, calls=calls)
+    validator = build_introspection_validator(introspector, clock=lambda: 1000.0)
+
+    async def scenario() -> int:
+        import app.chat as chat_module
+
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            for _ in range(15):
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        await asyncio.gather(chat_module._validate_token(validator, _TOK), ticker())
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    # If the 0.2s introspection blocked the loop, the ticker could not have
+    # advanced concurrently with it -- it would starve until the call returned.
+    assert ticks >= 5

@@ -5,8 +5,8 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "The question 'what's her current status' is vague but likely refers to the patient's active problems or recent vital signs. Since the patient's current status could be related to active problems (e.g., acute conditions) or recent vital signs (e.g., unstable vitals), I'll start by checking the problem list to see if there are any active problems that might indicate her current status.",
-        "tool": "get_problems",
+        "reason": "The question is open-ended and asks for the patient's current status without specifying a domain. According to the rules, for such questions, we should start with get_encounters to capture recent visit history, which provides context for what's new or changed recently. This tool helps ground the current picture before checking narrower sections.",
+        "tool": "get_encounters",
         "tool_args": null
       },
       "schema": "PlannerDecision"
@@ -14,20 +14,16 @@
     {
       "kind": "extract",
       "response": {
-        "action": "call_tool",
-        "final_answer": null,
-        "reason": "The get_problems tool returned an empty list of active problems. Since the question was about the patient's current status, and there are no active problems, I should check if there are any recent vital signs that might indicate her current status (e.g., unstable vitals).",
-        "tool": "get_vitals",
-        "tool_args": null
+        "summary": "This patient has an annual physical scheduled with Dr. Demo."
       },
-      "schema": "PlannerDecision"
+      "schema": "QuarantineSummary"
     },
     {
       "kind": "extract",
       "response": {
         "action": "answer",
-        "final_answer": "The patient has no active problems and no recent vital signs recorded, indicating a stable status with no immediate issues.",
-        "reason": "Both get_problems and get_vitals returned empty lists. This means the patient has no active problems and no recent vital signs recorded. Therefore, her current status is stable with no immediate issues detected.",
+        "final_answer": "Her current status is stable with a routine annual physical scheduled with Dr. Demo on February 1, 2014.",
+        "reason": "The get_encounters tool result shows the most recent encounter was an annual physical on 2014-02-01 with Dr. Demo. Since the question asks for the patient's current status, and the most recent visit is an annual physical, this indicates the patient is currently stable and has a routine check-up scheduled. The result also mentions the patient has an annual physical scheduled, which suggests no acute issues but regular maintenance.",
         "tool": null,
         "tool_args": null
       },
@@ -35,13 +31,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient has no active problems and no recent vital signs recorded, indicating no immediate issues detected.",
+      "response": "The most recent visit was an annual physical with Dr. Demo on February 1, 2014.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient has no active problems and no recent vital signs recorded, indicating no immediate issues detected.",
+        "answer": "The most recent visit was an annual physical with Dr. Demo on February 1, 2014.",
         "source_refs": null
       },
       "schema": "FinalAnswer"

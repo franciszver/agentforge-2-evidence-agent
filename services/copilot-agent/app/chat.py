@@ -41,7 +41,18 @@ SSE frame contract (``ChatEvent`` -- the P2.14/P3.8 UI's source of truth):
                          posted to ``POST /feedback`` (P4.3) linked to it.
   * ``tool_call``    -- one per planner tool dispatch, in order, carrying
                          ``{"tool": str, "args": dict, "error": str | None}``.
-  * ``answer``        -- the final answer, ``{"answer": str}``.
+  * ``reasoning_delta`` -- zero or more, BEFORE the ``answer`` frame: one per
+                         incremental piece of the model's free-text reasoning
+                         (``app.planner.ReasoningDelta``, P213), carrying
+                         ``{"text": str}``. This is UNVERIFIED, provisional
+                         text -- the UI renders it into a separate "thinking"
+                         surface, NEVER the answer slot. Emitted only on the
+                         streaming path (``run_streaming``); the fallback
+                         replay path (a planner double implementing only
+                         ``run()``) never emits it, same as ``tool_call``.
+  * ``answer``        -- the final, VERIFIED answer, ``{"answer": str}`` --
+                         always the post-extraction ``FinalAnswer`` text,
+                         never reasoning-delta text.
   * ``verification`` -- the P3.8 verification result for this response (verdict
                          badge, citation chips, warning banner). See
                          ``build_verification_payload`` for the payload shape.
@@ -69,6 +80,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from fastapi import Depends, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -80,6 +92,9 @@ from app.extraction import (
     ClaimExtractorLike,
     apply_recency_notice,
     apply_subject_check,
+    clarify_unresolvable_referent,
+    cross_patient_refusal_result,
+    detect_foreign_patient_reference,
     run_verification,
 )
 from app.introspection import TokenIntrospector
@@ -87,7 +102,7 @@ from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
-from app.planner import Planner, PlannerResult, ToolCallTrace
+from app.planner import Planner, PlannerCompleted, PlannerResult, ReasoningDelta, ToolCallTrace, ToolDispatched
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.trace_store import TraceStore
 from app.verdict import VerdictResult, to_trace_record
@@ -100,6 +115,7 @@ class ChatEvent(StrEnum):
 
     CONVERSATION = "conversation"
     TOOL_CALL = "tool_call"
+    REASONING_DELTA = "reasoning_delta"
     ANSWER = "answer"
     VERIFICATION = "verification"
     DONE = "done"
@@ -162,6 +178,42 @@ class Introspector(Protocol):
     def introspect(self, token: str) -> IntrospectionResult: ...
 
 
+class _IntrospectionValidator:
+    """Callable ``TokenValidator`` backed by an ``Introspector``.
+
+    Accepts a token only if introspection reports it ``active`` and (when
+    ``exp`` is present) not yet expired. Empty tokens are rejected before any
+    introspection round-trip. Every rejection raises ``TokenValidationError``
+    -> mapped to 401 by the endpoint, before the planner is built.
+
+    Exposes ``peek_cached`` -- a duck-typed *optional* capability (the same
+    pattern as ``Planner.run_streaming``, see this module's docstring) that
+    ``_validate_token`` (#185) looks up via ``getattr`` to decide whether a
+    call can stay on the event loop (a cache hit) or must be dispatched to
+    FastAPI's threadpool (a cache miss, which makes a real HTTP call). A
+    validator built over an ``Introspector`` double that has no
+    ``peek_cached`` of its own (e.g. a test fake) simply always reports a
+    miss -- correct, just not the fast path.
+    """
+
+    def __init__(self, introspector: Introspector, clock: Callable[[], float]) -> None:
+        self._introspector = introspector
+        self._clock = clock
+
+    def __call__(self, token: str) -> None:
+        if not token:
+            raise TokenValidationError("missing bearer token")
+        result = self._introspector.introspect(token)
+        if not result.active:
+            raise TokenValidationError("token is not active")
+        if result.exp is not None and result.exp <= self._clock():
+            raise TokenValidationError("token has expired")
+
+    def peek_cached(self, token: str) -> IntrospectionResult | None:
+        peek = getattr(self._introspector, "peek_cached", None)
+        return peek(token) if peek is not None else None
+
+
 def build_introspection_validator(
     introspector: Introspector, *, clock: Callable[[], float] = time.time
 ) -> TokenValidator:
@@ -172,17 +224,31 @@ def build_introspection_validator(
     rejection raises ``TokenValidationError`` -> mapped to 401 by the endpoint,
     before the planner is built.
     """
+    return _IntrospectionValidator(introspector, clock)
 
-    def _validate(token: str) -> None:
-        if not token:
-            raise TokenValidationError("missing bearer token")
-        result = introspector.introspect(token)
-        if not result.active:
-            raise TokenValidationError("token is not active")
-        if result.exp is not None and result.exp <= clock():
-            raise TokenValidationError("token has expired")
 
-    return _validate
+async def _validate_token(validator: TokenValidator, token: str) -> None:
+    """Invoke ``validator(token)``, dispatching to FastAPI's threadpool only
+    when necessary (#185).
+
+    A cache-MISS introspection makes a real, blocking HTTP call and must not
+    occupy the event loop inside the ``async`` ``chat_endpoint`` body -- so it
+    is run via ``run_in_threadpool``, the same mechanism ``get_planner_factory``
+    already relies on for the (sync) planner-factory dependency. A cache-HIT
+    (or the flag-off stub, which does no I/O at all) is cheap enough to call
+    directly, in-loop -- a threadpool round trip there would be pure overhead
+    on the common path.
+
+    ``validator`` optionally exposes ``peek_cached`` (see
+    ``_IntrospectionValidator``); its absence (the flag-off stub, or any
+    ``TokenValidator`` double without it) means "no fast path available" ->
+    call in-loop, byte-identical to before this dispatcher existed.
+    """
+    peek_cached = getattr(validator, "peek_cached", None)
+    if peek_cached is None or peek_cached(token) is not None:
+        validator(token)
+        return
+    await run_in_threadpool(validator, token)
 
 
 _token_introspector: TokenIntrospector | None = None
@@ -409,10 +475,30 @@ def _user_identity_from_token(token: str) -> str:
 
 @dataclass
 class Conversation:
-    """One multi-turn conversation, bound to the patient it was created for."""
+    """One multi-turn conversation, bound to the patient it was created for.
+
+    ``patient_name`` (#224 name-binding) is the bound patient's own display
+    name, resolved ONCE at creation time (see ``chat_endpoint``'s
+    ``_resolve_conversation_patient_name`` call) -- ``None`` when it could
+    not be resolved (e.g. an OpenEMR API error, or a planner double with no
+    ``resolve_patient_name`` capability). Fed into ``app.extraction
+    .detect_foreign_patient_reference``'s named cross-patient signals; a
+    ``None`` name simply disables those signals for this conversation,
+    falling back to #223's numeric-only detection.
+
+    ``patient_roster`` (#237 roster-based detection) is every OTHER
+    patient's display name, resolved LAZILY -- unlike ``patient_name``, NOT
+    at conversation-creation time -- see ``_stream_chat``'s
+    ``_roster_provider`` closure. ``None`` means "not yet resolved" (the
+    common case: most turns never mention another patient by name);
+    populated on first use and cached here so a second matching turn in the
+    SAME conversation does not pay the round trip again.
+    """
 
     conversation_id: str
     patient_id: int
+    patient_name: str | None = None
+    patient_roster: list[str] | None = None
     history: list[Turn] = field(default_factory=list)
 
 
@@ -429,8 +515,10 @@ class ConversationStore:
     def get(self, conversation_id: str) -> Conversation | None:
         return self._conversations.get(conversation_id)
 
-    def create(self, patient_id: int) -> Conversation:
-        conversation = Conversation(conversation_id=str(uuid.uuid4()), patient_id=patient_id)
+    def create(self, patient_id: int, patient_name: str | None = None) -> Conversation:
+        conversation = Conversation(
+            conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
+        )
         self._conversations[conversation.conversation_id] = conversation
         return conversation
 
@@ -580,6 +668,28 @@ def _record_span_best_effort(operation: str, write: Callable[[], object]) -> Non
         )
 
 
+def _tool_call_frame(trace_store: TraceStore, correlation_id: str, call: ToolCallTrace) -> str:
+    """Build the ``tool_call`` SSE frame for one dispatch and record its tool
+    span (best-effort), shared by both the streaming path (P2.12, called once
+    per ``ToolDispatched`` event AS it arrives) and the fallback replay path
+    (called once per ``result.trace`` entry after ``run()`` returns, for a
+    planner double that only implements ``run()``)."""
+
+    def _write_tool_span(call: ToolCallTrace = call) -> int:
+        return trace_store.record_tool_span(
+            correlation_id=correlation_id,
+            start_ts=call.start_ts,
+            end_ts=call.end_ts,
+            ok=call.error is None,
+            tool_name=call.tool.value,
+            args=call.args,
+            error_category=call.error,
+        )
+
+    _record_span_best_effort("tool_span", _write_tool_span)
+    return _sse(ChatEvent.TOOL_CALL, {"tool": call.tool.value, "args": call.args, "error": call.error})
+
+
 def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: list[LlmCallStats]) -> None:
     """Record one ``llm`` span per completed Ollama call (P4/#149), best-effort.
 
@@ -629,7 +739,68 @@ def _stream_chat(
             {"conversation_id": conversation.conversation_id, "correlation_id": correlation_id},
         )
 
-        result = planner.run(message)
+        # P2.12: prefer the real-time streaming path -- ``run_streaming``
+        # yields a ``tool_call`` frame as each tool actually dispatches,
+        # instead of replaying the whole trace after the loop finishes.
+        # ``getattr`` (not a direct attribute access) so a ``PlannerProtocol``
+        # double that only implements ``run()`` (all 8 existing fake-planner
+        # tests) falls back to that path untouched, rather than erroring on a
+        # missing attribute the protocol never promised. Computed
+        # unconditionally (a cheap attribute lookup, no side effect) so it is
+        # available below regardless of which branch runs next.
+        run_streaming = getattr(planner, "run_streaming", None)
+
+        def _roster_provider() -> list[str]:
+            # #237: resolved LAZILY -- this closure is only ever CALLED by
+            # detect_foreign_patient_reference when a "switch to <Name>"
+            # construction has already matched and isn't the bound patient,
+            # so a turn that never uses that construction never pays this
+            # round trip. Cached on the conversation so a second matching
+            # turn in the SAME conversation reuses it instead of re-fetching.
+            if conversation.patient_roster is None:
+                resolve_roster = getattr(planner, "resolve_patient_roster", None)
+                conversation.patient_roster = resolve_roster() if resolve_roster is not None else []
+            return conversation.patient_roster
+
+        # #223 (extended by #224, #237): deterministic PRE-dispatch
+        # cross-patient refusal guard, checked BEFORE the planner runs at
+        # all. Unlike #194's apply_subject_check below (which only rewrites
+        # the answer TEXT after tools have already been dispatched), this
+        # short-circuits BEFORE any tool dispatch or model call -- the only
+        # way to guarantee a forbidden tool never runs. ``conversation
+        # .patient_name`` (resolved once at conversation-creation time, see
+        # ``_resolve_conversation_patient_name``) enables the guard's named
+        # signals; ``None`` (name-binding unavailable) falls back to #223's
+        # numeric-only detection. ``_roster_provider`` enables the #237
+        # roster-based "switch to <Name>" signal. See app.extraction
+        # .detect_foreign_patient_reference.
+        cross_patient_reference_detected = detect_foreign_patient_reference(
+            message,
+            conversation.patient_id,
+            conversation.patient_name,
+            roster_provider=_roster_provider,
+        )
+        if cross_patient_reference_detected:
+            result = cross_patient_refusal_result()
+        elif run_streaming is not None:
+            result = None
+            for event in run_streaming(message):
+                if isinstance(event, ToolDispatched):
+                    yield _tool_call_frame(trace_store, correlation_id, event.trace)
+                elif isinstance(event, ReasoningDelta):
+                    # Unverified, provisional text -- forwarded as-is into
+                    # its own SSE frame so the UI can render it into a
+                    # separate "thinking" surface. It must never reach the
+                    # ``answer`` frame below, which only ever carries
+                    # ``result.answer`` (the post-extraction, verified text).
+                    yield _sse(ChatEvent.REASONING_DELTA, {"text": event.text})
+                elif isinstance(event, PlannerCompleted):
+                    result = event.result
+            if result is None:
+                raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
+        else:
+            result = planner.run(message)
+        assert result is not None  # mypy: the elif branch's loop widens result
         # Deterministic cross-patient subject-check (#194, follow-up to
         # #121): a small model can verbally attribute the bound patient's
         # data to a different, unqueried patient the question named/numbered
@@ -639,8 +810,29 @@ def _stream_chat(
         # Applied BEFORE the recency notice below (not after) so it only ever
         # scans the model's own prose -- never text a later deterministic step
         # appends (e.g. a stale record's literal date), which could otherwise
-        # coincidentally collide with a foreign patient number.
+        # coincidentally collide with a foreign patient number. Safe (a
+        # guaranteed no-op) to run unconditionally even when the #223 guard
+        # above already fired: ``cross_patient_refusal_result()``'s generic
+        # answer never echoes the foreign patient it detected, so this never
+        # finds anything to strip.
         result = apply_subject_check(result, question=message, patient_id=conversation.patient_id)
+        # Deterministic unresolvable-referent guard (#225): a demonstrative
+        # medication reference the question never names ("that new
+        # medication") with no prior turn in THIS conversation to anchor it
+        # -- a small model is prone to silently guessing the referent rather
+        # than asking. Skipped (not called unconditionally like
+        # apply_subject_check above) when the #223 guard already fired: a
+        # cross-patient refusal is a different, higher-priority question
+        # class, and overriding it here would silently discard that refusal
+        # even though its own answer text never happens to trip this guard.
+        # ``conversation.history`` reflects only PRIOR turns at this point --
+        # the current turn is appended further below, after this call -- so
+        # "no prior turns" here means genuinely the first message. See
+        # ``app.extraction.clarify_unresolvable_referent``.
+        if not cross_patient_reference_detected:
+            result = clarify_unresolvable_referent(
+                result, question=message, has_prior_turns=bool(conversation.history)
+            )
         # Deterministic recency notice (#153): append a caveat naming the
         # record's date for any stale record the planner returned this turn,
         # BEFORE the answer is emitted -- so a real user never sees years-old
@@ -655,24 +847,12 @@ def _stream_chat(
         # splicing answer text -- deferred (see ``apply_recency_notice``).
         result = apply_recency_notice(result, now=clock())
 
-        for call in result.trace:
-            yield _sse(
-                ChatEvent.TOOL_CALL,
-                {"tool": call.tool.value, "args": call.args, "error": call.error},
-            )
-
-            def _write_tool_span(call: ToolCallTrace = call) -> int:
-                return trace_store.record_tool_span(
-                    correlation_id=correlation_id,
-                    start_ts=call.start_ts,
-                    end_ts=call.end_ts,
-                    ok=call.error is None,
-                    tool_name=call.tool.value,
-                    args=call.args,
-                    error_category=call.error,
-                )
-
-            _record_span_best_effort("tool_span", _write_tool_span)
+        if run_streaming is None:
+            # Fallback path: the planner double only implements ``run()``, so
+            # the whole trace is only available now -- replay it as
+            # ``tool_call`` frames (bunched, same as pre-P2.12 behavior).
+            for call in result.trace:
+                yield _tool_call_frame(trace_store, correlation_id, call)
 
         _emit_llm_spans(trace_store, correlation_id, result.llm_calls)
 
@@ -734,6 +914,29 @@ def _stream_chat(
         )
 
 
+async def _resolve_conversation_patient_name(planner: PlannerProtocol) -> str | None:
+    """Best-effort resolve the bound patient's display name for a brand-new
+    conversation (#224 name-binding), via the planner's OPTIONAL
+    ``resolve_patient_name`` capability -- duck-typed via ``getattr``, the
+    same pattern ``_stream_chat`` already uses for ``run_streaming``: a
+    ``PlannerProtocol`` double that only implements ``run()`` simply has no
+    name to offer, and every caller of ``detect_foreign_patient_reference``
+    already treats ``None`` as "name-binding unavailable" (falls back to
+    #223's numeric-only signal) -- never a hard failure.
+
+    Dispatched to FastAPI's threadpool because a real resolve is a blocking
+    HTTP round trip (mirrors ``_validate_token``'s own threadpool dispatch,
+    same reason: this runs inside the ``async`` ``chat_endpoint`` body).
+    Called ONCE per conversation, at creation time -- never on resume (see
+    ``chat_endpoint``), so an established conversation never pays this cost
+    again on later turns.
+    """
+    resolve = getattr(planner, "resolve_patient_name", None)
+    if resolve is None:
+        return None
+    return await run_in_threadpool(resolve)
+
+
 def extract_bearer_token(authorization: str | None) -> str:
     """Pull the token out of an ``Authorization: Bearer <token>`` header.
 
@@ -760,7 +963,7 @@ async def chat_endpoint(
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
-        validator(token)
+        await _validate_token(validator, token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
 
@@ -780,6 +983,8 @@ async def chat_endpoint(
 
     user = _user_identity_from_token(token)
 
+    planner = planner_factory(request.patient_id)
+
     if request.conversation_id:
         conversation = store.get(request.conversation_id)
         if conversation is None:
@@ -790,9 +995,10 @@ async def chat_endpoint(
                 detail="conversation_id is bound to a different patient_id",
             )
     else:
-        conversation = store.create(request.patient_id)
-
-    planner = planner_factory(request.patient_id)
+        # #224: resolve the bound patient's own display name ONCE, at
+        # conversation-creation time -- see _resolve_conversation_patient_name.
+        patient_name = await _resolve_conversation_patient_name(planner)
+        conversation = store.create(request.patient_id, patient_name=patient_name)
 
     return StreamingResponse(
         _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user, clock),

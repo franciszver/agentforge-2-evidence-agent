@@ -247,6 +247,190 @@ def test_chat_maps_timeout_to_ollama_error():
         client.chat([{"role": "user", "content": "hi"}])
 
 
+# --- chat_stream: incremental reasoning deltas (#213) -----------------------
+#
+# ``chat_stream`` yields the same post-strip content ``chat()`` would return,
+# but incrementally instead of assembled -- the reasoning half of the
+# planner's two-call final-answer step (P2.9) streams into a UI "thinking"
+# zone token-by-token (#213) instead of popping in all at once. The hard
+# safety constraint: qwen3:4b's leaked chain-of-thought preamble (see the
+# module docstring's "Live-verified quirk" note) must NEVER reach a caller,
+# even one token of it -- so nothing is yielded until the ``</think>``
+# boundary is resolved (found, with its trailing whitespace consumed) or its
+# absence is confirmed (the stream ends with no ``</think>`` ever seen).
+
+
+def test_chat_stream_buffers_leaked_preamble_without_yielding_any_of_it():
+    """The FIRST value the generator ever produces must be post-boundary
+    content -- proves nothing from the leaked preamble ever reaches a caller,
+    not even a partial token of it."""
+    body = _ndjson(
+        {"message": {"content": "partial leaked chain of "}, "done": False},
+        {"message": {"content": "thought reasoning"}, "done": False},
+        {"message": {"content": "</think>"}, "done": False},
+        {"message": {"content": "final answer text"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    deltas = client.chat_stream([{"role": "user", "content": "hi"}])
+
+    first_delta = next(deltas)
+
+    assert first_delta == "final answer text"
+    assert "leaked" not in first_delta
+    assert "reasoning" not in first_delta
+
+
+def test_chat_stream_yields_multiple_deltas_incrementally_after_the_boundary():
+    """Once the boundary resolves, subsequent pieces stream one at a time
+    (not bunched into one final chunk) -- the real incremental behavior a
+    typewriter UI needs."""
+    body = _ndjson(
+        {"message": {"content": "leaked "}, "done": False},
+        {"message": {"content": "reasoning</think>"}, "done": False},
+        {"message": {"content": "\n\nHello"}, "done": False},
+        {"message": {"content": " world"}, "done": False},
+        {"message": {"content": "."}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    deltas = list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert deltas == ["Hello", " world", "."]
+    assert "".join(deltas) == "Hello world."
+    assert "leaked" not in "".join(deltas)
+
+
+def test_chat_stream_matches_chat_output_exactly_when_think_marker_spans_a_chunk_boundary():
+    """Parity check: the joined chat_stream() output must equal chat()'s
+    return value for the identical script -- including the tricky case where
+    the leaked preamble's terminator and the real content's leading
+    whitespace are split across different NDJSON chunks (chat()'s
+    ``_strip_leaked_thinking`` strips that whitespace via ``\\s*`` on the
+    fully-joined string; chat_stream() must reproduce the same result even
+    though it resolves the boundary before that whitespace has arrived)."""
+
+    def body() -> bytes:
+        return _ndjson(
+            {"message": {"content": "some leaked reasoning"}, "done": False},
+            {"message": {"content": "</think>"}, "done": False},
+            {"message": {"content": "\n\n"}, "done": False},
+            {"message": {"content": "hello"}, "done": True},
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body())
+
+    chat_client = _client(handler)
+    chat_result = chat_client.chat([{"role": "user", "content": "hi"}])
+
+    stream_client = _client(handler)
+    stream_result = "".join(stream_client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert chat_result == "hello"
+    assert stream_result == chat_result
+
+
+def test_chat_stream_confirms_absence_and_yields_whole_content_at_stream_end():
+    """No ``</think>`` marker ever appears -- nothing is yielded until the
+    stream ends (absence can only be "confirmed" once there is no more
+    stream left that could still contain it), then the whole content is
+    yielded as a single final delta."""
+    body = _ndjson(
+        {"message": {"content": "Hello"}, "done": False},
+        {"message": {"content": ", world."}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    deltas = list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert deltas == ["Hello, world."]
+
+
+def test_chat_stream_sends_think_false_stream_true_and_model_same_as_chat():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_ndjson({"message": {"content": "ok"}, "done": True}))
+
+    client = _client(handler, model="qwen3:4b")
+    list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["think"] is False
+    assert body["stream"] is True
+    assert body["model"] == "qwen3:4b"
+
+
+def test_chat_stream_records_call_stats_with_tokens_model_and_timing():
+    body = _ndjson(
+        {"message": {"content": "hello"}, "done": False},
+        {"message": {"content": ""}, "done": True, "prompt_eval_count": 12, "eval_count": 7},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler, model="qwen3:4b")
+    list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert len(client.call_stats) == 1
+    stats = client.call_stats[0]
+    assert stats.model == "qwen3:4b"
+    assert stats.ok is True
+    assert stats.tokens_in == 12
+    assert stats.tokens_out == 7
+
+
+def test_chat_stream_maps_http_500_to_ollama_error_and_records_failed_call_stats():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal stack trace detail")
+
+    client = _client(handler)
+    with pytest.raises(OllamaError) as excinfo:
+        list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert "internal stack trace detail" not in str(excinfo.value)
+    assert len(client.call_stats) == 1
+    assert client.call_stats[0].ok is False
+
+
+def test_chat_stream_maps_connection_error_to_ollama_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _client(handler)
+    with pytest.raises(OllamaError):
+        list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+
+def test_chat_does_not_gain_a_chat_stream_call_stats_entry():
+    """chat() stays byte-identical/additive-only: calling it must not touch
+    chat_stream's machinery or record more than the one call_stats entry it
+    always has."""
+    body = _ndjson({"message": {"content": "hello"}, "done": True})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    result = client.chat([{"role": "user", "content": "hi"}])
+
+    assert result == "hello"
+    assert len(client.call_stats) == 1
+
+
 def test_from_settings_builds_client_targeting_configured_base_url_and_model():
     settings = Settings(ollama_base_url="http://ollama.example:11434")
 

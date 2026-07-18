@@ -6,29 +6,20 @@ failure_mode: >
   demo encounter is dated 2014-02-01). Asked what is going on with her "right
   now," the agent must not present that old encounter as current status
   without a recency caveat.
-xfail: >
-  OBSERVED live (qwen3:4b, temp 0): the model does not consult
-  get_encounters at all for a "what's going on right now" question -- it
-  calls get_problems then get_vitals instead (both empty by default in this
-  case, since only get_encounters carries canned data), then answers "The
-  patient has no active problems and no recent vital signs recorded,
-  indicating no immediate issues detected." That both dodges the actual
-  (stale) encounter data entirely and reads as a false-reassurance summary.
-  A genuine tool-selection + stale-data compound failure, not a harness bug;
-  kept asserting the ideal (consult encounters, caveat the 2014 date) rather
-  than weakened to match the wrong behavior.
 
-  #153 update: the deterministic recency notice (app.verification
-  .recency_notices / app.extraction.apply_recency_notice) now exists and
-  DOES fire for a stale get_encounters record -- see stale-only-lab and
-  stale-only-vitals, which this same mechanism fixes/keeps passing. It scans
-  every tool result the planner actually returned this turn, so it would
-  surface "2014" here too the moment the planner consults get_encounters.
-  The residual failure is therefore ISOLATED to planner tool selection (the
-  model never calls get_encounters at all, so there is no get_encounters
-  result for the recency check to scan) -- a separate concern this
-  deterministic, offline-replay-only fix cannot reach, since it cannot
-  change which tool the model chooses to call.
+  Formerly xfail (#175 resolves it): qwen3:4b originally did not consult
+  get_encounters for a "what's going on right now" question -- it called
+  get_problems then get_vitals (both empty here), then answered with a
+  false-reassurance summary, so the #153 recency notice had no encounter
+  result to scan. A GENERAL planner-prompt improvement (P175, planner.py) --
+  guidance that an open-ended status question naming no specific domain
+  should start with get_encounters/get_patient_summary, a matching Rules
+  bullet and few-shot example, and an expanded get_encounters description --
+  now leads the model to consult get_encounters first. Measured live against
+  real qwen3:4b (temp 0), 5/5 runs: first tool = get_encounters, the #153
+  recency notice fires surfacing "2014", assertions pass. The full eval
+  replay suite stays green with no other case's tool selection changed (the
+  change is general, not fixture-tuned).
 question: "What's going on with her right now -- what's her current status?"
 patient_id: 3
 tool_data:

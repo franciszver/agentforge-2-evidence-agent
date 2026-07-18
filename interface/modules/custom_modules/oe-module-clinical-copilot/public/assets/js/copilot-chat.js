@@ -10,12 +10,26 @@
  * the P2.13 token broker (public/ajax.php) and cached for the panel session.
  *
  * "Streaming" here means incremental rendering of the SSE stream's named
- * events as they arrive over the wire (conversation ack, then the tool_call/
- * answer/done frames once the planner loop completes) -- the agent's
- * `answer` frame carries the complete final text in one event, not
- * token-by-token deltas (see app/chat.py's SSE frame contract), so there is
- * no typewriter effect to render; the UI reflects the real granularity of
- * the backend contract instead of faking one it doesn't have.
+ * events as they arrive over the wire (conversation ack, tool_call frames,
+ * reasoning_delta frames, then answer/verification/done once the planner
+ * loop completes). The `answer` frame still only ever carries the complete,
+ * VERIFIED final text in one event -- that is a deliberate safety property
+ * (see the P213 reasoning zone below), not a missing feature: the
+ * `extract(FinalAnswer)` call that produces it cannot stream (schema decode
+ * needs the whole JSON). The `reasoning_delta` frame is what streams
+ * token-by-token, into its own clearly-labeled surface.
+ *
+ * P213 reasoning zone: the model's free-text reasoning (`reasoning_delta`
+ * frames, `app/chat.py`'s SSE frame contract) types into a separate
+ * "Reasoning locally (Qwen3-4B)..." zone as it arrives, distinct from the
+ * answer bubble -- see createReasoningZone below. This is UNVERIFIED,
+ * provisional model text; the answer bubble renders ONLY from the `answer`
+ * frame's already-verified text, never from any reasoning_delta text. The
+ * #208 generic "Reasoning locally..." spinner stage hands off to this live
+ * zone the instant the first reasoning_delta frame arrives, so the two are
+ * never shown redundantly at once. Once the answer renders, the reasoning
+ * zone stays visible above it (no collapse/toggle -- the simplest option
+ * that satisfies "don't hide it, don't show a redundant spinner").
  *
  * Security: assistant/user text is always rendered via `textContent`
  * (appendMessage below), never `innerHTML` -- model output and patient
@@ -200,6 +214,192 @@
                 if (el.parentNode) {
                     el.parentNode.removeChild(el);
                 }
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------
+    // #213 live reasoning zone: the `reasoning_delta` SSE frame's text
+    // types into this SEPARATE, clearly-labeled surface -- never the answer
+    // bubble. This is the owner's non-negotiable UX rule: unverified,
+    // provisional model text must never occupy the authoritative answer
+    // slot (see the module docstring). `append` uses `textContent +=`, not
+    // innerHTML, so streamed reasoning renders as inert text exactly like
+    // every other model/record-derived string in this file.
+    // -------------------------------------------------------------------
+    function createReasoningZone(container) {
+        var el = document.createElement('div');
+        el.className = 'copilot-reasoning copilot-reasoning-active';
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+
+        var label = document.createElement('div');
+        label.className = 'copilot-reasoning-label';
+        label.textContent = THINKING_STAGE_LABELS.reasoning;
+        el.appendChild(label);
+
+        var text = document.createElement('div');
+        text.className = 'copilot-reasoning-text';
+        el.appendChild(text);
+
+        container.appendChild(el);
+        container.scrollTop = container.scrollHeight;
+
+        // Reading scrollHeight forces a synchronous reflow; a reasoning
+        // response streams hundreds of tokens, so coalesce the auto-scroll
+        // to at most one reflow per animation frame instead of one per
+        // token. The text append itself stays synchronous (callers/tests
+        // observe it immediately). Falls back to an immediate scroll where
+        // requestAnimationFrame is unavailable.
+        var raf = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+        var scrollPending = false;
+        function scheduleScroll() {
+            if (!raf) {
+                container.scrollTop = container.scrollHeight;
+                return;
+            }
+            if (scrollPending) {
+                return;
+            }
+            scrollPending = true;
+            raf(function () {
+                scrollPending = false;
+                container.scrollTop = container.scrollHeight;
+            });
+        }
+
+        return {
+            append: function (delta) {
+                text.textContent += delta;
+                scheduleScroll();
+            },
+            // Stops the "actively streaming" cursor treatment once the
+            // verified answer has arrived -- the zone itself stays visible
+            // (see the module docstring's post-answer treatment note).
+            finalize: function () {
+                el.classList.remove('copilot-reasoning-active');
+            },
+            remove: function () {
+                if (el.parentNode) {
+                    el.parentNode.removeChild(el);
+                }
+            }
+        };
+    }
+
+    // -------------------------------------------------------------------
+    // #219 paced reveal: buffers `reasoning_delta` text and drains it into
+    // the zone at a steady, readable rate instead of appending it the
+    // instant it arrives. The tokens have genuinely already arrived (see
+    // the #213 section of the module docstring) -- this paces the *reveal*
+    // for readability, so the zone stays smoothly "typing" whether Ollama
+    // delivers deltas spread out, in a sub-20ms burst, or as a single frame
+    // at EOF. ~40 chars/sec (2 chars every 50ms) sits in the 30-45 chars/sec
+    // readable target.
+    //
+    // Design decision (documented per the issue's acceptance criteria): the
+    // verified `answer` frame must never be blocked by more than a small,
+    // fixed cap. REVEAL_CAP_MS bounds how long waitForDrain() below may wait
+    // before force-flushing whatever remains of the buffer -- NOT a
+    // fast-forward-on-answer-arrival approach, because in this app's
+    // request/response shape the whole SSE stream (reasoning_delta frames
+    // AND the answer frame) is fully received before createChatController's
+    // frame handler ever sees the `answer` frame (consumeSSEStream resolves
+    // its promise only after the reader reports done) -- fast-forwarding
+    // the instant the answer frame is *observed* would collapse the paced
+    // reveal to ~0ms and defeat the feature. Bounding total drain time
+    // instead keeps the reveal genuinely paced while still guaranteeing the
+    // answer renders within REVEAL_CAP_MS.
+    //
+    // `prefers-reduced-motion` skips pacing entirely -- push() reveals the
+    // full delta immediately and never starts a timer (same media-query
+    // string the #208/#213 CSS already checks).
+    // -------------------------------------------------------------------
+    var REVEAL_TICK_MS = 50;
+    var REVEAL_CHARS_PER_TICK = 2; // ~40 chars/sec
+    var REVEAL_CAP_MS = 1500;
+
+    function prefersReducedMotion() {
+        return typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+
+    function createReasoningRevealer(zone) {
+        var buffer = '';
+        var timer = null;
+        var startedAt = 0;
+        var waiters = [];
+
+        function notifyWaiters() {
+            var pending = waiters;
+            waiters = [];
+            for (var i = 0; i < pending.length; i++) {
+                pending[i]();
+            }
+        }
+
+        function stopTimer() {
+            if (timer !== null) {
+                clearInterval(timer);
+                timer = null;
+            }
+        }
+
+        function tick() {
+            var chunk = buffer.slice(0, REVEAL_CHARS_PER_TICK);
+            buffer = buffer.slice(chunk.length);
+            if (chunk) {
+                zone.append(chunk);
+            }
+            var capped = (Date.now() - startedAt) >= REVEAL_CAP_MS;
+            if (capped && buffer.length > 0) {
+                // Force-flush the remainder rather than let a large backlog
+                // keep gating the answer past the documented cap.
+                zone.append(buffer);
+                buffer = '';
+            }
+            if (buffer.length === 0) {
+                stopTimer();
+                notifyWaiters();
+            }
+        }
+
+        return {
+            // Buffers `delta` and (re)starts the drain timer if it is not
+            // already running.
+            push: function (delta) {
+                if (prefersReducedMotion()) {
+                    zone.append(delta);
+                    return;
+                }
+                buffer += delta;
+                if (timer === null) {
+                    startedAt = Date.now();
+                    timer = setInterval(tick, REVEAL_TICK_MS);
+                }
+            },
+            // Resolves once the buffer has fully drained, or REVEAL_CAP_MS
+            // has elapsed since the current drain started (whichever comes
+            // first -- tick() above force-flushes any remainder at the cap
+            // before resolving). Resolves immediately if nothing is
+            // pending.
+            waitForDrain: function () {
+                if (timer === null) {
+                    return Promise.resolve();
+                }
+                return new Promise(function (resolve) {
+                    waiters.push(resolve);
+                });
+            },
+            // Hard stop for reset()/error paths, where the zone itself is
+            // about to be detached: clears the timer and drops the buffer
+            // without revealing it, so no further tick can mutate the (soon
+            // detached) zone -- same "null the handle" cleanup discipline as
+            // #208's stopThinking().
+            stop: function () {
+                stopTimer();
+                buffer = '';
+                notifyWaiters();
             }
         };
     }
@@ -515,15 +715,24 @@
 
         var commentWrap = document.createElement('div');
         commentWrap.className = 'copilot-feedback-comment copilot-hidden';
+        // #172: input-side PHI deterrent (complements #157's export-side
+        // scrub of this same comment). A placeholder alone disappears the
+        // moment the clinician starts typing, so this persistent hint stays
+        // visible for the life of the comment box -- textContent only, no
+        // patient/model data ever flows into it (static copy).
+        var commentHint = document.createElement('div');
+        commentHint.className = 'copilot-feedback-comment-hint';
+        commentHint.textContent = 'Feedback about the response only -- please avoid patient names, dates of birth, or other identifying details.';
         var commentInput = document.createElement('textarea');
         commentInput.className = 'copilot-feedback-comment-input';
-        commentInput.setAttribute('placeholder', 'What went wrong? (optional)');
+        commentInput.setAttribute('placeholder', 'What went wrong with the response? (optional)');
         commentInput.setAttribute('maxlength', '2000');
         commentInput.setAttribute('aria-label', 'Feedback comment');
         var commentSendBtn = document.createElement('button');
         commentSendBtn.type = 'button';
         commentSendBtn.className = 'copilot-feedback-comment-send';
         commentSendBtn.textContent = 'Send';
+        commentWrap.appendChild(commentHint);
         commentWrap.appendChild(commentInput);
         commentWrap.appendChild(commentSendBtn);
 
@@ -539,6 +748,7 @@
             downBtn: downBtn,
             status: status,
             commentWrap: commentWrap,
+            commentHint: commentHint,
             commentInput: commentInput,
             commentSendBtn: commentSendBtn
         };
@@ -651,9 +861,43 @@
         // mid-flight indicator (and its fallback timer) even though the
         // indicator itself is a local var inside sendMessage.
         var activeThinking = null;
+        // #213: same pattern as activeThinking, for the live reasoning zone
+        // -- null when no send has streamed any reasoning yet. Lets reset()
+        // clear a mid-flight zone even though it is a local var inside
+        // sendMessage.
+        var activeReasoningZone = null;
+        // #221: per-turn currency guard. sendMessage() captures
+        // `myTurn = ++turnSeq` at the start of a turn; reset() bumps turnSeq
+        // again, so an in-flight turn's `myTurn` no longer equals `turnSeq`.
+        // Every DOM-mutating continuation in sendMessage checks this before
+        // writing, so a turn superseded by reset() (a patient switch firing
+        // mid-wait, whose abandoned stream keeps delivering frames after the
+        // transcript has moved on) cannot write its stale
+        // answer/verification/reasoning into the current transcript. reset()
+        // is the ONLY supersession: the send-lock below prevents a second,
+        // overlapping send from starting while one is in flight, so no turn
+        // is ever superseded by another sendMessage(). See issue #221.
+        var turnSeq = 0;
         var redirect = options.redirectImpl || function (url) {
             window.location.assign(url);
         };
+
+        // #221 send-lock: while a turn is streaming, the message input and its
+        // submit button are disabled so the user cannot start a second,
+        // overlapping send. That is what makes reset() the only supersession
+        // (see turnSeq above): a superseded turn skips its own cleanup, so if
+        // an overlapping send could supersede an in-flight turn it would strand
+        // that turn's spinner/reasoning zone in the transcript. Re-enabled on
+        // every sendMessage() exit path and by reset(). The submit button is
+        // looked up from the form so no extra option needs threading through;
+        // it is absent in unit tests that pass a bare <form>, hence the guard.
+        function setSendEnabled(enabled) {
+            options.inputEl.disabled = !enabled;
+            var submitBtn = options.formEl.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = !enabled;
+            }
+        }
 
         function ensureToken() {
             if (cachedToken) {
@@ -683,6 +927,16 @@
         }
 
         function sendMessage(text) {
+            // #221: this turn's identity -- see turnSeq above. Only reset()
+            // supersedes an in-flight turn (the send-lock prevents overlapping
+            // sends); stale() reports whether reset() has since fired.
+            var myTurn = ++turnSeq;
+            function stale() {
+                return myTurn !== turnSeq;
+            }
+            // #221 send-lock: disable input/submit for the duration of this
+            // turn; every exit path below re-enables it (see setSendEnabled).
+            setSendEnabled(false);
             // The first-open "about" explainer (P2.20) gives way to the
             // transcript as soon as a conversation starts -- a no-op on
             // every send after the first (already hidden) and if no about
@@ -713,6 +967,28 @@
             }
             activeThinking = { stop: stopThinking };
 
+            // #213: created lazily on the FIRST reasoning_delta frame (see
+            // the frame handler below), so a turn with no reasoning ever
+            // streamed (or a fallback planner double with no reasoning_delta
+            // support -- see app.planner's module docstring) never shows an
+            // empty zone.
+            var reasoningZone = null;
+            // #219: paces reasoningZone.append() calls -- see
+            // createReasoningRevealer above. null until the first
+            // reasoning_delta frame creates the zone, alongside it.
+            var reasoningRevealer = null;
+            function clearReasoningZone() {
+                if (reasoningRevealer) {
+                    reasoningRevealer.stop();
+                    reasoningRevealer = null;
+                }
+                if (reasoningZone) {
+                    reasoningZone.remove();
+                    reasoningZone = null;
+                }
+                activeReasoningZone = null;
+            }
+
             return ensureToken().then(function (token) {
                 return options.fetchImpl(options.proxyUrl, {
                     method: 'POST',
@@ -732,7 +1008,15 @@
                 // generic.
                 if (resp.status === 400) {
                     return resp.json().then(function (data) {
+                        // #221: this turn may have been superseded (e.g. a
+                        // patient switch called reset()) while the 400 body
+                        // was being parsed -- do not write into the current
+                        // transcript on its behalf (reset() re-enables input).
+                        if (stale()) {
+                            return;
+                        }
                         stopThinking();
+                        setSendEnabled(true);
                         var noPatient = data && data.reason === 'no_patient_in_session';
                         appendMessage(
                             options.messagesEl,
@@ -740,7 +1024,11 @@
                             noPatient ? NO_PATIENT_MESSAGE : UNAVAILABLE_MESSAGE
                         );
                     }).catch(function () {
+                        if (stale()) {
+                            return;
+                        }
                         stopThinking();
+                        setSendEnabled(true);
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                     });
                 }
@@ -751,6 +1039,14 @@
                 var verificationData = null;
                 var hadError = false;
                 return consumeSSEStream(resp.body.getReader(), function (frame) {
+                    // #221: this turn's stream is not aborted on reset() -- the
+                    // abandoned request keeps delivering frames after a patient
+                    // switch cleared the transcript. A superseded turn's late
+                    // frame (e.g. reasoning_delta/tool_call) must not touch the
+                    // DOM or recreate the thinking/reasoning zone.
+                    if (stale()) {
+                        return;
+                    }
                     if (frame.event === 'conversation' && frame.data) {
                         if (typeof frame.data.conversation_id === 'string') {
                             conversationId = frame.data.conversation_id;
@@ -766,6 +1062,20 @@
                         // frame, does the actual work of the transition in
                         // the current dev stack.
                         thinking.setStage('reasoning');
+                    } else if (frame.event === 'reasoning_delta' && frame.data && typeof frame.data.text === 'string') {
+                        if (!reasoningZone) {
+                            // #213/#208 handoff: the generic spinner gives
+                            // way to the live typing zone the instant real
+                            // reasoning tokens start arriving -- never shown
+                            // redundantly alongside it.
+                            stopThinking();
+                            reasoningZone = createReasoningZone(options.messagesEl);
+                            reasoningRevealer = createReasoningRevealer(reasoningZone);
+                            activeReasoningZone = { stop: clearReasoningZone };
+                        }
+                        // #219: paced reveal, not an immediate append -- see
+                        // createReasoningRevealer.
+                        reasoningRevealer.push(frame.data.text);
                     } else if (frame.event === 'answer' && frame.data && typeof frame.data.answer === 'string') {
                         answerText = frame.data.answer;
                     } else if (frame.event === 'verification' && frame.data) {
@@ -775,22 +1085,68 @@
                         hadError = true;
                     }
                 }).then(function () {
-                    stopThinking();
+                    // #221: guards the hadError/no-op branches below (the
+                    // answer branch's own render point is guarded again
+                    // after the additional waitForDrain() await, since
+                    // reset() can fire during that wait even when it did not
+                    // fire before it).
+                    if (stale()) {
+                        return;
+                    }
                     if (answerText) {
-                        appendMessage(options.messagesEl, 'assistant', answerText);
-                        // Pending verification payloads (verdict null) render
-                        // nothing; a populated one adds the badge/chips/banner.
-                        renderVerification(options.messagesEl, verificationData);
-                        if (responseCorrelationId) {
-                            var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
-                            attachFeedbackHandlers(widget, responseCorrelationId, {
-                                context: options.context,
-                                ensureToken: ensureToken,
-                                fetchImpl: options.fetchImpl,
-                                feedbackUrl: options.feedbackUrl
-                            });
-                        }
-                    } else if (hadError) {
+                        // #219: the verified answer must not be blocked on
+                        // the full paced reveal -- wait only up to
+                        // REVEAL_CAP_MS (waitForDrain force-flushes and
+                        // resolves at the cap; resolves immediately if no
+                        // reasoning was ever streamed).
+                        var drainWait = reasoningRevealer ? reasoningRevealer.waitForDrain() : Promise.resolve();
+                        return drainWait.then(function () {
+                            // #221: reset() (a patient switch) may have fired
+                            // WHILE waiting for the paced reveal to drain --
+                            // this is the primary race the guard defends
+                            // against: the answer/verification must not
+                            // render into a transcript that has since been
+                            // cleared for a different patient (reset()
+                            // re-enables input on that path).
+                            if (stale()) {
+                                return;
+                            }
+                            stopThinking();
+                            setSendEnabled(true);
+                            // #213: the verified answer has arrived -- stop
+                            // the zone's "actively streaming" cursor
+                            // treatment, but keep it visible above the
+                            // answer bubble (minimal post-answer treatment;
+                            // see the module docstring).
+                            if (reasoningZone) {
+                                reasoningZone.finalize();
+                            }
+                            activeReasoningZone = null;
+                            appendMessage(options.messagesEl, 'assistant', answerText);
+                            // Pending verification payloads (verdict null)
+                            // render nothing; a populated one adds the
+                            // badge/chips/banner.
+                            renderVerification(options.messagesEl, verificationData);
+                            if (responseCorrelationId) {
+                                var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
+                                attachFeedbackHandlers(widget, responseCorrelationId, {
+                                    context: options.context,
+                                    ensureToken: ensureToken,
+                                    fetchImpl: options.fetchImpl,
+                                    feedbackUrl: options.feedbackUrl
+                                });
+                            }
+                        });
+                    }
+                    stopThinking();
+                    setSendEnabled(true);
+                    if (hadError) {
+                        // #213: an errored turn never gets a verified answer,
+                        // so any in-flight (necessarily unverified/partial)
+                        // reasoning text is cleared rather than left stuck
+                        // above the error bubble -- same treatment as the
+                        // #208 spinner on this branch.
+                        clearReasoningZone();
                         appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
                         // Self-heal: drop the conversation id so the NEXT send
                         // starts a fresh conversation instead of retrying the
@@ -803,16 +1159,40 @@
                         // that still-open panel repeats the identical rejection
                         // and the panel wedges permanently.
                         conversationId = null;
+                    } else {
+                        // #213: neither a verified answer nor an error frame
+                        // (e.g. an empty-string answer payload, or a clean
+                        // mid-stream truncation after reasoning). Any zone
+                        // built from the streamed reasoning would otherwise be
+                        // orphaned in the DOM with its cursor still blinking,
+                        // and activeReasoningZone left dangling -- clear it,
+                        // like the hadError branch does.
+                        clearReasoningZone();
                     }
                 });
             }).catch(function () {
+                // #221: a superseded turn's request/stream failure must not
+                // paint the generic error bubble into a transcript that has
+                // since moved on to a different patient/turn (reset()
+                // re-enables input on that path).
+                if (stale()) {
+                    return;
+                }
                 stopThinking();
+                setSendEnabled(true);
+                clearReasoningZone();
                 appendMessage(options.messagesEl, 'assistant', UNAVAILABLE_MESSAGE);
             });
         }
 
         function handleSubmit(evt) {
             evt.preventDefault();
+            // #221 send-lock: a send is already streaming (input disabled) --
+            // ignore the re-submit rather than starting a second, overlapping
+            // turn that would supersede and orphan the first turn's spinner.
+            if (options.inputEl.disabled) {
+                return;
+            }
             var text = options.inputEl.value.trim();
             if (!text) {
                 return;
@@ -835,6 +1215,12 @@
         // rejects a mismatched pid. The cached bearer token is user-scoped,
         // not patient-scoped, so it is intentionally kept.
         function reset() {
+            // #221: invalidate any turn currently in flight -- see turnSeq
+            // above. Any `myTurn` captured by an earlier sendMessage() call
+            // no longer equals turnSeq after this, so that turn's pending
+            // continuations (and any late frames its still-open stream goes
+            // on to deliver) become no-ops.
+            turnSeq++;
             // #208: a reset() during an in-flight send (e.g. a patient
             // switch mid-wait) must stop the fallback timer too, not just
             // rely on the textContent clear below to visually drop the
@@ -842,6 +1228,19 @@
             if (activeThinking) {
                 activeThinking.stop();
             }
+            // #213: same reasoning as activeThinking above -- clear a
+            // mid-flight reasoning zone explicitly (not just relying on the
+            // messagesEl.textContent wipe below) so a late, stale
+            // reasoning_delta from an abandoned request cannot mutate a
+            // detached node's text for no visible effect.
+            if (activeReasoningZone) {
+                activeReasoningZone.stop();
+            }
+            // #221 send-lock: reset() supersedes any in-flight turn (whose own
+            // exit paths are now skipped by the stale() guard), so it must
+            // re-enable the input itself -- otherwise a patient switch mid-send
+            // would leave the new patient's panel permanently unable to send.
+            setSendEnabled(true);
             conversationId = null;
             options.messagesEl.textContent = '';
             // A fresh conversation is a fresh first-open: bring the about
@@ -915,6 +1314,8 @@
         consumeSSEStream: consumeSSEStream,
         appendMessage: appendMessage,
         createThinkingIndicator: createThinkingIndicator,
+        createReasoningZone: createReasoningZone,
+        createReasoningRevealer: createReasoningRevealer,
         createChatController: createChatController,
         verdictBadgeInfo: verdictBadgeInfo,
         renderVerdictBadge: renderVerdictBadge,
