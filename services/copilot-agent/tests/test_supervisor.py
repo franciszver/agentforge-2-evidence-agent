@@ -117,16 +117,54 @@ def test_evidence_request_has_a_worker_span_parented_under_the_supervisor_span(c
     assert records, "supervisor must log handoff events"
     assert all(r.correlation_id == correlation_id for r in records)
 
+    received = [r for r in records if r.getMessage() == "supervisor_received"]
+    assert len(received) == 1, "exactly one supervisor_received event per handle() call"
+    supervisor_span_id = received[0].span_id
+
     handoff_events = {r.event: r for r in records if hasattr(r, "event")}
     assert "handoff_start" in handoff_events and "handoff_result" in handoff_events
     start = handoff_events["handoff_start"]
     completed = handoff_events["handoff_result"]
     assert start.worker == "evidence-retriever"
     assert start.span_id == completed.span_id
-    # The worker span's parent MUST be the supervisor's own (root) span --
-    # never None, never equal to its own span id.
-    assert start.parent_span_id is not None
+    # The worker span's parent MUST be the supervisor's OWN span id exactly
+    # -- not merely non-None/not-self, which a wrong-but-non-None parent
+    # would also satisfy.
+    assert start.parent_span_id == supervisor_span_id
     assert start.parent_span_id != start.span_id
+
+
+# --- unregistered sub-task type: fail loudly, never silently default
+
+
+@dataclass(frozen=True)
+class _UnregisteredSubTask:
+    """A well-formed sub-task carrying patient-shaped content but registered
+    with no worker -- ``Supervisor`` must reject it outright, never fall
+    back to some default worker, and must not have logged anything about
+    it before raising (see module docstring's no-PHI discipline)."""
+
+    note: str
+
+
+def test_unregistered_sub_task_type_raises_value_error_without_logging(caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO)
+    intake = _FakeWorker(name="intake-extractor")
+    retriever = _FakeWorker(name="evidence-retriever")
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever)
+    sub_task = _UnregisteredSubTask(note=_PHI_MARKER)
+
+    with pytest.raises(ValueError, match="_UnregisteredSubTask"):
+        supervisor.handle(sub_task)
+
+    assert intake.calls == []
+    assert retriever.calls == []
+    # Rejected before any handoff -- no span opened, nothing logged at all.
+    assert _handoff_records(caplog) == []
+    for record in caplog.records:
+        assert _PHI_MARKER not in record.getMessage()
+        for value in vars(record).values():
+            assert _PHI_MARKER not in str(value)
 
 
 # --- (c): handoff logs never carry PHI
