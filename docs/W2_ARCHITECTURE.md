@@ -67,7 +67,7 @@ flowchart TB
             ingest["Ingestion tool: attach_and_extract()"]
         end
 
-        vlm["Ollama — VLM (7B-class, e.g. qwen2.5-vl)"]
+        vlm["Ollama — VLM (7B-class, e.g. qwen2.5vl)"]
         llm["Ollama — Qwen3-4B (Phase 1, planner/extraction)"]
         embed["Embedding model (CPU, e.g. nomic-embed-text)"]
         rerank["Local reranker (CPU cross-encoder)"]
@@ -132,10 +132,14 @@ Both extraction targets follow the Phase 1 pattern established by
 VLM's output is never accepted as free text, only as a validated instance
 of one of these models. Any field the model cannot read from the document
 is `None` ("not found"), never guessed; this is the extraction-side
-equivalent of Phase 1's citation-checker fail-closed discipline.
+equivalent of Phase 1's citation-checker fail-closed discipline. Like every
+existing tool schema in `app/schemas/`, these extend `ToolSchemaModel`
+(`app/schemas/common.py`), which provides `frozen=True` + `extra="forbid"`
+so malformed extraction output fails fast rather than silently dropping
+fields.
 
 ```python
-class Citation(BaseModel):
+class Citation(ToolSchemaModel):
     source_type: Literal["lab_pdf", "intake_form"]
     source_id: str            # stored source-document identifier
     page_or_section: str      # e.g. "page 2" or "Section: Medications"
@@ -143,7 +147,7 @@ class Citation(BaseModel):
     quote_or_value: str       # the literal text/value the model read
 
 
-class LabResultFact(BaseModel):
+class LabResultFact(ToolSchemaModel):
     test: str
     value: str | None
     unit: str | None
@@ -153,7 +157,7 @@ class LabResultFact(BaseModel):
     citation: Citation
 
 
-class IntakeFormFact(BaseModel):
+class IntakeFormFact(ToolSchemaModel):
     demographics: dict[str, str | None]   # name, dob, sex — as legible
     chief_concern: str | None
     medications: list[str]
@@ -285,7 +289,7 @@ projected ones:
 | GPU | RTX 5060 Laptop, 8GB VRAM | Single 24-48GB+ card |
 | RAM | 32GB | (not constraining at this tier) |
 | Model residency | **Sequential VLM⇄LLM swap** — the VLM and Qwen3-4B are not resident simultaneously; embeddings and the reranker run on CPU to leave the full 8GB for whichever inference model is currently loaded | **All models resident simultaneously** — VLM, planner/extraction LLM, embeddings, and reranker all on-GPU, no swap latency |
-| VLM tier | 7B-class (e.g. `qwen2.5-vl:7b`) | Larger VLM (model swapped in as a config value, not a code change) |
+| VLM tier | 7B-class (e.g. `qwen2.5vl:7b`) | Larger VLM (model swapped in as a config value, not a code change) |
 | Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §"SLOs", pending P3G.4 (#21)) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
 
 **Model tiering is a config value, not a code fork.** The same extraction
