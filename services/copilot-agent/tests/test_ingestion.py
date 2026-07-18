@@ -24,10 +24,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pypdfium2 as pdfium
 import pytest
 
 from app.ingestion import (
+    MAX_PAGE_POINTS,
+    MAX_PAGES,
     ExtractedLabRow,
+    IngestionError,
     IngestionResult,
     LabPageExtraction,
     LocalIngestionStore,
@@ -38,6 +42,18 @@ from app.ollama_client import OllamaError
 from app.schemas.ingestion import LabResultFact
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lab_report_synthetic.pdf"
+
+
+def _build_pdf(path: Path, page_sizes: list[tuple[float, float]]) -> Path:
+    """Build a cheap, valid, blank PDF at ``path`` with one page per entry in
+    ``page_sizes`` -- no fpdf2/reportlab needed, pypdfium2 (already a main
+    dependency) can author minimal PDFs directly."""
+    pdf = pdfium.PdfDocument.new()
+    for width, height in page_sizes:
+        pdf.new_page(width, height)
+    pdf.save(str(path))
+    pdf.close()
+    return path
 
 # Mirrors scripts/generate_lab_pdf_fixture.py's page content exactly -- the
 # scripted double stands in for what a real VLM reading these page images
@@ -230,3 +246,75 @@ def test_local_store_generates_distinct_source_ids(tmp_path: Path):
     second = store.save_source_document(1, "lab_pdf", _FIXTURE_PATH)
 
     assert first != second
+
+
+# ---------------------------------------------------------------------------
+# 5. Security gate: bounded PDF rendering (DoS) -- MAX_PAGES / MAX_PAGE_POINTS
+# ---------------------------------------------------------------------------
+
+
+def test_render_rejects_a_pdf_exceeding_max_pages(tmp_path: Path):
+    oversized = _build_pdf(tmp_path / "many_pages.pdf", [(200.0, 200.0)] * (MAX_PAGES + 1))
+
+    with pytest.raises(IngestionError, match=str(MAX_PAGES)):
+        render_pdf_pages_to_png(oversized)
+
+
+def test_render_accepts_a_pdf_at_exactly_max_pages(tmp_path: Path):
+    at_limit = _build_pdf(tmp_path / "at_limit.pdf", [(200.0, 200.0)] * MAX_PAGES)
+
+    pages = render_pdf_pages_to_png(at_limit)
+
+    assert len(pages) == MAX_PAGES
+
+
+def test_render_rejects_an_oversized_page_dimension(tmp_path: Path):
+    huge = _build_pdf(tmp_path / "huge_page.pdf", [(MAX_PAGE_POINTS + 1, 200.0)])
+
+    with pytest.raises(IngestionError, match="exceeds"):
+        render_pdf_pages_to_png(huge)
+
+
+def test_render_accepts_a_page_at_exactly_the_dimension_limit(tmp_path: Path):
+    at_limit = _build_pdf(tmp_path / "at_dimension_limit.pdf", [(MAX_PAGE_POINTS, 200.0)])
+
+    pages = render_pdf_pages_to_png(at_limit)
+
+    assert len(pages) == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Security gate: validate-then-store -- no orphaned state on parse failure
+# ---------------------------------------------------------------------------
+
+
+def test_render_rejects_malformed_bytes_with_a_typed_error(tmp_path: Path):
+    malformed = tmp_path / "malformed.pdf"
+    malformed.write_bytes(b"this is not a pdf")
+
+    with pytest.raises(IngestionError):
+        render_pdf_pages_to_png(malformed)
+
+
+def test_attach_and_extract_rejects_malformed_pdf_and_stores_nothing(tmp_path: Path, fake_vlm):
+    store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
+    malformed = tmp_path / "malformed.pdf"
+    malformed.write_bytes(b"this is not a pdf")
+
+    with pytest.raises(IngestionError):
+        attach_and_extract(1, malformed, "lab_pdf", ollama_client=fake_vlm, document_store=store, fact_store=store)
+
+    assert list((tmp_path / "ingestion" / "documents").iterdir()) == []
+    assert list((tmp_path / "ingestion" / "facts").iterdir()) == []
+
+
+def test_attach_and_extract_rejects_too_many_pages_and_stores_nothing(tmp_path: Path, fake_vlm):
+    store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
+    oversized = _build_pdf(tmp_path / "many_pages.pdf", [(200.0, 200.0)] * (MAX_PAGES + 1))
+
+    with pytest.raises(IngestionError):
+        attach_and_extract(1, oversized, "lab_pdf", ollama_client=fake_vlm, document_store=store, fact_store=store)
+
+    assert list((tmp_path / "ingestion" / "documents").iterdir()) == []
+    assert list((tmp_path / "ingestion" / "facts").iterdir()) == []
+    assert fake_vlm.extract_calls == []  # never even reached the VLM call

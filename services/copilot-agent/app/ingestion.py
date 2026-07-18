@@ -52,6 +52,27 @@ _logger = logging.getLogger(__name__)
 # a 7B-class VLM's context window needs for a single page.
 _RENDER_SCALE = 2.0
 
+# Defensible bound for a clinical document (lab report, intake form): well
+# beyond any real report, but small enough that a malicious or corrupt PDF
+# claiming thousands of pages cannot force this module to materialize an
+# unbounded in-memory list of rendered page images.
+MAX_PAGES = 50
+
+# Per-side page-dimension cap, in PDF points (1/72in). 8000pt (~111in) is far
+# beyond any real scanned document; guards against a crafted/corrupt MediaBox
+# blowing up render-time memory (a rasterized page's memory cost scales with
+# width x height x _RENDER_SCALE^2).
+MAX_PAGE_POINTS = 8000.0
+
+
+class IngestionError(Exception):
+    """Raised when a source document cannot be safely parsed/rendered for
+    ingestion -- malformed/corrupt input, too many pages, or an oversized
+    page dimension. Callers see this ONE stable, log-safe error type
+    regardless of the underlying parser failure -- never a raw pdfium
+    exception, and never a partially-completed ingestion (see
+    ``attach_and_extract``'s validate-then-store ordering)."""
+
 _LAB_EXTRACTION_PROMPT = """\
 You are extracting a lab-report page image into structured data. Read ONLY \
 what is legible on this page image. For any field you cannot read -- \
@@ -111,19 +132,54 @@ class IngestionResult:
     facts: list[LabResultFact]
 
 
-def render_pdf_pages_to_png(file_path: Path) -> list[bytes]:
-    """Render every page of the PDF at ``file_path`` to PNG bytes, in page order."""
-    pages: list[bytes] = []
-    pdf = pdfium.PdfDocument(str(file_path))
+def _open_pdf(file_path: Path) -> pdfium.PdfDocument:
+    """Open ``file_path`` as a PDF, translating a malformed/corrupt input into
+    ``IngestionError`` instead of letting a raw pdfium exception escape."""
     try:
+        return pdfium.PdfDocument(str(file_path))
+    except pdfium.PdfiumError as exc:
+        raise IngestionError(f"{file_path.name}: could not be parsed as a PDF") from exc
+
+
+def _validate_pdf(pdf: pdfium.PdfDocument, *, file_path: Path) -> None:
+    """Enforce ``MAX_PAGES``/``MAX_PAGE_POINTS`` against an already-open
+    document, BEFORE anything is rendered or stored. Raises
+    ``IngestionError`` -- a document outside these bounds is rejected
+    outright, never clamped/truncated silently."""
+    page_count = len(pdf)
+    if page_count > MAX_PAGES:
+        raise IngestionError(f"{file_path.name}: {page_count} pages exceeds the {MAX_PAGES}-page ingestion limit")
+
+    for page_index in range(page_count):
+        page = pdf.get_page(page_index)
+        try:
+            width, height = page.get_size()
+        finally:
+            page.close()
+        if width > MAX_PAGE_POINTS or height > MAX_PAGE_POINTS:
+            raise IngestionError(
+                f"{file_path.name}: page {page_index + 1} ({width:.0f}x{height:.0f}pt) "
+                f"exceeds the {MAX_PAGE_POINTS:.0f}pt per-side ingestion limit"
+            )
+
+
+def render_pdf_pages_to_png(file_path: Path) -> list[bytes]:
+    """Render every page of the PDF at ``file_path`` to PNG bytes, in page
+    order. Validates ``MAX_PAGES``/``MAX_PAGE_POINTS`` (see ``_validate_pdf``)
+    before rendering anything; raises ``IngestionError`` on a malformed PDF
+    or a document outside those bounds."""
+    pdf = _open_pdf(file_path)
+    try:
+        _validate_pdf(pdf, file_path=file_path)
+        pages: list[bytes] = []
         for page in pdf:
             bitmap = page.render(scale=_RENDER_SCALE)
             buffer = io.BytesIO()
             bitmap.to_pil().save(buffer, format="PNG")
             pages.append(buffer.getvalue())
+        return pages
     finally:
         pdf.close()
-    return pages
 
 
 def _extract_page(ollama_client: _Extractor, *, page_index: int, image_png: bytes) -> LabPageExtraction:
@@ -187,11 +243,23 @@ def attach_and_extract(
     their exact page. Persists the source document and the extracted facts
     via the injected stores (see module docstring's storage-honesty note)
     before returning.
+
+    **Validate-then-store.** The PDF is opened and checked against
+    ``MAX_PAGES``/``MAX_PAGE_POINTS`` (``_validate_pdf``) BEFORE anything is
+    written to ``document_store`` -- a malformed or out-of-bounds PDF raises
+    ``IngestionError`` with nothing persisted, never an orphaned stored file
+    left behind by a parse failure that happens after storage.
     """
     if doc_type != "lab_pdf":
         raise ValueError(f"attach_and_extract only supports doc_type='lab_pdf' in this slice, got {doc_type!r}")
 
     path = Path(file_path)
+    pdf = _open_pdf(path)
+    try:
+        _validate_pdf(pdf, file_path=path)
+    finally:
+        pdf.close()
+
     source_id = document_store.save_source_document(patient_id, doc_type, path)
 
     facts: list[LabResultFact] = []
