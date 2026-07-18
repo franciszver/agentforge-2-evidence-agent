@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Smoke test for the Ollama model service (P0.4).
+# Smoke test for the Ollama model service (P0.4, extended for Phase 2 / #10).
 #
 # Verifies, against a RUNNING compose stack, that:
 #   - the qwen3 model is present in `ollama list` inside the ollama container
 #   - a one-line generation prompt streams multiple non-empty JSON chunks
 #     from the /api/generate streaming endpoint
+#   - the Phase 2 vision-language model (qwen2.5vl:7b) and embedding model
+#     (nomic-embed-text) are present in `ollama list`
 #
 # The ollama image ships without curl/wget, and the ollama service runs on
 # the no-egress `copilot_internal` network so we can't apt-install one at
@@ -16,7 +18,7 @@
 #   1. Bring up the ollama service:
 #        docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d ollama
 #      (run from docker/development-easy/, or pass full -f paths from repo root)
-#   2. Provision the model into the persistent volume (one-time, needs egress):
+#   2. Provision the models into the persistent volume (one-time, needs egress):
 #        bash scripts/pull-model.sh
 set -euo pipefail
 
@@ -40,19 +42,24 @@ if ! compose ps --status running --services 2>/dev/null | grep -qx "ollama"; the
     exit 1
 fi
 
-echo "Checking model '${MODEL}' is present..."
 if ! model_list="$(compose exec -T ollama ollama list)"; then
     echo "FAIL: 'ollama list' failed inside the ollama container" >&2
     exit 1
 fi
 
-if ! grep -qF "${MODEL}" <<< "${model_list}"; then
-    echo "FAIL: model '${MODEL}' not found in 'ollama list' output:" >&2
-    echo "${model_list}" >&2
-    echo "Provision it first with: bash scripts/pull-model.sh" >&2
-    exit 1
-fi
-echo "Model present."
+# Phase 2 (#10): qwen2.5vl:7b (vision-language) and nomic-embed-text
+# (embedding) are provisioned by the same `scripts/pull-model.sh` mechanism
+# as qwen3:4b, so all three are checked the same way.
+for model in "${MODEL}" "qwen2.5vl:7b" "nomic-embed-text"; do
+    echo "Checking model '${model}' is present..."
+    if ! grep -qF "${model}" <<< "${model_list}"; then
+        echo "FAIL: model '${model}' not found in 'ollama list' output:" >&2
+        echo "${model_list}" >&2
+        echo "Provision it first with: bash scripts/pull-model.sh" >&2
+        exit 1
+    fi
+    echo "Model present."
+done
 
 echo "Requesting a one-line generation and checking for streamed tokens..."
 gen_output="$(docker run --rm --network "${internal_network}" "${curl_image}" \
