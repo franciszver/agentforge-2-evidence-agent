@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2.4",
     "httpx>=0.27",
+    # PDF page rendering for document ingestion (P3.1, app/ingestion.py).
+    "pypdfium2>=4",
 ]
 
 [project.optional-dependencies]

@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:4b"
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
+    # Document-ingestion VLM (P3.1, `docs/W2_ARCHITECTURE.md` "Reference
+    # Hardware & Model Tiers"): a config value, not a code fork -- swapping
+    # in a larger VLM changes extraction quality/latency, not the code path.
+    # Sequential-swap tier: not resident with ``ollama_model`` simultaneously
+    # on the minimum-spec 8GB card.
+    vlm_model: str = "qwen2.5vl:7b"
+    # Local placeholder for source-document + extracted-fact storage until
+    # OpenEMR document-store/FHIR write plumbing exists (see app/ingestion.py
+    # module docstring, issue #13).
+    ingestion_storage_path: str = "/data/ingestion"
 
     # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
     # ``openemr_base_url``.
