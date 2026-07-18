@@ -34,6 +34,7 @@ import base64
 import io
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -518,11 +519,14 @@ class LocalIngestionStore:
         self._base_dir = Path(base_dir)
         (self._base_dir / "documents").mkdir(parents=True, exist_ok=True)
         (self._base_dir / "facts").mkdir(parents=True, exist_ok=True)
+        (self._base_dir / "meta").mkdir(parents=True, exist_ok=True)
 
     def save_source_document(self, patient_id: int, doc_type: str, file_path: Path) -> str:
         source_id = uuid.uuid4().hex
         dest = self._base_dir / "documents" / f"{source_id}{file_path.suffix}"
         dest.write_bytes(file_path.read_bytes())
+        meta_dest = self._base_dir / "meta" / f"{source_id}.json"
+        meta_dest.write_text(json.dumps({"patient_id": patient_id}))
         return source_id
 
     def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None:
@@ -533,3 +537,61 @@ class LocalIngestionStore:
             "facts": [fact.model_dump(mode="json") for fact in facts],
         }
         dest.write_text(json.dumps(payload, indent=2))
+
+    def read_source_document(self, source_id: str) -> bytes | None:
+        """Return the stored source document's raw bytes for ``source_id``
+        (P3.7 citation overlay -- the UI's "view source page" affordance),
+        or ``None`` if nothing is stored under that id.
+
+        Defensively re-validates ``source_id`` against the exact
+        ``save_source_document`` naming (32 lowercase hex chars, this
+        method's own uuid4().hex output) even though ``app.documents``'s
+        endpoint already gates on the same pattern before calling this --
+        two independent checks, same discipline as
+        ``DocumentCitation``'s blank-quote guard existing at both the schema
+        and checker layers. A value that fails this check can never reach
+        ``Path.glob`` (which -- unlike a plain filename join -- WOULD
+        interpret ``..`` path segments), so a caller bypassing the endpoint's
+        own check cannot use this method for path traversal either.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            return None
+        matches = list((self._base_dir / "documents").glob(f"{source_id}.*"))
+        if not matches:
+            return None
+        return matches[0].read_bytes()
+
+    def read_source_patient_id(self, source_id: str) -> int | None:
+        """Return the ``patient_id`` a stored document was saved under (the
+        sidecar written by ``save_source_document``), or ``None`` if
+        unknown -- an unrecognized ``source_id`` shape, no document was ever
+        saved under it, or the sidecar is missing/unreadable/malformed.
+        Backs the flag-gated launch-patient binding check on
+        ``GET /documents/{source_id}`` (P3.7 citation overlay, finding on
+        cross-patient IDOR) -- the same defensive re-validation discipline
+        as ``read_source_document``.
+
+        **Fails closed to ``None`` on ANY unreadable/malformed sidecar** --
+        a missing file, an ``OSError`` reading it, invalid JSON, or a
+        missing/non-int ``patient_id`` key -- rather than letting
+        ``json.JSONDecodeError``/``OSError`` propagate. This is required for
+        two reasons: with the flag OFF, the caller's checker is a no-op
+        regardless of the returned value, so a corrupt sidecar must not 500
+        an otherwise-unaffected request (the documented flag-OFF
+        byte-identical guarantee); with the flag ON, ``None`` is the
+        caller's existing "unresolvable" signal, which it already checks as
+        a sentinel pid that fails closed (403) rather than skipping the
+        check.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            return None
+        meta_path = self._base_dir / "meta" / f"{source_id}.json"
+        try:
+            raw = meta_path.read_text()
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        patient_id = payload.get("patient_id")
+        return patient_id if isinstance(patient_id, int) else None

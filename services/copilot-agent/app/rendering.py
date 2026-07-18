@@ -57,9 +57,10 @@ additional logic. This module does not compute a verdict itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.schemas.common import SourceRef
+from app.schemas.ingestion import DocumentCitation
 from app.verification import CitationCheckResult, ClaimCheckResult, DocumentCitationCheckResult
 
 _NOT_FOUND_NOTICE_TEXT = "Not found in record."
@@ -84,15 +85,20 @@ class RenderedClaim:
     ``RenderedClaim`` today, since ``render_answer`` only builds one when
     ``result.passed``) so a consumer has an explicit, self-describing field
     rather than needing to infer verification status from field presence.
-    Document-citation CHIPS (rendering the actual citations, not just their
-    count) remain the separate, not-yet-built P3.7/P3.8 UI concern -- this
-    only stops discarding the fact that verified document evidence exists.
+    ``document_citations`` (P3.7 follow-up) carries the actual
+    ``DocumentCitation`` objects behind ``document_citation_count`` -- the
+    citation-overlay UI needs ``source_id``/``page_or_section``/
+    ``quote_or_value`` to know WHICH source document and page a click
+    should open, not just how many document citations a claim had. Always
+    the same length as ``document_citation_count``; empty for a claim with
+    no document citations (the common, SourceRef-only case).
     """
 
     text: str
     source_refs: list[SourceRef]
     document_citation_count: int
     all_citations_verified: bool
+    document_citations: list[DocumentCitation] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -144,6 +150,9 @@ def render_answer(results: list[ClaimCheckResult]) -> RenderedAnswer:
                 1 for c in result.citation_results if isinstance(c, DocumentCitationCheckResult)
             ),
             all_citations_verified=result.passed,
+            document_citations=[
+                c.document_citation for c in result.citation_results if isinstance(c, DocumentCitationCheckResult)
+            ],
         )
         if result.passed
         else Notice()

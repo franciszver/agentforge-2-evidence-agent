@@ -20,6 +20,7 @@ from app.allergy_check import AllergyConflict
 from app.chat import build_verification_payload
 from app.rendering import Notice, RenderedAnswer, RenderedClaim
 from app.schemas.common import InteractionSeverity, SourceRef
+from app.schemas.ingestion import DocumentCitation
 from app.schemas.tools import DrugInteractionItem
 from app.verdict import Verdict, VerdictResult
 
@@ -78,9 +79,61 @@ def test_verified_payload_serializes_claims_with_citations():
                     "value": "10 mg",
                 }
             ],
+            "document_citations": [],
         }
     ]
     assert payload["warnings"]["allergy_conflicts"] == []
+
+
+def test_document_cited_claim_serializes_its_document_citations_for_the_p37_overlay():
+    """P3.7: the citation-overlay UI needs the actual DocumentCitation fields
+    (source_id/page_or_section/quote_or_value), not just a count -- see
+    ``app.rendering.RenderedClaim.document_citations``."""
+    verdict_result = VerdictResult(
+        verdict=Verdict.VERIFIED,
+        total_claim_count=1,
+        stripped_claim_count=0,
+        allergy_conflicts=[],
+        blocking_interactions=[],
+        warning_interactions=[],
+    )
+    citation = DocumentCitation(
+        source_type="lab_pdf",
+        source_id="a1b2c3",
+        page_or_section="page 2",
+        field_or_chunk_id="Glucose",
+        quote_or_value="Glucose: 105 mg/dL",
+    )
+    rendered = RenderedAnswer(
+        segments=[
+            RenderedClaim(
+                text="Glucose is 105 mg/dL.",
+                source_refs=[],
+                document_citation_count=1,
+                all_citations_verified=True,
+                document_citations=[citation],
+            )
+        ]
+    )
+
+    payload = build_verification_payload(verdict_result, rendered)
+
+    assert payload["segments"] == [
+        {
+            "type": "claim",
+            "text": "Glucose is 105 mg/dL.",
+            "citations": [],
+            "document_citations": [
+                {
+                    "source_type": "lab_pdf",
+                    "source_id": "a1b2c3",
+                    "page_or_section": "page 2",
+                    "field_or_chunk_id": "Glucose",
+                    "quote_or_value": "Glucose: 105 mg/dL",
+                }
+            ],
+        }
+    ]
 
 
 def test_notice_segment_is_serialized_as_a_notice():

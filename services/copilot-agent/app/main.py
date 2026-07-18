@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.chat import chat_endpoint
 from app.correlation import CorrelationIdMiddleware, configure_logging
 from app.dashboard import dashboard_endpoint
+from app.documents import source_document_endpoint
 from app.feedback import feedback_endpoint
 from app.readiness import ReadinessReport, compute_readiness
 from app.review_page import promote_endpoint, review_queue_endpoint
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
     app.add_api_route("/review/promote", promote_endpoint, methods=["GET"])
     app.add_api_route("/chat", chat_endpoint, methods=["POST"])
     app.add_api_route("/feedback", feedback_endpoint, methods=["POST"], status_code=201)
+    app.add_api_route("/documents/{source_id}", source_document_endpoint, methods=["GET"])
 
     return app
 

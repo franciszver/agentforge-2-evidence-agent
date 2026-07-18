@@ -1,0 +1,25 @@
+<?php
+
+/**
+ * Clinical Co-Pilot Module - Source Document Proxy Endpoint (P3.7)
+ *
+ * Entry point for the citation-overlay "View source page" link. globals.php
+ * restores the OpenEMR session; the controller verifies auth on every
+ * request before relaying the stored source PDF from the agent's
+ * GET /documents/{source_id} (see SourceDocumentProxyController).
+ *
+ * @package   OpenEMR
+ * @link      https://www.open-emr.org
+ * @author    Francisco de Guzman <ciscodg@gmail.com>
+ * @copyright Copyright (c) 2026 Francisco de Guzman
+ * @license   https://github.com/openemr/openemr/blob/master/LICENSE GNU General Public License 3
+ */
+
+declare(strict_types=1);
+
+require_once(__DIR__ . "/../../../../globals.php");
+
+use OpenEMR\Modules\ClinicalCopilot\Controller\SourceDocumentProxyController;
+
+$controller = new SourceDocumentProxyController();
+$controller->handleRequest();
