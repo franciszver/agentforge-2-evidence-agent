@@ -34,6 +34,7 @@ import base64
 import io
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -533,3 +534,26 @@ class LocalIngestionStore:
             "facts": [fact.model_dump(mode="json") for fact in facts],
         }
         dest.write_text(json.dumps(payload, indent=2))
+
+    def read_source_document(self, source_id: str) -> bytes | None:
+        """Return the stored source document's raw bytes for ``source_id``
+        (P3.7 citation overlay -- the UI's "view source page" affordance),
+        or ``None`` if nothing is stored under that id.
+
+        Defensively re-validates ``source_id`` against the exact
+        ``save_source_document`` naming (32 lowercase hex chars, this
+        method's own uuid4().hex output) even though ``app.documents``'s
+        endpoint already gates on the same pattern before calling this --
+        two independent checks, same discipline as
+        ``DocumentCitation``'s blank-quote guard existing at both the schema
+        and checker layers. A value that fails this check can never reach
+        ``Path.glob`` (which -- unlike a plain filename join -- WOULD
+        interpret ``..`` path segments), so a caller bypassing the endpoint's
+        own check cannot use this method for path traversal either.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            return None
+        matches = list((self._base_dir / "documents").glob(f"{source_id}.*"))
+        if not matches:
+            return None
+        return matches[0].read_bytes()
