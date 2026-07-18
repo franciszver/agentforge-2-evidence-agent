@@ -73,10 +73,37 @@ def _handoff_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord
     return [r for r in caplog.records if r.name == "app.supervisor"]
 
 
-# --- (a): evidence-retrieval routing, span parenting, shared correlation id
+# --- (a)/(b): routing -- right worker called, wrong worker untouched, result
+# plumbed through -- parametrized over both (sub_task, worker_name) pairs.
 
 
-def test_evidence_request_routes_to_evidence_retriever_with_parented_span(caplog: pytest.LogCaptureFixture):
+@pytest.mark.parametrize(
+    "sub_task,expected_worker_name",
+    [
+        pytest.param(RetrieveSubTask(query="What is the metformin starting dose?", k=3), "evidence-retriever", id="evidence"),
+        pytest.param(IngestSubTask(patient_id=42, file_path="lab.pdf", doc_type="lab_pdf"), "intake-extractor", id="ingestion"),
+    ],
+)
+def test_routes_to_the_expected_worker(sub_task: RetrieveSubTask | IngestSubTask, expected_worker_name: str):
+    intake = _FakeWorker(name="intake-extractor", payload="ingestion-result")
+    retriever = _FakeWorker(name="evidence-retriever", payload=["chunk-payload"])
+    workers = {"evidence-retriever": retriever, "intake-extractor": intake}
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever)
+
+    result = supervisor.handle(sub_task)
+
+    assert isinstance(result, SupervisorResult)
+    assert result.worker == expected_worker_name
+    assert result.payload == workers[expected_worker_name].payload
+    assert workers[expected_worker_name].calls == [sub_task]
+    other = intake if expected_worker_name == "evidence-retriever" else retriever
+    assert other.calls == []  # the other worker must never be invoked
+
+
+# --- (a): evidence-retrieval span parenting, shared correlation id
+
+
+def test_evidence_request_has_a_worker_span_parented_under_the_supervisor_span(caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO)
     intake = _FakeWorker(name="intake-extractor")
     retriever = _FakeWorker(name="evidence-retriever", payload=["chunk-payload"])
@@ -84,13 +111,7 @@ def test_evidence_request_routes_to_evidence_retriever_with_parented_span(caplog
     sub_task = RetrieveSubTask(query="What is the metformin starting dose?", k=3)
 
     with correlation_scope("corr-evidence-1") as correlation_id:
-        result = supervisor.handle(sub_task)
-
-    assert isinstance(result, SupervisorResult)
-    assert result.worker == "evidence-retriever"
-    assert result.payload == ["chunk-payload"]
-    assert retriever.calls == [sub_task]
-    assert intake.calls == []  # the other worker must never be invoked
+        supervisor.handle(sub_task)
 
     records = _handoff_records(caplog)
     assert records, "supervisor must log handoff events"
@@ -106,27 +127,6 @@ def test_evidence_request_routes_to_evidence_retriever_with_parented_span(caplog
     # never None, never equal to its own span id.
     assert start.parent_span_id is not None
     assert start.parent_span_id != start.span_id
-
-
-# --- (b): ingestion routing
-
-
-def test_ingestion_request_routes_to_intake_extractor(caplog: pytest.LogCaptureFixture):
-    caplog.set_level(logging.INFO)
-    intake = _FakeWorker(name="intake-extractor", payload="ingestion-result")
-    retriever = _FakeWorker(name="evidence-retriever")
-    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever)
-    sub_task = IngestSubTask(patient_id=42, file_path="lab.pdf", doc_type="lab_pdf")
-
-    result = supervisor.handle(sub_task)
-
-    assert result.worker == "intake-extractor"
-    assert result.payload == "ingestion-result"
-    assert intake.calls == [sub_task]
-    assert retriever.calls == []
-
-    records = _handoff_records(caplog)
-    assert any(getattr(r, "worker", None) == "intake-extractor" for r in records)
 
 
 # --- (c): handoff logs never carry PHI

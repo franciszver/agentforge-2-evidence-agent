@@ -52,13 +52,27 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from app.correlation import span_scope
+from app.correlation import SpanContext, span_scope
 from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_extract
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
 from app.schemas.reranking import RerankedChunk
 
 _logger = logging.getLogger(__name__)
+
+
+def _handoff_log_context(worker: Worker, span: SpanContext, sub_task: SubTask) -> dict[str, str | None]:
+    """The one place that knows a handoff log line's shape: worker name,
+    the span's parent, and the sub-task's TYPE (never its field values --
+    see ``_log_handoff``). Both ``Supervisor.handle`` (the top-level
+    ``supervisor_received`` line) and ``Supervisor._dispatch`` (every
+    ``supervisor_handoff`` line) build their ``extra`` dict from this, so
+    neither hand-assembles the same three keys independently."""
+    return {
+        "worker": worker.name,
+        "parent_span_id": span.parent_span_id,
+        "sub_task_type": type(sub_task).__name__,
+    }
 
 
 def _log_handoff(
@@ -187,14 +201,7 @@ class Supervisor:
         """
         worker = self._select_worker(sub_task)
         with span_scope() as supervisor_span:
-            _logger.info(
-                "supervisor_received",
-                extra={
-                    "parent_span_id": supervisor_span.parent_span_id,
-                    "sub_task_type": type(sub_task).__name__,
-                    "worker": worker.name,
-                },
-            )
+            _logger.info("supervisor_received", extra=_handoff_log_context(worker, supervisor_span, sub_task))
             payload = self._dispatch(worker, sub_task)
         return SupervisorResult(worker=worker.name, payload=payload)
 
@@ -206,11 +213,7 @@ class Supervisor:
 
     def _dispatch(self, worker: Worker, sub_task: SubTask) -> Any:
         with span_scope() as worker_span:
-            log_context = {
-                "worker": worker.name,
-                "parent_span_id": worker_span.parent_span_id,
-                "sub_task_type": type(sub_task).__name__,
-            }
+            log_context = _handoff_log_context(worker, worker_span, sub_task)
             _log_handoff("handoff_start", log_context)
             start_ts = time.time()
             error_type: str | None = None
