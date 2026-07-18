@@ -5,7 +5,7 @@
   of Phase 2 (Stages 3–6) builds toward. Where a number is measured, its
   source is the Phase 1 capacity run (`docs/ARCHITECTURE.md` §"Capacity
   reality"); where it is a target set in advance of Phase 2's own
-  measurement, it is marked "to be validated in P3G.4 (#21) perf baselines."
+  measurement, it is marked "to be validated in P3G.4 (#24) perf baselines."
 - **Related:** `docs/ARCHITECTURE.md` (Phase 1 / Week-1 architecture, frozen
   at v1.0 — this document extends it, does not replace it),
   `planning/PLAN.md` (frozen Phase 2 plan), `docs/USERS.md` (persona and
@@ -245,7 +245,7 @@ Follows `docs/TEST_PLAN.md`'s red-first discipline, extended per code type:
 
 Two targets, both explicitly provisional — set from Phase 1's measured
 hardware ceiling and stated engineering judgment, not from Phase 2's own
-measurement, which is P3G.4 (#21)'s job:
+measurement, which is P3G.4 (#24)'s job:
 
 - **p95 ingestion latency for a 2-page lab PDF, minimum spec: ≤ 45 seconds.
   To be validated in P3G.4 perf baselines.** Justification: Phase 1's P5.1
@@ -290,7 +290,7 @@ projected ones:
 | RAM | 32GB | (not constraining at this tier) |
 | Model residency | **Sequential VLM⇄LLM swap** — the VLM and Qwen3-4B are not resident simultaneously; embeddings and the reranker run on CPU to leave the full 8GB for whichever inference model is currently loaded | **All models resident simultaneously** — VLM, planner/extraction LLM, embeddings, and reranker all on-GPU, no swap latency |
 | VLM tier | 7B-class (e.g. `qwen2.5vl:7b`) | Larger VLM (model swapped in as a config value, not a code change) |
-| Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §"SLOs", pending P3G.4 (#21)) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
+| Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §"SLOs", pending P3G.4 (#24)) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
 
 **Model tiering is a config value, not a code fork.** The same extraction
 code, the same Pydantic schemas (§"Schemas"), and the same no-fabrication contract
@@ -308,7 +308,7 @@ that delegates to two workers — **intake-extractor** (drives
 `attach_and_extract()` and the VLM) and **evidence-retriever** (drives
 hybrid RAG) — rather than adopting a third-party graph-orchestration
 framework. This is an owner decision, not a default: `planning/PLAN.md`
-and issue P3.5 (#16) name extending the custom loop as the primary path, with
+and issue P3.5 (#17) name extending the custom loop as the primary path, with
 LangGraph as a documented fallback only if handoff/trace requirements
 prove unwieldy in practice — that fallback decision point is P3.5.
 
