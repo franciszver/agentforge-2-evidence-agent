@@ -86,7 +86,10 @@ for spec in "${MODELS[@]}"; do
         manifest_suffix="${model/:/\/}"
         [[ "${manifest_suffix}" == "${model}" ]] && manifest_suffix="${model}/latest"
         manifest_path="/root/.ollama/models/manifests/registry.ollama.ai/library/${manifest_suffix}"
-        actual_digest="$(MSYS_NO_PATHCONV=1 docker exec "${CONTAINER}" sha256sum "${manifest_path}" | awk '{print $1}')"
+        if ! actual_digest="$(MSYS_NO_PATHCONV=1 docker exec "${CONTAINER}" sha256sum "${manifest_path}" | awk '{print $1}')" || [[ -z "${actual_digest}" ]]; then
+            echo "FAIL: could not read manifest for '${model}' at ${manifest_path} (layout change or bad entry?)" >&2
+            exit 1
+        fi
         if [[ "${actual_digest}" != "${expected_digest}" ]]; then
             echo "FAIL: model '${model}' manifest digest mismatch" >&2
             echo "  expected: ${expected_digest}" >&2
