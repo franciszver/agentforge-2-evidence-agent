@@ -28,9 +28,13 @@ IMAGE="ollama/ollama:0.12.6@sha256:352e045b937ac29d3d9550c22fb85525f60a89e064df3
 VOLUME="development-easy_ollamamodels"
 CONTAINER="ollama-pull"
 
-# name|expected_digest ("" = no pin enforced, e.g. the pre-Phase-2 qwen3:4b).
+# name|expected_digest. expected_digest must be either the pinned sha256 hex
+# digest to verify, or the literal sentinel "SKIP" to explicitly opt out of
+# verification (e.g. the pre-Phase-2 qwen3:4b, not yet pinned). An empty
+# field is treated as a mistake (typo/merge-drop), not an opt-out, and the
+# script hard-fails rather than silently skipping the supply-chain check.
 MODELS=(
-    "qwen3:4b|"
+    "qwen3:4b|SKIP"
     "qwen2.5vl:7b|5ced39dfa4bac325dc183dd1e4febaa1c46b3ea28bce48896c8e69c1e79611cc"
     "nomic-embed-text|0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
 )
@@ -73,11 +77,16 @@ for spec in "${MODELS[@]}"; do
     echo "Pulling model '${model}' (this may take several minutes)..."
     docker exec "${CONTAINER}" ollama pull "${model}"
 
-    if [[ -n "${expected_digest}" ]]; then
+    if [[ "${expected_digest}" == "SKIP" ]]; then
+        echo "Digest verification SKIPPED for '${model}' (explicit opt-out)"
+    elif [[ -z "${expected_digest}" ]]; then
+        echo "FAIL: digest required for '${model}'; use SKIP to intentionally opt out" >&2
+        exit 1
+    else
         manifest_suffix="${model/:/\/}"
         [[ "${manifest_suffix}" == "${model}" ]] && manifest_suffix="${model}/latest"
         manifest_path="/root/.ollama/models/manifests/registry.ollama.ai/library/${manifest_suffix}"
-        actual_digest="$(docker exec "${CONTAINER}" sha256sum "${manifest_path}" | awk '{print $1}')"
+        actual_digest="$(MSYS_NO_PATHCONV=1 docker exec "${CONTAINER}" sha256sum "${manifest_path}" | awk '{print $1}')"
         if [[ "${actual_digest}" != "${expected_digest}" ]]; then
             echo "FAIL: model '${model}' manifest digest mismatch" >&2
             echo "  expected: ${expected_digest}" >&2
