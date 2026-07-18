@@ -60,7 +60,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.schemas.common import SourceRef
-from app.verification import ClaimCheckResult
+from app.verification import CitationCheckResult, ClaimCheckResult
 
 _NOT_FOUND_NOTICE_TEXT = "Not found in record."
 
@@ -97,9 +97,24 @@ class RenderedAnswer:
 def render_answer(results: list[ClaimCheckResult]) -> RenderedAnswer:
     """Strip failed claims, replacing each with a ``Notice``; keep passed
     claims verbatim with their passing citations. Order-preserving,
-    one-to-one with ``results``."""
+    one-to-one with ``results``.
+
+    ``RenderedClaim.source_refs`` only ever carries ``SourceRef`` citations
+    -- a passed claim's ``citation_results`` may now also include
+    ``DocumentCitationCheckResult`` entries (P3.6's document-citation
+    extension to ``app.verification``), which this pre-P3.6 rendering
+    contract has no slot for yet; wiring document-citation chips into the
+    UI is a separate, not-yet-built P3.8 concern (the ``VerifiedAnswer``/
+    ``RenderedAnswer`` docstrings already flag this contract as due for a
+    richer shape). Filtering here (rather than erroring) keeps a mixed-
+    citation claim renderable today without losing its already-supported
+    ``SourceRef`` chips.
+    """
     segments: list[AnswerSegment] = [
-        RenderedClaim(text=result.claim.text, source_refs=[c.source_ref for c in result.citation_results])
+        RenderedClaim(
+            text=result.claim.text,
+            source_refs=[c.source_ref for c in result.citation_results if isinstance(c, CitationCheckResult)],
+        )
         if result.passed
         else Notice()
         for result in results

@@ -132,9 +132,22 @@ class DocumentCitation(BaseModel):
     carries (`docs/W2_ARCHITECTURE.md` "Citation Contract") -- the
     document-sourced counterpart to Phase 1's
     ``{tool_call_id, record_id, field, asserted_value}`` shape. Not a tool
-    I/O contract, so it does not extend ``ToolSchemaModel``."""
+    I/O contract, so it does not extend ``ToolSchemaModel``.
 
-    source_type: Literal["lab_pdf", "intake_form"]
+    ``source_type`` additionally allows ``"guideline_chunk"`` (P3.6) beyond
+    the extraction-side ``Citation``'s ``"lab_pdf"``/``"intake_form"``: a
+    claim can also cite a hybrid-retrieval guideline chunk
+    (``app.schemas.retrieval.RetrievedChunk``), which has no VLM-extraction
+    step and therefore never appears on the extraction-side ``Citation``
+    above. For a ``"guideline_chunk"`` citation, ``source_id`` is the
+    corpus doc id, ``field_or_chunk_id`` is the chunk id
+    (``<doc_id>#<section-slug>``), and ``quote_or_value`` is the literal
+    text the claim quotes from that chunk -- see
+    ``app.verification.check_document_citation`` for how each source type is
+    re-validated against its RAW source.
+    """
+
+    source_type: Literal["lab_pdf", "intake_form", "guideline_chunk"]
     source_id: str
     page_or_section: str
     field_or_chunk_id: str

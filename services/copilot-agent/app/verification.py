@@ -120,6 +120,73 @@ than a bare "not found in record" if P3.3 wants one (e.g. distinguishing a
 wrong value from an unresolvable citation). This module does not touch
 ``Claim.text`` and inserts no notices -- that's entirely P3.3.
 
+**Document-citation extension (P3.6) -- extends the checker above, does not
+fork it.** `docs/W2_ARCHITECTURE.md` "Citation Contract": every clinical
+claim sourced from a Week-2 document (lab-report PDF, intake form, or a
+hybrid-retrieval guideline chunk) carries a ``DocumentCitation``
+(``app.schemas.ingestion``) -- the document-sourced counterpart to
+``SourceRef``'s ``{tool_call_id, record_id, field, asserted_value}`` shape.
+``Claim.document_citations`` (additive, alongside ``source_refs`` --
+`app.schemas.verification`) is re-validated by ``check_document_citation``
+exactly the way ``check_source_ref`` re-validates a ``SourceRef``: a
+structured lookup + comparison against a RAW index, no model call, no I/O,
+no clock. ``check_claim``/``check_claims`` build ONE ``ClaimCheckResult``
+per claim covering BOTH citation shapes -- ``ClaimCheckResult.passed``'s
+AND-across-citations aggregation (see above) is untouched code, simply fed a
+longer ``citation_results`` list when a claim has document citations too.
+
+Two RAW indices, one per document source type -- both built directly from
+the source, never from a quarantined, summarized, or re-derived copy (the
+same "verify against RAW, never the cache" invariant as decision 3 above):
+
+- ``DocumentFactIndex`` (``lab_pdf``/``intake_form``): ``(source_id,
+  field_or_chunk_id) -> quote_or_value``, built from the RAW extracted-fact
+  ``Citation``s -- i.e. exactly what ``app.ingestion``'s
+  ``DocumentStore``/``FactStore`` (``LocalIngestionStore`` today) actually
+  persisted for that document. A citation's ``quote_or_value`` must equal
+  (whitespace-stripped) the raw stored quote -- a mismatch (including a
+  citation naming a real source but the wrong field, or a real field but
+  the wrong quote) fails. There is no free-text/enum coercion here (unlike
+  ``_values_match``'s type-aware rules for structured ``SourceRef``s):
+  ``Citation.quote_or_value`` is itself always a literal string rendering
+  of what the VLM read (``app.ingestion._quote_for_row``/
+  ``_quote_and_field_for_intake``), so an exact (stripped) string compare is
+  the correct level of strictness for a *quote*, not a value that needs
+  type coercion.
+- ``CorpusChunkIndex`` (``guideline_chunk``): ``chunk_id -> raw chunk
+  text``, built directly from the corpus (``app.retrieval.parse_corpus``'s
+  ``Chunk``s, or the ``RetrievedChunk``/``RerankedChunk`` the retriever
+  actually returned -- both carry the identical, unmodified corpus chunk
+  text through unchanged, per ``app.reranking.Reranker.rerank``'s own
+  docstring). A citation's ``quote_or_value`` must appear VERBATIM
+  (substring, after stripping) in that raw text -- not merely be a
+  plausible-sounding paraphrase of it. This is the "no fabrication"
+  guarantee for RAG-style citations: a claim that quotes something the
+  retrieved passage never actually says is a hallucination even if the
+  gist is related, and must fail exactly like a hallucinated drug name
+  fails ``check_source_ref`` above.
+
+Both indices accept an explicitly-constructed, real-source-backed
+collection at call time (``DocumentFactIndex.from_citations``/
+``CorpusChunkIndex.from_chunks``) -- there is no code path in this module
+that reaches into any cache, summary, or LLM-produced text to build them.
+A caller who mistakenly feeds either index a paraphrased/cached copy
+instead of the true raw store gets exactly the checker's ordinary
+mismatch-detection behavior (``VALUE_MISMATCH``/``QUOTE_NOT_FOUND``) --
+proven by ``tests/test_verification_documents.py``'s regression-guard
+cases, which check the SAME citation against a true-raw index (passes) and
+a paraphrased/summarized index at the same key (fails), and by the
+``REDACTED_FIELD`` defensive branch below (the document-citation
+counterpart to decision 3's belt-and-suspenders branch: a raw fact store
+should never contain the quarantine sentinel, but if one somehow does,
+this fails closed rather than comparing against placeholder text).
+
+**No fabrication.** A citation naming a ``source_id``/``field_or_chunk_id``/
+``chunk_id`` that does not exist in the RAW index FAILS
+(``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``/``UNKNOWN_CHUNK``) -- never silently
+passes, mirroring ``check_source_ref``'s ``UNKNOWN_TOOL_CALL``/
+``UNKNOWN_RECORD``/``UNKNOWN_FIELD`` for structured citations.
+
 **Recency notices (issue #153) -- an additive, separate concern from
 citation re-validation above, not a change to it.**
 
@@ -182,10 +249,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from app.quarantine import REDACTED_SENTINEL
 from app.schemas.common import SourceRef
+from app.schemas.ingestion import Citation, DocumentCitation
 from app.schemas.planner import ToolName
 from app.schemas.verification import Claim
 from app.tools._common import parse_fhir_datetime
@@ -201,6 +269,10 @@ class CitationStatus(StrEnum):
     REDACTED_FIELD = "redacted_field"
     NO_ASSERTED_VALUE = "no_asserted_value"
     VALUE_MISMATCH = "value_mismatch"
+    # Document-citation extension (P3.6) -- see module docstring.
+    UNKNOWN_SOURCE = "unknown_source"
+    UNKNOWN_CHUNK = "unknown_chunk"
+    QUOTE_NOT_FOUND = "quote_not_found"
 
 
 @dataclass(frozen=True)
@@ -216,13 +288,41 @@ class CitationCheckResult:
 
 
 @dataclass(frozen=True)
+class DocumentCitationCheckResult:
+    """The re-validation outcome for one ``DocumentCitation`` -- the
+    document-sourced counterpart to ``CitationCheckResult`` above (see
+    module docstring, "Document-citation extension"). A separate type
+    rather than widening ``CitationCheckResult.source_ref`` to a union:
+    keeps ``CitationCheckResult`` (and every existing consumer of its
+    ``source_ref: SourceRef`` field) completely unmodified."""
+
+    document_citation: DocumentCitation
+    status: CitationStatus
+
+    @property
+    def passed(self) -> bool:
+        return self.status is CitationStatus.VALID
+
+
+# Either citation shape's check result -- both expose `.status`/`.passed`,
+# which is all `ClaimCheckResult.passed`'s AND-aggregation below needs; no
+# common base class is introduced since neither consumer needs anything more
+# structural than that.
+AnyCitationCheckResult = CitationCheckResult | DocumentCitationCheckResult
+
+
+@dataclass(frozen=True)
 class ClaimCheckResult:
-    """The re-validation outcome for one ``Claim``: every citation's result,
-    plus the claim-level verdict (AND across citations -- see module
-    docstring)."""
+    """The re-validation outcome for one ``Claim``: every citation's result
+    (``SourceRef`` AND ``DocumentCitation`` citations alike -- P3.6), plus
+    the claim-level verdict (AND across ALL of them -- see module
+    docstring). This aggregation is untouched by the P3.6 extension: it was
+    already generic over "every citation this claim carries," and simply
+    receives a longer ``citation_results`` list when a claim also has
+    ``document_citations``."""
 
     claim: Claim
-    citation_results: list[CitationCheckResult]
+    citation_results: list[AnyCitationCheckResult]
 
     @property
     def passed(self) -> bool:
@@ -324,15 +424,139 @@ def check_source_ref(ref: SourceRef, index: CacheIndex) -> CitationCheckResult:
     return CitationCheckResult(source_ref=ref, status=CitationStatus.VALID)
 
 
-def check_claim(claim: Claim, index: CacheIndex) -> ClaimCheckResult:
-    """Re-validate every citation on ``claim`` (never short-circuited)."""
-    results = [check_source_ref(ref, index) for ref in claim.source_refs]
+def check_claim(
+    claim: Claim,
+    index: CacheIndex,
+    fact_index: DocumentFactIndex | None = None,
+    corpus_index: CorpusChunkIndex | None = None,
+) -> ClaimCheckResult:
+    """Re-validate every citation on ``claim`` (never short-circuited) --
+    ``source_refs`` against ``index`` exactly as before, PLUS (P3.6)
+    ``document_citations`` against ``fact_index``/``corpus_index``. Both
+    document indices default to empty (no document sources available) so
+    existing callers passing only ``index`` are unaffected; a claim with
+    ``document_citations`` but no index supplied fails closed
+    (``UNKNOWN_SOURCE``/``UNKNOWN_CHUNK``) rather than being skipped."""
+    results: list[AnyCitationCheckResult] = [check_source_ref(ref, index) for ref in claim.source_refs]
+    if claim.document_citations:
+        resolved_fact_index = fact_index if fact_index is not None else DocumentFactIndex.from_citations([])
+        resolved_corpus_index = corpus_index if corpus_index is not None else CorpusChunkIndex.from_chunks([])
+        results.extend(
+            check_document_citation(citation, resolved_fact_index, resolved_corpus_index)
+            for citation in claim.document_citations
+        )
     return ClaimCheckResult(claim=claim, citation_results=results)
 
 
-def check_claims(claims: list[Claim], index: CacheIndex) -> list[ClaimCheckResult]:
+def check_claims(
+    claims: list[Claim],
+    index: CacheIndex,
+    fact_index: DocumentFactIndex | None = None,
+    corpus_index: CorpusChunkIndex | None = None,
+) -> list[ClaimCheckResult]:
     """Re-validate a list of claims (the P3.3 entry point)."""
-    return [check_claim(claim, index) for claim in claims]
+    return [check_claim(claim, index, fact_index, corpus_index) for claim in claims]
+
+
+# ---------------------------------------------------------------------------
+# Document-citation extension (P3.6) -- see module docstring, "Document-
+# citation extension", for the full design. Two RAW indices (one per source
+# type) plus check_document_citation, the DocumentCitation counterpart to
+# check_source_ref above.
+# ---------------------------------------------------------------------------
+
+
+class DocumentFactIndex:
+    """``(source_id, field_or_chunk_id) -> quote_or_value`` lookup over the
+    RAW extracted-fact ``Citation``s for lab/intake-form documents (see
+    module docstring). Construct via ``from_citations`` with the actual
+    persisted ``Citation``s (e.g. from ``app.ingestion``'s
+    ``DocumentStore``/``FactStore`` output) -- never from a quarantined,
+    summarized, or re-derived copy of them."""
+
+    def __init__(self, quotes_by_key: dict[tuple[str, str], str]) -> None:
+        self._quotes_by_key = quotes_by_key
+
+    @classmethod
+    def from_citations(cls, citations: Sequence[Citation]) -> DocumentFactIndex:
+        return cls({(citation.source_id, citation.field_or_chunk_id): citation.quote_or_value for citation in citations})
+
+    def quote_for(self, source_id: str, field_or_chunk_id: str) -> str | None:
+        return self._quotes_by_key.get((source_id, field_or_chunk_id))
+
+    def has_source(self, source_id: str) -> bool:
+        """Whether ANY fact was indexed for ``source_id`` -- distinguishes a
+        citation naming a real document but the wrong field
+        (``UNKNOWN_FIELD``) from one naming a document that was never
+        ingested at all (``UNKNOWN_SOURCE``)."""
+        return any(key[0] == source_id for key in self._quotes_by_key)
+
+
+class _TextChunk(Protocol):
+    """Structural subset ``CorpusChunkIndex.from_chunks`` needs -- matches
+    both ``app.retrieval.Chunk`` and ``app.schemas.retrieval.RetrievedChunk``/
+    ``RerankedChunk`` without importing either (avoids coupling this module
+    to the retrieval stack's own dependencies)."""
+
+    chunk_id: str
+    text: str
+
+
+class CorpusChunkIndex:
+    """``chunk_id -> raw chunk text`` lookup for guideline-chunk citations
+    (see module docstring). Construct via ``from_chunks`` with the corpus's
+    actual chunk text (``app.retrieval.parse_corpus``, or any
+    ``RetrievedChunk``/``RerankedChunk`` the retriever returned -- both carry
+    the identical corpus text unmodified) -- never a summarized/shortened
+    stand-in."""
+
+    def __init__(self, text_by_chunk_id: dict[str, str]) -> None:
+        self._text_by_chunk_id = text_by_chunk_id
+
+    @classmethod
+    def from_chunks(cls, chunks: Sequence[_TextChunk]) -> CorpusChunkIndex:
+        return cls({chunk.chunk_id: chunk.text for chunk in chunks})
+
+    def text_for(self, chunk_id: str) -> str | None:
+        return self._text_by_chunk_id.get(chunk_id)
+
+
+def check_document_citation(
+    citation: DocumentCitation,
+    fact_index: DocumentFactIndex,
+    corpus_index: CorpusChunkIndex,
+) -> DocumentCitationCheckResult:
+    """Re-validate one ``DocumentCitation`` against the RAW source it names.
+    Never raises -- every failure mode maps to a ``CitationStatus`` (see
+    module docstring, "Document-citation extension" / "No fabrication")."""
+    if citation.source_type == "guideline_chunk":
+        chunk_text = corpus_index.text_for(citation.field_or_chunk_id)
+        if chunk_text is None:
+            return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.UNKNOWN_CHUNK)
+        if chunk_text == REDACTED_SENTINEL:
+            # Defensive belt-and-suspenders, mirroring check_source_ref's own
+            # REDACTED_FIELD branch: the corpus is public/non-PHI and has no
+            # quarantine step today, but this index must still never be
+            # trusted to compare an asserted quote against placeholder text.
+            return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.REDACTED_FIELD)
+        if citation.quote_or_value.strip() not in chunk_text:
+            return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.QUOTE_NOT_FOUND)
+        return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)
+
+    # "lab_pdf" / "intake_form"
+    resolved_quote = fact_index.quote_for(citation.source_id, citation.field_or_chunk_id)
+    if resolved_quote is None:
+        if fact_index.has_source(citation.source_id):
+            return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.UNKNOWN_FIELD)
+        return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.UNKNOWN_SOURCE)
+    if resolved_quote == REDACTED_SENTINEL:
+        # Defensive belt-and-suspenders (see module docstring): a raw fact
+        # store should NEVER contain the quarantine sentinel. If one somehow
+        # does, fail closed rather than compare against placeholder text.
+        return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.REDACTED_FIELD)
+    if citation.quote_or_value.strip() != resolved_quote.strip():
+        return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALUE_MISMATCH)
+    return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)
 
 
 # ---------------------------------------------------------------------------
