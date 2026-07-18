@@ -25,6 +25,8 @@ Hermetic and fully deterministic: no fixtures touch a real Ollama/OpenEMR/PDF.
 
 from __future__ import annotations
 
+import pytest
+
 from app.quarantine import REDACTED_SENTINEL
 from app.schemas.common import SourceRef
 from app.schemas.ingestion import Citation, DocumentCitation
@@ -100,6 +102,68 @@ def _fact_index(*citations: Citation) -> DocumentFactIndex:
 
 def _corpus_index(*chunks: _FakeChunk) -> CorpusChunkIndex:
     return CorpusChunkIndex.from_chunks(list(chunks))
+
+
+# ---------------------------------------------------------------------------
+# Code-review finding: a duplicate (source_id, field_or_chunk_id)/chunk_id
+# key must be a LOUD failure, not silent last-wins -- two distinct facts
+# colliding on the same key would otherwise silently mis-associate a quote,
+# order-dependently, with no signal anything went wrong. Proper fix (a truly
+# unique id per fact/chunk) is tracked as follow-up issue #40; this is the
+# cheap guard: detect and raise loudly instead of silently overwriting.
+# ---------------------------------------------------------------------------
+
+
+def test_from_citations_raises_on_duplicate_key_with_differing_values():
+    first = Citation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="Glucose",
+        quote_or_value="Glucose: 105 mg/dL",
+    )
+    second = Citation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 2",
+        field_or_chunk_id="Glucose",  # same (source_id, field_or_chunk_id) as `first`
+        quote_or_value="Glucose: 250 mg/dL",  # a DIFFERENT value -- a real collision
+    )
+
+    with pytest.raises(ValueError, match=r"doc-1.*Glucose"):
+        DocumentFactIndex.from_citations([first, second])
+
+
+def test_from_citations_builds_fine_with_no_colliding_keys():
+    first = Citation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="Glucose",
+        quote_or_value="Glucose: 105 mg/dL",
+    )
+    second = Citation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="A1c",
+        quote_or_value="A1c: 5.4%",
+    )
+
+    index = DocumentFactIndex.from_citations([first, second])
+
+    assert index.quote_for("doc-1", "Glucose") == "Glucose: 105 mg/dL"
+    assert index.quote_for("doc-1", "A1c") == "A1c: 5.4%"
+
+
+def test_from_chunks_raises_on_duplicate_chunk_id_with_differing_text():
+    with pytest.raises(ValueError, match=_RAW_CHUNK_ID):
+        CorpusChunkIndex.from_chunks(
+            [
+                _FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT),
+                _FakeChunk(_RAW_CHUNK_ID, "A different, colliding chunk text."),
+            ]
+        )
 
 
 # ---------------------------------------------------------------------------
