@@ -101,6 +101,32 @@ class LabResultFact(ToolSchemaModel):
     citation: Citation
 
 
+class IntakeFormExtraction(ToolSchemaModel):
+    """The VLM's schema-constrained output for one rendered intake-form
+    page (`docs/W2_ARCHITECTURE.md` "Schemas" -- mirrors ``IntakeFormFact``
+    minus ``citation``). A real intake form may span several pages, so any
+    section absent from THIS page is the empty/``None`` value for its
+    type -- ``demographics={}``, ``medications=[]``, etc. -- never guessed
+    from another page. Assembled into ``IntakeFormFact`` (with citation)
+    downstream in ``app.ingestion``."""
+
+    demographics: dict[str, str | None]
+    chief_concern: str | None
+    medications: list[str]
+    allergies: list[str]
+    family_history: list[str]
+
+
+class IntakeFormFact(IntakeFormExtraction):
+    """One page's worth of extracted intake-form data -- ``IntakeFormExtraction``
+    plus the ``Citation`` back to its source page. Per the no-fabrication
+    contract, any demographic key/``chief_concern`` the model could not read
+    on this page is absent/``None``, and any list section with nothing
+    legible on this page is empty -- never guessed from another page."""
+
+    citation: Citation
+
+
 class DocumentCitation(BaseModel):
     """The citation contract a later claim built on a document-sourced fact
     carries (`docs/W2_ARCHITECTURE.md` "Citation Contract") -- the
