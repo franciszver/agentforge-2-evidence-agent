@@ -1,5 +1,7 @@
 # AgentForge Phase 2 — Multimodal Evidence Agent & Document RAG
 
+[![copilot-ci](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml/badge.svg?branch=main)](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml)
+
 > **Status: work in progress (scaffold).** This repo *continues*
 > [agentforge-1-clinical-copilot](https://github.com/franciszver/agentforge-1-clinical-copilot)
 > at its v1.0 state — created as a **full-history duplicate** (not a GitHub
