@@ -68,3 +68,18 @@ tests/Tests/Isolated/Services/Background/SymfonyBackgroundServiceSpawnerTest.php
 *.sh text eol=lf
 *.bash text eol=lf
 *.bats text eol=lf
+
+# Same reasoning as above, for tracked shebang scripts that have no file
+# extension to glob on (no *.<ext> pattern exists for these), so they're
+# pinned per-path instead.
+bin/command-runner eol=lf
+bin/console eol=lf
+ci/convert-coverage eol=lf
+cli eol=lf
+contrib/util/restore eol=lf
+docker/flex/utilities/devtools eol=lf
+docker/library/dockers/dev-php-fpm/data/docker-php-entrypoint eol=lf
+docker/library/dockers/dev-php-fpm/data/docker-php-ext-configure eol=lf
+docker/library/dockers/dev-php-fpm/data/docker-php-ext-enable eol=lf
+docker/library/dockers/dev-php-fpm/data/docker-php-ext-install eol=lf
+docker/library/dockers/dev-php-fpm/data/docker-php-source eol=lf
