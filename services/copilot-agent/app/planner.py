@@ -276,8 +276,11 @@ TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
     ToolName.GET_ENCOUNTERS: ToolSpec(
         description=(
             "Past visit/encounter history (date, reason, provider, type). Use for "
-            "'what changed since I last saw her' and 'which visit was that from'. "
-            "Optional tool_args: start_date, end_date (YYYY-MM-DD), limit."
+            "'what changed since I last saw her', 'which visit was that from', and "
+            "open-ended status questions ('how is she doing', 'what's new with him') "
+            "that don't name a specific domain -- the most recent encounter grounds "
+            "the current picture. Optional tool_args: start_date, end_date "
+            "(YYYY-MM-DD), limit."
         ),
         input_schema=GetEncountersInput,
         func=get_encounters,
@@ -308,7 +311,10 @@ Q: "Does she have any allergies?"
 -> {"action": "call_tool", "tool": "get_allergies", "tool_args": null, "reason": "The allergy list answers this directly.", "final_answer": null}
 
 Q: "Which visit was that from?" (asked right after a tool result already named a visit date in this conversation)
--> {"action": "answer", "tool": null, "tool_args": null, "reason": "The visit date is already present in an earlier tool result.", "final_answer": "That result is from the visit on <date>."}\
+-> {"action": "answer", "tool": null, "tool_args": null, "reason": "The visit date is already present in an earlier tool result.", "final_answer": "That result is from the visit on <date>."}
+
+Q: "What's the latest with him overall?"
+-> {"action": "call_tool", "tool": "get_encounters", "tool_args": null, "reason": "An open-ended status question that names no specific domain -- recent encounter history grounds the current picture before checking a narrower list.", "final_answer": null}\
 """
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -335,6 +341,11 @@ named in a tool's description above (e.g. {{"limit": "3"}}). Omit it \
   - Answer only from tool results already returned in this conversation. \
 If they don't contain the answer yet, call another tool rather than \
 guessing.
+  - For an open-ended status question that doesn't name a specific domain \
+(medications, allergies, problems, labs, vitals, appointments), start with \
+get_encounters or get_patient_summary rather than a single narrow list -- a \
+domain-specific tool can come back empty even when the patient has other \
+record history, and skips the most recent visit context.
   - Every answer describes patient {patient_id} only. If the clinician \
 names or numbers a different patient, do not repeat that other name or \
 number anywhere in your answer, and do not state any fact as if it were \
