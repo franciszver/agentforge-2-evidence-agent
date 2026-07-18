@@ -53,6 +53,7 @@ _logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _CHAT_PATH = "/api/chat"
+_EMBEDDINGS_PATH = "/api/embeddings"
 
 # Matches everything up to and including the first "</think>" marker (and any
 # whitespace right after it), whether or not a matching "<think>" opening tag
@@ -117,11 +118,13 @@ class OllamaClient:
         base_url: str,
         client: httpx.Client,
         model: str = "qwen3:4b",
+        embedding_model: str = "nomic-embed-text",
         max_retries: int = 2,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client
         self._model = model
+        self._embedding_model = embedding_model
         self._max_retries = max_retries
         # Side channel of per-call timing/token stats -- see ``LlmCallStats``.
         # Public (not ``_``-prefixed): ``app.planner``/``app.extraction`` read
@@ -136,6 +139,7 @@ class OllamaClient:
             base_url=settings.ollama_base_url,
             client=client,
             model=settings.ollama_model,
+            embedding_model=settings.ollama_embedding_model,
             max_retries=settings.ollama_extract_max_retries,
         )
 
@@ -411,6 +415,83 @@ class OllamaClient:
             return result
 
         raise OllamaError(f"constrained extraction failed after {self._max_retries} attempts")
+
+    def embed(self, text: str) -> list[float]:
+        """Return a dense embedding vector for ``text`` via ``/api/embeddings``.
+
+        Uses ``embedding_model`` (e.g. ``nomic-embed-text``), NOT the chat
+        model -- embeddings and chat/extraction are served by different
+        Ollama models, so this never touches ``self._model``. Retries up to
+        ``max_retries`` total attempts on a malformed response (missing/
+        non-list ``embedding``); network/HTTP failures are NOT retried, same
+        policy as ``extract``. Log-safe: never logs the input text or the
+        returned vector, only the model name and outcome (P3.3, retrieval).
+        """
+        _logger.info("ollama embed call", extra={"model": self._embedding_model})
+        body = {"model": self._embedding_model, "prompt": text}
+
+        for attempt in range(1, self._max_retries + 1):
+            start_ts = time.time()
+            try:
+                response = self._post_embeddings(body)
+            except OllamaError as exc:
+                end_ts = time.time()
+                self.call_stats.append(
+                    LlmCallStats(model=self._embedding_model, start_ts=start_ts, end_ts=end_ts, ok=False, tokens_in=None, tokens_out=None)
+                )
+                _logger.warning(
+                    "ollama embed call failed",
+                    extra={
+                        "model": self._embedding_model,
+                        "attempt": attempt,
+                        "error_type": type(exc).__name__,
+                        "duration_ms": round((end_ts - start_ts) * 1000, 1),
+                    },
+                )
+                raise
+            try:
+                payload = response.json()
+                vector = payload.get("embedding") if isinstance(payload, dict) else None
+                if not isinstance(vector, list) or not vector or not all(isinstance(v, (int, float)) for v in vector):
+                    raise ValueError("Ollama embeddings response missing a valid 'embedding' list")
+            except ValueError as exc:
+                end_ts = time.time()
+                self.call_stats.append(
+                    LlmCallStats(model=self._embedding_model, start_ts=start_ts, end_ts=end_ts, ok=False, tokens_in=None, tokens_out=None)
+                )
+                will_retry = attempt < self._max_retries
+                _logger.warning(
+                    "ollama embed call retrying after malformed response"
+                    if will_retry
+                    else "ollama embed call failed after exhausting retries",
+                    extra={
+                        "model": self._embedding_model,
+                        "attempt": attempt,
+                        "max_retries": self._max_retries,
+                        "error_type": type(exc).__name__,
+                        "duration_ms": round((end_ts - start_ts) * 1000, 1),
+                    },
+                )
+                continue
+            self.call_stats.append(
+                LlmCallStats(model=self._embedding_model, start_ts=start_ts, end_ts=time.time(), ok=True, tokens_in=None, tokens_out=None)
+            )
+            return [float(v) for v in vector]
+
+        raise OllamaError(f"embedding call failed after {self._max_retries} attempts")
+
+    def _post_embeddings(self, body: dict[str, Any]) -> httpx.Response:
+        url = f"{self._base_url}{_EMBEDDINGS_PATH}"
+        try:
+            response = self._client.post(url, json=body)
+        except httpx.TimeoutException as exc:
+            raise OllamaError("Ollama request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError("Ollama request failed") from exc
+
+        if not response.is_success:
+            raise OllamaError(f"Ollama request failed (status {response.status_code})")
+        return response
 
     def _post_chat(self, body: dict[str, Any]) -> httpx.Response:
         url = f"{self._base_url}{_CHAT_PATH}"
