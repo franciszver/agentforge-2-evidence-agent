@@ -60,7 +60,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.schemas.common import SourceRef
-from app.verification import CitationCheckResult, ClaimCheckResult
+from app.verification import CitationCheckResult, ClaimCheckResult, DocumentCitationCheckResult
 
 _NOT_FOUND_NOTICE_TEXT = "Not found in record."
 
@@ -68,10 +68,31 @@ _NOT_FOUND_NOTICE_TEXT = "Not found in record."
 @dataclass(frozen=True)
 class RenderedClaim:
     """A claim whose citations all passed re-validation -- kept verbatim,
-    carrying the passing citations forward for P3.8's citation chips."""
+    carrying the passing ``SourceRef`` citations forward for P3.8's citation
+    chips.
+
+    ``document_citation_count``/``all_citations_verified`` (P3.6 follow-up)
+    exist so a claim verified ONLY by ``document_citations`` (legal per
+    ``app.schemas.verification.Claim`` -- a claim need not carry any
+    ``SourceRef`` at all) is not rendered indistinguishable from a
+    genuinely-uncited claim: ``source_refs=[]`` alone cannot tell those two
+    cases apart. ``document_citation_count`` is the number of
+    ``DocumentCitationCheckResult`` entries this claim's citations included
+    (always >=0; a claim reaching ``RenderedClaim`` has already passed, so
+    every one of them verified). ``all_citations_verified`` restates the
+    claim's ``ClaimCheckResult.passed`` (always ``True`` for a
+    ``RenderedClaim`` today, since ``render_answer`` only builds one when
+    ``result.passed``) so a consumer has an explicit, self-describing field
+    rather than needing to infer verification status from field presence.
+    Document-citation CHIPS (rendering the actual citations, not just their
+    count) remain the separate, not-yet-built P3.7/P3.8 UI concern -- this
+    only stops discarding the fact that verified document evidence exists.
+    """
 
     text: str
     source_refs: list[SourceRef]
+    document_citation_count: int
+    all_citations_verified: bool
 
 
 @dataclass(frozen=True)
@@ -103,17 +124,26 @@ def render_answer(results: list[ClaimCheckResult]) -> RenderedAnswer:
     -- a passed claim's ``citation_results`` may now also include
     ``DocumentCitationCheckResult`` entries (P3.6's document-citation
     extension to ``app.verification``), which this pre-P3.6 rendering
-    contract has no slot for yet; wiring document-citation chips into the
-    UI is a separate, not-yet-built P3.8 concern (the ``VerifiedAnswer``/
-    ``RenderedAnswer`` docstrings already flag this contract as due for a
-    richer shape). Filtering here (rather than erroring) keeps a mixed-
+    contract has no slot for as CHIPS yet; wiring document-citation chips
+    into the UI is a separate, not-yet-built P3.7/P3.8 concern (the
+    ``VerifiedAnswer``/``RenderedAnswer`` docstrings already flag this
+    contract as due for a richer shape). Filtering ``source_refs`` to just
+    the ``SourceRef``-shaped results (rather than erroring) keeps a mixed-
     citation claim renderable today without losing its already-supported
-    ``SourceRef`` chips.
+    ``SourceRef`` chips -- but the document-citation count is NOT simply
+    dropped: ``document_citation_count``/``all_citations_verified`` on
+    ``RenderedClaim`` preserve that a claim verified solely (or partly) by
+    document evidence is not the same as an uncited claim (see
+    ``RenderedClaim``'s docstring).
     """
     segments: list[AnswerSegment] = [
         RenderedClaim(
             text=result.claim.text,
             source_refs=[c.source_ref for c in result.citation_results if isinstance(c, CitationCheckResult)],
+            document_citation_count=sum(
+                1 for c in result.citation_results if isinstance(c, DocumentCitationCheckResult)
+            ),
+            all_citations_verified=result.passed,
         )
         if result.passed
         else Notice()
