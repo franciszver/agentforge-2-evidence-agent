@@ -80,6 +80,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from fastapi import Depends, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -177,6 +178,42 @@ class Introspector(Protocol):
     def introspect(self, token: str) -> IntrospectionResult: ...
 
 
+class _IntrospectionValidator:
+    """Callable ``TokenValidator`` backed by an ``Introspector``.
+
+    Accepts a token only if introspection reports it ``active`` and (when
+    ``exp`` is present) not yet expired. Empty tokens are rejected before any
+    introspection round-trip. Every rejection raises ``TokenValidationError``
+    -> mapped to 401 by the endpoint, before the planner is built.
+
+    Exposes ``peek_cached`` -- a duck-typed *optional* capability (the same
+    pattern as ``Planner.run_streaming``, see this module's docstring) that
+    ``_validate_token`` (#185) looks up via ``getattr`` to decide whether a
+    call can stay on the event loop (a cache hit) or must be dispatched to
+    FastAPI's threadpool (a cache miss, which makes a real HTTP call). A
+    validator built over an ``Introspector`` double that has no
+    ``peek_cached`` of its own (e.g. a test fake) simply always reports a
+    miss -- correct, just not the fast path.
+    """
+
+    def __init__(self, introspector: Introspector, clock: Callable[[], float]) -> None:
+        self._introspector = introspector
+        self._clock = clock
+
+    def __call__(self, token: str) -> None:
+        if not token:
+            raise TokenValidationError("missing bearer token")
+        result = self._introspector.introspect(token)
+        if not result.active:
+            raise TokenValidationError("token is not active")
+        if result.exp is not None and result.exp <= self._clock():
+            raise TokenValidationError("token has expired")
+
+    def peek_cached(self, token: str) -> IntrospectionResult | None:
+        peek = getattr(self._introspector, "peek_cached", None)
+        return peek(token) if peek is not None else None
+
+
 def build_introspection_validator(
     introspector: Introspector, *, clock: Callable[[], float] = time.time
 ) -> TokenValidator:
@@ -187,17 +224,31 @@ def build_introspection_validator(
     rejection raises ``TokenValidationError`` -> mapped to 401 by the endpoint,
     before the planner is built.
     """
+    return _IntrospectionValidator(introspector, clock)
 
-    def _validate(token: str) -> None:
-        if not token:
-            raise TokenValidationError("missing bearer token")
-        result = introspector.introspect(token)
-        if not result.active:
-            raise TokenValidationError("token is not active")
-        if result.exp is not None and result.exp <= clock():
-            raise TokenValidationError("token has expired")
 
-    return _validate
+async def _validate_token(validator: TokenValidator, token: str) -> None:
+    """Invoke ``validator(token)``, dispatching to FastAPI's threadpool only
+    when necessary (#185).
+
+    A cache-MISS introspection makes a real, blocking HTTP call and must not
+    occupy the event loop inside the ``async`` ``chat_endpoint`` body -- so it
+    is run via ``run_in_threadpool``, the same mechanism ``get_planner_factory``
+    already relies on for the (sync) planner-factory dependency. A cache-HIT
+    (or the flag-off stub, which does no I/O at all) is cheap enough to call
+    directly, in-loop -- a threadpool round trip there would be pure overhead
+    on the common path.
+
+    ``validator`` optionally exposes ``peek_cached`` (see
+    ``_IntrospectionValidator``); its absence (the flag-off stub, or any
+    ``TokenValidator`` double without it) means "no fast path available" ->
+    call in-loop, byte-identical to before this dispatcher existed.
+    """
+    peek_cached = getattr(validator, "peek_cached", None)
+    if peek_cached is None or peek_cached(token) is not None:
+        validator(token)
+        return
+    await run_in_threadpool(validator, token)
 
 
 _token_introspector: TokenIntrospector | None = None
@@ -844,7 +895,7 @@ async def chat_endpoint(
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
-        validator(token)
+        await _validate_token(validator, token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
 
