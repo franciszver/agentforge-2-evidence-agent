@@ -255,6 +255,37 @@ def test_mixed_source_ref_and_document_citation_claim_counts_both_shapes():
 
 
 # ---------------------------------------------------------------------------
+# P3.7 citation overlay -- RenderedClaim now carries the actual
+# DocumentCitation objects (not just their count), so a later UI layer can
+# render a "view source page" affordance per citation. Additive: existing
+# document_citation_count/all_citations_verified are untouched.
+# ---------------------------------------------------------------------------
+
+
+def test_document_only_verified_claim_carries_the_actual_document_citations():
+    citation = _document_citation()
+    claim = Claim(text="Glucose is 105 mg/dL.", document_citations=[citation])
+    claim_result = ClaimCheckResult(
+        claim=claim,
+        citation_results=[DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)],
+    )
+
+    [segment] = render_answer([claim_result]).segments
+
+    assert isinstance(segment, RenderedClaim)
+    assert segment.document_citations == [citation]
+
+
+def test_a_source_ref_only_claim_has_an_empty_document_citations_list():
+    claim_result = _claim_result("On Lisinopril.", [CitationStatus.VALID])
+
+    [segment] = render_answer([claim_result]).segments
+
+    assert isinstance(segment, RenderedClaim)
+    assert segment.document_citations == []
+
+
+# ---------------------------------------------------------------------------
 # Notice wording
 # ---------------------------------------------------------------------------
 
