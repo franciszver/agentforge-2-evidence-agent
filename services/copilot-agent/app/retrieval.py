@@ -36,10 +36,20 @@ to these entry points. ``_fts_query`` additionally caps the token count fed
 into the FTS5 expression (``_MAX_QUERY_TOKENS``) as defense in depth, in
 case a future caller bypasses the character bound with some other query
 source.
+
+**Embedding-drift detection.** The committed artifact records, per chunk,
+both its dense vector AND a sha256 of the chunk text it was computed from
+(``chunk_text_sha256``). ``DenseIndex`` re-hashes each chunk's CURRENT text
+at construction time and compares -- a corpus edit that changes a chunk's
+text without regenerating the artifact (``scripts/build_retrieval_embeddings.py``)
+would otherwise silently serve a stale vector for the new text, with no
+error to say so. A hash mismatch raises ``RetrievalError`` naming the
+drifted chunk id(s).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -199,6 +209,15 @@ def _fts_query(query: str) -> str:
     return " OR ".join(f'"{token}"' for token in tokens)
 
 
+def chunk_text_sha256(text: str) -> str:
+    """Deterministic sha256 hex digest of a chunk's text -- the
+    drift-detection fingerprint recorded per chunk in the embeddings
+    artifact (``scripts/build_retrieval_embeddings.py``) and re-verified by
+    ``DenseIndex`` against each chunk's CURRENT text (see module docstring
+    "Embedding-drift detection")."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
@@ -241,13 +260,39 @@ class SparseIndex:
 
 
 class DenseIndex:
-    """Cosine-similarity search over pre-computed dense embeddings."""
+    """Cosine-similarity search over pre-computed dense embeddings.
 
-    def __init__(self, chunk_ids: Sequence[str], embeddings: dict[str, list[float]]) -> None:
+    ``embeddings`` maps ``chunk_id -> {"vector": [...], "text_sha256":
+    "..."}`` (the recorded-artifact shape -- see
+    ``scripts/build_retrieval_embeddings.py``). Construction re-hashes each
+    chunk's CURRENT text and compares it against the recorded
+    ``text_sha256``: a mismatch means the corpus text changed since the
+    artifact was last regenerated, so the recorded vector no longer
+    corresponds to what it claims to embed -- raised loudly as
+    ``RetrievalError`` rather than silently served (see module docstring
+    "Embedding-drift detection")."""
+
+    def __init__(self, chunks: Sequence[Chunk], embeddings: dict[str, dict[str, Any]]) -> None:
+        chunk_ids = [chunk.chunk_id for chunk in chunks]
         missing = sorted(set(chunk_ids) - set(embeddings))
         if missing:
             raise ValueError(f"Missing dense embeddings for chunk ids: {missing}")
-        self._embeddings = {chunk_id: embeddings[chunk_id] for chunk_id in chunk_ids}
+
+        drifted: list[str] = []
+        vectors: dict[str, list[float]] = {}
+        for chunk in chunks:
+            recorded = embeddings[chunk.chunk_id]
+            if recorded.get("text_sha256") != chunk_text_sha256(chunk.text):
+                drifted.append(chunk.chunk_id)
+                continue
+            vectors[chunk.chunk_id] = recorded["vector"]
+        if drifted:
+            raise RetrievalError(
+                f"Recorded embedding(s) are stale for chunk id(s) {sorted(drifted)}: "
+                "chunk text has changed since app/data/retrieval_embeddings.json was "
+                "recorded. Regenerate it via scripts/build_retrieval_embeddings.py."
+            )
+        self._embeddings = vectors
 
     def search(self, query_vector: Sequence[float], k: int) -> list[tuple[str, float]]:
         """Return up to ``k`` ``(chunk_id, score)`` pairs, best first, by
@@ -267,13 +312,13 @@ class HybridRetriever:
     def __init__(
         self,
         chunks: Sequence[Chunk],
-        dense_embeddings: dict[str, list[float]],
+        dense_embeddings: dict[str, dict[str, Any]],
         *,
         embedder: Embedder | None = None,
     ) -> None:
         self._chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
         self._sparse = SparseIndex(chunks)
-        self._dense = DenseIndex(list(self._chunks_by_id), dense_embeddings)
+        self._dense = DenseIndex(chunks, dense_embeddings)
         self._embedder = embedder
 
     def retrieve(
@@ -383,7 +428,8 @@ class HybridRetriever:
 def load_recorded_embeddings(path: Path = EMBEDDINGS_PATH) -> dict[str, Any]:
     """Load the committed embeddings artifact (see
     ``scripts/build_retrieval_embeddings.py``): ``{"model": ..., "chunks":
-    {chunk_id: vector}, "queries": {query_text: vector}}``."""
+    {chunk_id: {"vector": [...], "text_sha256": "..."}}, "queries":
+    {query_text: vector}}``."""
     return json.loads(path.read_text(encoding="utf-8"))
 
 

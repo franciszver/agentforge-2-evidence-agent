@@ -13,10 +13,13 @@ script never drift apart.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from app.retrieval import (
     CORPUS_DIR,
+    EMBEDDINGS_PATH,
     MAX_QUERY_CHARS,
     Chunk,
     DenseIndex,
@@ -24,6 +27,8 @@ from app.retrieval import (
     RetrievalError,
     SparseIndex,
     build_retriever_from_corpus,
+    chunk_text_sha256,
+    load_recorded_embeddings,
     parse_corpus,
     recorded_query_vector,
 )
@@ -31,6 +36,11 @@ from app.schemas.retrieval import RetrievalMode, RetrievedChunk
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
 
 TOP_K = 5
+# Golden-query hybrid results currently land at rank 1 (4 queries) or rank 3
+# (1 query) -- see test_hybrid_retrieval_finds_expected_chunk_in_top_rank
+# below. Tighter than "somewhere in the top-5": pins the actual empirical
+# ranking so a regression that pushes a result to rank 4-5 is caught.
+GOLDEN_MAX_RANK = 3
 
 
 # --- corpus parsing / chunking ----------------------------------------------
@@ -101,24 +111,51 @@ def test_sparse_index_handles_punctuation_in_query_without_raising():
     assert isinstance(hits, list)
 
 
-# --- DenseIndex (cosine similarity) -----------------------------------------
+# --- DenseIndex (cosine similarity + embedding-drift detection) -------------
+
+
+def _chunk(chunk_id: str, text: str) -> Chunk:
+    doc_id = chunk_id.split("#", 1)[0]
+    return Chunk(chunk_id=chunk_id, doc_id=doc_id, title="Title", section="Section", text=text)
 
 
 def test_dense_index_ranks_the_closer_vector_first():
+    chunk_a = _chunk("doc-a#one", "alpha text")
+    chunk_b = _chunk("doc-b#one", "beta text")
     index = DenseIndex(
-        ["a", "b"],
-        {"a": [1.0, 0.0], "b": [0.0, 1.0]},
+        [chunk_a, chunk_b],
+        {
+            "doc-a#one": {"vector": [1.0, 0.0], "text_sha256": chunk_text_sha256(chunk_a.text)},
+            "doc-b#one": {"vector": [0.0, 1.0], "text_sha256": chunk_text_sha256(chunk_b.text)},
+        },
     )
 
     hits = index.search([1.0, 0.0], k=2)
 
-    assert hits[0][0] == "a"
+    assert hits[0][0] == "doc-a#one"
     assert hits[0][1] > hits[1][1]
 
 
 def test_dense_index_raises_on_missing_embedding():
+    chunk_a = _chunk("doc-a#one", "alpha text")
+    chunk_b = _chunk("doc-b#one", "beta text")
+
     with pytest.raises(ValueError):
-        DenseIndex(["a", "b"], {"a": [1.0]})
+        DenseIndex([chunk_a, chunk_b], {"doc-a#one": {"vector": [1.0], "text_sha256": chunk_text_sha256(chunk_a.text)}})
+
+
+def test_dense_index_raises_retrieval_error_naming_drifted_chunk_on_text_mutation():
+    """Reproduces the silent-embedding-drift defect: a chunk whose text
+    changed after the artifact was recorded must fail loudly (RetrievalError
+    naming the drifted chunk id), not silently serve the stale vector."""
+    original = parse_corpus(CORPUS_DIR)[0]
+    mutated = replace(original, text=original.text + " -- MUTATED TEXT NOT REFLECTED IN THE RECORDED ARTIFACT")
+    recorded_chunks = load_recorded_embeddings(EMBEDDINGS_PATH)["chunks"]
+
+    with pytest.raises(RetrievalError) as exc_info:
+        DenseIndex([mutated], recorded_chunks)
+
+    assert mutated.chunk_id in str(exc_info.value)
 
 
 # --- HybridRetriever: golden queries, per mode ------------------------------
@@ -146,12 +183,18 @@ def test_dense_retrieval_finds_expected_chunk_in_top_k(retriever: HybridRetrieve
 
 
 @pytest.mark.parametrize("query,expected_chunk_id", GOLDEN_QUERIES)
-def test_hybrid_retrieval_finds_expected_chunk_in_top_k(retriever: HybridRetriever, query: str, expected_chunk_id: str):
+def test_hybrid_retrieval_finds_expected_chunk_in_top_rank(retriever: HybridRetriever, query: str, expected_chunk_id: str):
+    """Tighter than top-k membership: pins the expected chunk to within
+    GOLDEN_MAX_RANK (3) of the fused hybrid ranking, matching the current
+    empirical behavior (4 of 5 golden queries at rank 1, one at rank 3)."""
     query_vector = recorded_query_vector(query)
 
     results = retriever.retrieve_hybrid(query, k=TOP_K, query_vector=query_vector)
 
-    assert expected_chunk_id in [r.chunk_id for r in results]
+    chunk_ids = [r.chunk_id for r in results]
+    assert expected_chunk_id in chunk_ids
+    rank = chunk_ids.index(expected_chunk_id) + 1
+    assert rank <= GOLDEN_MAX_RANK, f"{expected_chunk_id!r} landed at rank {rank}, expected <= {GOLDEN_MAX_RANK}"
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SPARSE, RetrievalMode.DENSE, RetrievalMode.HYBRID])
