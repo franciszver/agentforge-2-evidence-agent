@@ -59,16 +59,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.retrieval import HybridRetriever, chunk_text_sha256
+from app.retrieval import HybridRetriever, RetrievalError, _validate_query_length, chunk_text_sha256
 from app.schemas.reranking import RelevanceScore, RerankedChunk
 from app.schemas.retrieval import RetrievedChunk
 
 RERANKER_SCORES_PATH = Path(__file__).resolve().parent / "data" / "reranker_scores.json"
-
-# Reuses app.retrieval.MAX_QUERY_CHARS's rationale verbatim: an unbounded
-# query fed into a per-candidate LLM prompt is a low-effort cost-amplifying
-# DoS once an endpoint wires user input to this entry point.
-MAX_QUERY_CHARS = 2000
 
 _RELEVANCE_PROMPT = (
     "Rate how relevant the following clinical-guideline passage is to the "
@@ -83,7 +78,9 @@ _RELEVANCE_PROMPT = (
 
 class RerankError(Exception):
     """Raised when reranking cannot proceed -- a query exceeds
-    ``MAX_QUERY_CHARS``, or (``RecordedRerankScorer``) a candidate's
+    ``app.retrieval.MAX_QUERY_CHARS`` (``Reranker.rerank`` reuses
+    ``app.retrieval._validate_query_length``'s shared bound/logic rather
+    than a second copy of it), or (``RecordedRerankScorer``) a candidate's
     recorded score was computed from chunk text that has since drifted, or
     was never recorded at all."""
 
@@ -167,8 +164,10 @@ class Reranker:
         candidate (``chunk_id``, ``doc_id``, ``section``, ``text``,
         ``scores``) is carried through unchanged onto its ``RerankedChunk``.
         """
-        if len(query) > MAX_QUERY_CHARS:
-            raise RerankError(f"Query exceeds the {MAX_QUERY_CHARS}-character limit ({len(query)} chars)")
+        try:
+            _validate_query_length(query)
+        except RetrievalError as exc:
+            raise RerankError(str(exc)) from exc
 
         scored = [(candidate, self._scorer.score(query, candidate.text)) for candidate in candidates]
         scored.sort(key=lambda pair: pair[1], reverse=True)

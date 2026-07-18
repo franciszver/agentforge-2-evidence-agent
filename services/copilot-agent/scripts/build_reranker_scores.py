@@ -38,8 +38,13 @@ import os
 from app.config import Settings
 from app.ollama_client import OllamaClient
 from app.reranking import RERANKER_SCORES_PATH, OllamaRerankScorer
-from app.retrieval import CORPUS_DIR, chunk_text_sha256, parse_corpus, recorded_query_vector
-from app.retrieval import build_retriever_from_corpus
+from app.retrieval import (
+    CORPUS_DIR,
+    build_retriever_from_corpus,
+    chunk_text_sha256,
+    parse_corpus,
+    recorded_query_vector,
+)
 from scripts.reranker_golden_distractors import GOLDEN_DISTRACTORS
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
 
