@@ -187,6 +187,45 @@ this fails closed rather than comparing against placeholder text).
 passes, mirroring ``check_source_ref``'s ``UNKNOWN_TOOL_CALL``/
 ``UNKNOWN_RECORD``/``UNKNOWN_FIELD`` for structured citations.
 
+**Empty/trivial quote guard (security-gate finding, fixed post-hoc).** An
+empty or whitespace-only ``quote_or_value`` would otherwise trivially
+"verify" a ``guideline_chunk`` citation: ``"".strip() in chunk_text`` is
+vacuously ``True`` for ANY chunk text, so a citation asserting nothing would
+read as ``VALID`` -- exactly the failure mode this whole checker exists to
+prevent. Guarded in two independent layers (defense in depth, matching the
+project's fail-closed posture elsewhere in this module):
+
+1. **Schema.** ``DocumentCitation.quote_or_value``
+   (``app.schemas.ingestion``) rejects a blank/whitespace-only string at
+   construction (``min_length=1`` plus a strip-non-empty model validator).
+2. **Checker.** ``check_document_citation`` independently re-checks
+   ``quote_or_value.strip()`` for blankness BEFORE either comparison, for
+   BOTH source-type branches -- ``CitationStatus.EMPTY_QUOTE``, fail-closed.
+   This is not redundant with the schema guard: a citation can reach this
+   checker via ``model_construct`` (bypassing validation, as this test
+   suite already does for other degenerate-input cases) or, longer-term,
+   via any future ingress path that does not run full Pydantic validation.
+   The checker must not rely solely on an upstream schema it does not
+   control at the point of use.
+
+**Minimum meaningful quote length (guideline_chunk only).** A 1-2
+character quote (e.g. ``"a"``, ``"of"``) passes the blank-string guard
+above but still substring-matches almost any real chunk text, which is
+just as uninformative a "citation" as an empty one for a VERBATIM-QUOTE
+check. ``_MIN_CHUNK_QUOTE_NON_WHITESPACE_CHARS`` (3) is the floor: a quote
+whose non-whitespace character count falls below it fails closed
+(``EMPTY_QUOTE``) before the substring check runs. 3 is a small,
+deliberately permissive floor -- big enough to rule out single-character/
+two-character noise matches, small enough not to reject any real short
+clinical phrase a guideline passage might actually be quoted for (e.g.
+"BMI", "HbA1c" both clear it). This floor applies ONLY to the
+``guideline_chunk`` substring path -- the ``lab_pdf``/``intake_form``
+path is EXACT equality against the raw stored quote (not substring
+containment), so a short-but-real value like a pH reading of ``"7"``
+must still verify; over-applying the length floor there would wrongly
+reject legitimate short values, so it is deliberately not applied on that
+branch (only the empty-string guard is, above).
+
 **Recency notices (issue #153) -- an additive, separate concern from
 citation re-validation above, not a change to it.**
 
@@ -245,6 +284,7 @@ are never flagged, regardless of date.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -273,6 +313,7 @@ class CitationStatus(StrEnum):
     UNKNOWN_SOURCE = "unknown_source"
     UNKNOWN_CHUNK = "unknown_chunk"
     QUOTE_NOT_FOUND = "quote_not_found"
+    EMPTY_QUOTE = "empty_quote"
 
 
 @dataclass(frozen=True)
@@ -521,6 +562,15 @@ class CorpusChunkIndex:
         return self._text_by_chunk_id.get(chunk_id)
 
 
+# Floor for a guideline_chunk citation's quote, in non-whitespace
+# characters -- see module docstring, "Minimum meaningful quote length".
+# Applies ONLY to the guideline_chunk substring-containment path, never to
+# lab_pdf/intake_form's exact-equality path.
+_MIN_CHUNK_QUOTE_NON_WHITESPACE_CHARS = 3
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
 def check_document_citation(
     citation: DocumentCitation,
     fact_index: DocumentFactIndex,
@@ -528,8 +578,21 @@ def check_document_citation(
 ) -> DocumentCitationCheckResult:
     """Re-validate one ``DocumentCitation`` against the RAW source it names.
     Never raises -- every failure mode maps to a ``CitationStatus`` (see
-    module docstring, "Document-citation extension" / "No fabrication")."""
+    module docstring, "Document-citation extension" / "No fabrication" /
+    "Empty/trivial quote guard")."""
+    stripped_quote = citation.quote_or_value.strip()
+    if not stripped_quote:
+        # Fail-closed BEFORE either comparison, for BOTH source types (see
+        # module docstring, "Empty/trivial quote guard"): an empty quote
+        # would otherwise vacuously satisfy the guideline_chunk substring
+        # check, and asserts nothing on the lab_pdf/intake_form path either.
+        return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.EMPTY_QUOTE)
+
     if citation.source_type == "guideline_chunk":
+        if len(_WHITESPACE_RE.sub("", stripped_quote)) < _MIN_CHUNK_QUOTE_NON_WHITESPACE_CHARS:
+            # Too short to be a meaningful verbatim-quote check -- see
+            # module docstring, "Minimum meaningful quote length".
+            return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.EMPTY_QUOTE)
         chunk_text = corpus_index.text_for(citation.field_or_chunk_id)
         if chunk_text is None:
             return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.UNKNOWN_CHUNK)
@@ -539,7 +602,7 @@ def check_document_citation(
             # quarantine step today, but this index must still never be
             # trusted to compare an asserted quote against placeholder text.
             return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.REDACTED_FIELD)
-        if citation.quote_or_value.strip() not in chunk_text:
+        if stripped_quote not in chunk_text:
             return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.QUOTE_NOT_FOUND)
         return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)
 
@@ -554,7 +617,7 @@ def check_document_citation(
         # store should NEVER contain the quarantine sentinel. If one somehow
         # does, fail closed rather than compare against placeholder text.
         return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.REDACTED_FIELD)
-    if citation.quote_or_value.strip() != resolved_quote.strip():
+    if stripped_quote != resolved_quote.strip():
         return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALUE_MISMATCH)
     return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)
 

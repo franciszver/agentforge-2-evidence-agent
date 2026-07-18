@@ -23,7 +23,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import ToolSchemaModel
 
@@ -151,4 +151,20 @@ class DocumentCitation(BaseModel):
     source_id: str
     page_or_section: str
     field_or_chunk_id: str
-    quote_or_value: str
+    # min_length=1 rejects a fully-empty string outright; the model
+    # validator below additionally rejects a WHITESPACE-only string (which
+    # satisfies min_length=1 but is just as void of asserted content) -- a
+    # security-gate finding: a blank quote would otherwise trivially
+    # "verify" any guideline_chunk citation (an empty/blank substring is
+    # vacuously present in any text), asserting nothing while reading as
+    # VALID. See ``app.verification.check_document_citation`` for the
+    # checker's OWN independent defensive guard against the same failure
+    # mode, for citations that bypass this schema (e.g. via
+    # ``model_construct``).
+    quote_or_value: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_non_blank_quote(self) -> "DocumentCitation":
+        if not self.quote_or_value.strip():
+            raise ValueError("quote_or_value must not be blank")
+        return self
