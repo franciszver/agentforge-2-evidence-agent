@@ -357,6 +357,162 @@ def test_document_citation_verifies_against_the_true_raw_quote_not_a_paraphrased
     )
 
 
+# ---------------------------------------------------------------------------
+# Security gate finding: empty/whitespace/trivially-short quote_or_value must
+# NOT trivially verify a guideline_chunk citation. "".strip() in chunk_text is
+# vacuously True, and a 1-2 char quote substring-matches almost any text --
+# both would let a citation asserting NOTHING pass as VALID. Guarded in TWO
+# places (defense in depth): the schema rejects a blank quote at
+# construction (DocumentCitation), and the checker independently re-guards
+# against a citation that bypassed schema validation (``model_construct``,
+# same fail-closed posture as the pre-existing zero-citation Claim test).
+# ---------------------------------------------------------------------------
+
+
+def _bypassed_chunk_citation(quote_or_value: str) -> DocumentCitation:
+    """Build a ``DocumentCitation`` bypassing pydantic validation --
+    simulates a citation that reached the checker without having gone
+    through the schema's non-blank guard, so the checker's OWN defensive
+    guard is what's under test here."""
+    return DocumentCitation.model_construct(
+        source_type="guideline_chunk",
+        source_id="hypertension-guideline",
+        page_or_section="First-line Treatment",
+        field_or_chunk_id=_RAW_CHUNK_ID,
+        quote_or_value=quote_or_value,
+    )
+
+
+def test_guideline_chunk_citation_with_empty_quote_fails_even_though_chunk_exists():
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+
+    result = check_document_citation(_bypassed_chunk_citation(""), _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_with_whitespace_only_quote_fails():
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+
+    result = check_document_citation(_bypassed_chunk_citation("   "), _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_with_one_char_quote_fails_too_short():
+    # A 1-char (or 2-char) quote substring-matches almost any real chunk
+    # text -- not a meaningful citation of content. Rejected below the
+    # 3-non-whitespace-char floor (see module docstring / verification.py's
+    # _MIN_CHUNK_QUOTE_NON_WHITESPACE_CHARS).
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+
+    result = check_document_citation(_chunk_citation(quote_or_value="a"), _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_with_real_verbatim_quote_still_passes():
+    # Regression guard: the empty/too-short guards must not over-reach and
+    # start failing legitimate, real quotes.
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+
+    result = check_document_citation(_chunk_citation(), _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.VALID
+    assert result.passed is True
+
+
+def test_lab_citation_with_empty_quote_fails_even_though_source_and_field_exist():
+    # Defense in depth on the lab_pdf/intake_form equality path too -- the
+    # empty-quote guard applies to BOTH source types, though NOT the
+    # length-floor (a legitimate lab value like "7" must still verify --
+    # see test_lab_citation_short_numeric_quote_still_verifies below).
+    fact_index = _fact_index(_RAW_LAB_CITATION)
+    bypassed = DocumentCitation.model_construct(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="Glucose",
+        quote_or_value="",
+    )
+
+    result = check_document_citation(bypassed, fact_index, _corpus_index())
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+def test_lab_citation_short_numeric_quote_still_verifies():
+    # The length floor is specific to the guideline_chunk substring path
+    # (where a short quote trivially matches almost anything); the lab/
+    # intake path is exact equality against the raw stored quote, so a
+    # short-but-real value ("7") must still verify.
+    raw = Citation(
+        source_type="lab_pdf",
+        source_id="doc-3",
+        page_or_section="page 1",
+        field_or_chunk_id="pH",
+        quote_or_value="7",
+    )
+    fact_index = _fact_index(raw)
+    citation = DocumentCitation(
+        source_type="lab_pdf",
+        source_id="doc-3",
+        page_or_section="page 1",
+        field_or_chunk_id="pH",
+        quote_or_value="7",
+    )
+
+    result = check_document_citation(citation, fact_index, _corpus_index())
+
+    assert result.status is CitationStatus.VALID
+
+
+def test_claim_with_only_an_empty_quote_document_citation_does_not_pass():
+    claim = Claim.model_construct(
+        text="Thiazides are first-line.",
+        source_refs=[],
+        document_citations=[_bypassed_chunk_citation("")],
+    )
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+
+    result = check_claim(claim, _index(), _fact_index(), corpus_index)
+
+    assert result.passed is False
+    assert result.citation_results[0].status is CitationStatus.EMPTY_QUOTE
+
+
+def test_document_citation_schema_rejects_blank_quote_or_value():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        DocumentCitation(
+            source_type="guideline_chunk",
+            source_id="hypertension-guideline",
+            page_or_section="First-line Treatment",
+            field_or_chunk_id=_RAW_CHUNK_ID,
+            quote_or_value="",
+        )
+
+
+def test_document_citation_schema_rejects_whitespace_only_quote_or_value():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        DocumentCitation(
+            source_type="guideline_chunk",
+            source_id="hypertension-guideline",
+            page_or_section="First-line Treatment",
+            field_or_chunk_id=_RAW_CHUNK_ID,
+            quote_or_value="   ",
+        )
+
+
 def test_guideline_chunk_citation_verifies_against_raw_corpus_text_not_a_reranked_summary():
     # Same invariant for guideline-chunk citations: the corpus index must be
     # built from the RAW chunk text, not a shortened/summarized stand-in a
