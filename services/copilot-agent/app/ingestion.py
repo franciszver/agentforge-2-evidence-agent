@@ -43,8 +43,7 @@ from typing import Any, Literal, Protocol
 import pypdfium2 as pdfium
 
 from app.ollama_client import OllamaError
-from app.schemas.common import ToolSchemaModel
-from app.schemas.ingestion import Citation, LabResultFact
+from app.schemas.ingestion import Citation, ExtractedLabRow, LabPageExtraction, LabResultFact
 
 _logger = logging.getLogger(__name__)
 
@@ -71,27 +70,6 @@ omit that row entirely rather than guessing a name).
 legible, else null.
   - abnormal_flag: one of "H", "L", "A", "N", or null if no flag is legible.
 """
-
-
-class ExtractedLabRow(ToolSchemaModel):
-    """One VLM-extracted lab row, before a ``Citation`` is attached.
-
-    Every field but ``test`` is ``None`` when the model could not read it --
-    see the module docstring's no-fabrication contract.
-    """
-
-    test: str
-    value: str | None
-    unit: str | None
-    reference_range: str | None
-    collection_date: str | None
-    abnormal_flag: Literal["H", "L", "A", "N"] | None
-
-
-class LabPageExtraction(ToolSchemaModel):
-    """The VLM's schema-constrained output for one rendered page."""
-
-    rows: list[ExtractedLabRow]
 
 
 class _Extractor(Protocol):
