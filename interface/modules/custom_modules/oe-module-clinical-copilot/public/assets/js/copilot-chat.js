@@ -715,15 +715,24 @@
 
         var commentWrap = document.createElement('div');
         commentWrap.className = 'copilot-feedback-comment copilot-hidden';
+        // #172: input-side PHI deterrent (complements #157's export-side
+        // scrub of this same comment). A placeholder alone disappears the
+        // moment the clinician starts typing, so this persistent hint stays
+        // visible for the life of the comment box -- textContent only, no
+        // patient/model data ever flows into it (static copy).
+        var commentHint = document.createElement('div');
+        commentHint.className = 'copilot-feedback-comment-hint';
+        commentHint.textContent = 'Feedback about the response only -- please avoid patient names, dates of birth, or other identifying details.';
         var commentInput = document.createElement('textarea');
         commentInput.className = 'copilot-feedback-comment-input';
-        commentInput.setAttribute('placeholder', 'What went wrong? (optional)');
+        commentInput.setAttribute('placeholder', 'What went wrong with the response? (optional)');
         commentInput.setAttribute('maxlength', '2000');
         commentInput.setAttribute('aria-label', 'Feedback comment');
         var commentSendBtn = document.createElement('button');
         commentSendBtn.type = 'button';
         commentSendBtn.className = 'copilot-feedback-comment-send';
         commentSendBtn.textContent = 'Send';
+        commentWrap.appendChild(commentHint);
         commentWrap.appendChild(commentInput);
         commentWrap.appendChild(commentSendBtn);
 
@@ -739,6 +748,7 @@
             downBtn: downBtn,
             status: status,
             commentWrap: commentWrap,
+            commentHint: commentHint,
             commentInput: commentInput,
             commentSendBtn: commentSendBtn
         };

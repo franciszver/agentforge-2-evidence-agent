@@ -541,9 +541,20 @@
 
 .copilot-feedback-comment {
     flex-basis: 100%;
+    min-width: 0;
     display: flex;
+    flex-wrap: wrap;
     gap: 0.4rem;
     margin-top: 0.25rem;
+}
+
+/* #172: persistent PHI-avoidance hint above the comment box -- see the
+ * copilot-chat.js renderFeedbackWidget docstring. */
+.copilot-feedback-comment-hint {
+    flex-basis: 100%;
+    min-width: 0;
+    font-size: 0.75rem;
+    color: #495057;
 }
 
 .copilot-feedback-comment-input {
