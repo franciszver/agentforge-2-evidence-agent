@@ -520,7 +520,26 @@ class DocumentFactIndex:
 
     @classmethod
     def from_citations(cls, citations: Sequence[Citation]) -> DocumentFactIndex:
-        return cls({(citation.source_id, citation.field_or_chunk_id): citation.quote_or_value for citation in citations})
+        # Code-review finding: (source_id, field_or_chunk_id) is NOT
+        # guaranteed unique today -- e.g. the same test name repeated across
+        # two pages of one lab report collides on this key. A plain dict
+        # comprehension would silently last-wins (order-dependent,
+        # undetectable), mis-associating whichever citation happened to be
+        # built first with the wrong quote. Loud failure here instead:
+        # raise rather than silently overwrite. The proper fix (a truly
+        # unique id per extracted fact, e.g. page-qualified) is tracked as
+        # follow-up issue #40; this is the cheap interim guard.
+        quotes_by_key: dict[tuple[str, str], str] = {}
+        for citation in citations:
+            key = (citation.source_id, citation.field_or_chunk_id)
+            if key in quotes_by_key:
+                raise ValueError(
+                    f"DocumentFactIndex: duplicate (source_id, field_or_chunk_id) key {key!r} -- "
+                    "two extracted facts collide on the same citation key. See issue #40 for the "
+                    "proper unique-id fix; refusing to silently pick one over the other."
+                )
+            quotes_by_key[key] = citation.quote_or_value
+        return cls(quotes_by_key)
 
     def quote_for(self, source_id: str, field_or_chunk_id: str) -> str | None:
         return self._quotes_by_key.get((source_id, field_or_chunk_id))
@@ -556,7 +575,25 @@ class CorpusChunkIndex:
 
     @classmethod
     def from_chunks(cls, chunks: Sequence[_TextChunk]) -> CorpusChunkIndex:
-        return cls({chunk.chunk_id: chunk.text for chunk in chunks})
+        # Code-review finding (same guard as DocumentFactIndex.from_citations
+        # above): a plain dict comprehension would silently last-wins on a
+        # duplicate chunk_id. Corpus chunk_ids are already unique
+        # (`<doc_id>#<section-slug>`, `app.retrieval.parse_document` raises
+        # on a duplicate section slug at parse time), so this should never
+        # actually trigger in practice -- but a caller building this index
+        # from some other chunk source (a test double, a future non-corpus
+        # source) gets a loud failure instead of a silent, order-dependent
+        # mis-association. See issue #40 for the broader unique-id followup.
+        text_by_chunk_id: dict[str, str] = {}
+        for chunk in chunks:
+            if chunk.chunk_id in text_by_chunk_id:
+                raise ValueError(
+                    f"CorpusChunkIndex: duplicate chunk_id {chunk.chunk_id!r} -- two chunks collide "
+                    "on the same id. See issue #40 for the proper unique-id fix; refusing to "
+                    "silently pick one over the other."
+                )
+            text_by_chunk_id[chunk.chunk_id] = chunk.text
+        return cls(text_by_chunk_id)
 
     def text_for(self, chunk_id: str) -> str | None:
         return self._text_by_chunk_id.get(chunk_id)
