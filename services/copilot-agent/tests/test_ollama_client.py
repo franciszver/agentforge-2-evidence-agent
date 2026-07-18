@@ -215,6 +215,79 @@ def test_extract_retries_on_valid_json_that_fails_schema_validation():
     assert call_count == 2
 
 
+# --- extract: images param (P3.1 VLM document ingestion) -------------------
+
+
+def test_extract_attaches_images_to_the_last_message_in_the_request_body():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"role": "assistant", "content": json.dumps({"name": "dog", "legs": 4})}, "done": True}
+            ),
+        )
+
+    client = _client(handler)
+    client.extract(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "describe a dog"}],
+        _Animal,
+        images=["base64pngdata"],
+    )
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    messages = body["messages"]
+    # Only the LAST message carries images -- the earlier message is untouched.
+    assert "images" not in messages[0]
+    assert messages[1]["images"] == ["base64pngdata"]
+    assert messages[1]["content"] == "describe a dog"
+
+
+def test_extract_retry_resends_images_on_the_second_attempt():
+    call_count = 0
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        captured_bodies.append(json.loads(request.content))
+        content = "not valid json {{{" if call_count == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": content}, "done": True}),
+        )
+
+    client = _client(handler, max_retries=2)
+    client.extract([{"role": "user", "content": "describe a cat"}], _Animal, images=["page-1-base64"])
+
+    assert call_count == 2
+    for body in captured_bodies:
+        assert body["messages"][-1]["images"] == ["page-1-base64"]
+
+
+def test_extract_without_images_produces_no_images_key_in_body():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"role": "assistant", "content": json.dumps({"name": "dog", "legs": 4})}, "done": True}
+            ),
+        )
+
+    client = _client(handler)
+    client.extract([{"role": "user", "content": "describe a dog"}], _Animal)
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert "images" not in body["messages"][-1]
+
+
 # --- error mapping -----------------------------------------------------
 
 

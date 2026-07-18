@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2.4",
     "httpx>=0.27",
+    # PDF page rendering for document ingestion (P3.1, app/ingestion.py).
+    "pypdfium2>=4",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +20,9 @@ dev = [
     "playwright>=1.45",
     "pytest-playwright>=0.5",
     "mypy>=1.11",
+    # scripts/generate_lab_pdf_fixture.py only -- writing the P3.1 lab-PDF
+    # test fixture, never imported by app/ code.
+    "fpdf2>=2.7",
 ]
 
 [tool.pytest.ini_options]
