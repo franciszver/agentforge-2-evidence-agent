@@ -23,7 +23,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.common import ToolSchemaModel
 
@@ -60,6 +60,17 @@ class ExtractedLabRow(ToolSchemaModel):
 
     Every field but ``test`` is ``None`` when the model could not read it --
     see the module docstring's no-fabrication contract.
+
+    ``abnormal_flag`` is deliberately the RAW printed code as a bounded
+    string (``max_length=8``), not ``LabFlagCode`` -- constraining it to the
+    closed enum at THIS schema level means a single row's flag drift (a
+    lowercase ``"h"``, a report printing ``"HIGH"`` instead of the HL7
+    single-letter code) fails validation for the ENTIRE page's
+    ``LabPageExtraction``, discarding every other row on that page over one
+    cosmetic mismatch. Normalization into ``LabFlagCode`` happens
+    deterministically downstream, in ``app.ingestion``'s row-to-fact
+    assembly, where an unrecognized code degrades to ``None`` for that ONE
+    field rather than losing the whole page.
     """
 
     test: str
@@ -67,7 +78,7 @@ class ExtractedLabRow(ToolSchemaModel):
     unit: str | None
     reference_range: str | None
     collection_date: str | None
-    abnormal_flag: LabFlagCode | None
+    abnormal_flag: str | None = Field(max_length=8)
 
 
 class LabPageExtraction(ToolSchemaModel):
