@@ -20,7 +20,8 @@ Only non-PHI data is ever stored:
     whole point of hashing instead of storing raw. The key is
     ``Settings.trace_args_hash_secret`` -- injected into ``TraceStore``
     at construction, same as ``db_path``.
-  * model name, token counts, tool name (all closed-set / non-identifying)
+  * model name, token counts, tool name, worker name, sub-task TYPE name
+    (all closed-set / non-identifying)
   * verdict + claim/stripped COUNTS -- never claim text or citation values
   * feedback thumb + a user-authored comment ABOUT THE RESPONSE (explicitly
     permitted -- it is not patient record data)
@@ -88,7 +89,11 @@ CREATE TABLE IF NOT EXISTS spans (
     stripped_count INTEGER,
     feedback_thumb TEXT,
     feedback_comment TEXT,
-    error_category TEXT
+    error_category TEXT,
+    span_id TEXT,
+    parent_span_id TEXT,
+    worker_name TEXT,
+    sub_task_type TEXT
 )
 """
 _INDEX = "CREATE INDEX IF NOT EXISTS idx_spans_correlation_id ON spans (correlation_id)"
@@ -112,6 +117,10 @@ _COLUMNS = (
     "feedback_thumb",
     "feedback_comment",
     "error_category",
+    "span_id",
+    "parent_span_id",
+    "worker_name",
+    "sub_task_type",
 )
 
 
@@ -123,6 +132,13 @@ class SpanType(StrEnum):
     LLM = "llm"
     VERIFICATION = "verification"
     FEEDBACK = "feedback"
+    # P3.8: one span per supervisor->worker handoff (app.supervisor), so the
+    # per-encounter record (app.encounter_observability) can read the
+    # ordered worker sequence + P3.5 span tree back out of this same durable
+    # sink instead of a parallel store. ``worker_name``/``sub_task_type`` are
+    # closed-set/non-identifying (a worker's stable name, a sub-task class
+    # name), same discipline as ``tool_name`` -- never a sub-task field value.
+    WORKER = "worker"
 
 
 class SpanStatus(StrEnum):
@@ -157,6 +173,10 @@ class Span:
     feedback_thumb: FeedbackThumb | None
     feedback_comment: str | None
     error_category: str | None
+    span_id: str | None
+    parent_span_id: str | None
+    worker_name: str | None
+    sub_task_type: str | None
 
 
 def hash_args(args: Mapping[str, Any], secret: str) -> str:
@@ -297,6 +317,41 @@ class TraceStore:
             status=_status(ok),
             tool_name=tool_name,
             args_hash=hash_args(args, self._hash_secret),
+            error_category=error_category,
+        )
+
+    def record_worker_span(
+        self,
+        *,
+        correlation_id: str,
+        start_ts: float,
+        end_ts: float,
+        ok: bool,
+        worker_name: str,
+        sub_task_type: str,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        error_category: str | None = None,
+    ) -> int:
+        """Record one supervisor->worker handoff (P3.5/P3.8). ``worker_name``
+        (a stable worker identifier, e.g. ``"evidence-retriever"``) and
+        ``sub_task_type`` (the sub-task's TYPE name, e.g.
+        ``"RetrieveSubTask"``) are the same closed-set, non-PHI fields
+        ``app.supervisor``'s ``_log_handoff`` already logs -- never a
+        sub-task field value. ``span_id``/``parent_span_id`` carry the P3.5
+        span tree (``app.correlation.SpanContext``) so the per-encounter
+        record can reconstruct supervisor->worker parenting from this store
+        alone."""
+        return self._insert(
+            span_type=SpanType.WORKER,
+            correlation_id=correlation_id,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status=_status(ok),
+            worker_name=worker_name,
+            sub_task_type=sub_task_type,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
             error_category=error_category,
         )
 
