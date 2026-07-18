@@ -317,6 +317,38 @@ def _assemble_lab_facts(extraction: Any, *, source_id: str, page_index: int) -> 
     return [_to_lab_result_fact(row, source_id=source_id, page_index=page_index) for row in extraction.rows]
 
 
+def _none_if_blank(value: str | None) -> str | None:
+    """Normalize a whitespace-only or empty string to ``None`` -- an empty
+    string is not legible data, the same "not found" as an actual ``None``
+    from the VLM; treating it as legible would let a blank OCR/VLM read
+    masquerade as a real (if trivial) extracted value."""
+    if value is None or value.strip() == "":
+        return None
+    return value
+
+
+def _drop_blank(items: list[str]) -> list[str]:
+    """Drop whitespace-only/empty entries from a list field -- an
+    empty-string medication/allergy/family-history entry is not data."""
+    return [item for item in items if item.strip() != ""]
+
+
+def _normalize_intake_extraction(extraction: IntakeFormExtraction) -> IntakeFormExtraction:
+    """Normalize ``extraction`` so every blank string is its honest
+    "not found" representation BEFORE assembly -- ``None`` for
+    ``chief_concern``/demographics values, dropped entirely for list
+    entries. Assembly (fact fields and citation quote alike) reads only
+    this normalized view, so neither can disagree about what counts as
+    legible."""
+    return IntakeFormExtraction(
+        demographics={key: _none_if_blank(value) for key, value in extraction.demographics.items()},
+        chief_concern=_none_if_blank(extraction.chief_concern),
+        medications=_drop_blank(extraction.medications),
+        allergies=_drop_blank(extraction.allergies),
+        family_history=_drop_blank(extraction.family_history),
+    )
+
+
 def _quote_and_field_for_intake(extraction: IntakeFormExtraction) -> tuple[str, str]:
     """Deterministic, literal rendering of what the model read on this
     intake-form page: which sections were legible (``field_or_chunk_id``)
@@ -344,7 +376,8 @@ def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, p
     """``intake_form``'s row-to-fact assembly: one ``IntakeFormFact`` per
     page carrying whatever this page had legible (zero facts if the page had
     nothing legible at all -- nothing to attach a citation to)."""
-    field_or_chunk_id, quote = _quote_and_field_for_intake(extraction)
+    normalized = _normalize_intake_extraction(extraction)
+    field_or_chunk_id, quote = _quote_and_field_for_intake(normalized)
     if not field_or_chunk_id:
         return []
     citation = Citation(
@@ -356,11 +389,11 @@ def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, p
     )
     return [
         IntakeFormFact(
-            demographics=extraction.demographics,
-            chief_concern=extraction.chief_concern,
-            medications=extraction.medications,
-            allergies=extraction.allergies,
-            family_history=extraction.family_history,
+            demographics=normalized.demographics,
+            chief_concern=normalized.chief_concern,
+            medications=normalized.medications,
+            allergies=normalized.allergies,
+            family_history=normalized.family_history,
             citation=citation,
         )
     ]
