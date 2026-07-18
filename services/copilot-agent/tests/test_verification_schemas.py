@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.common import SourceRef
+from app.schemas.ingestion import DocumentCitation
 from app.schemas.verification import Claim, VerifiedAnswer
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,52 @@ def test_claim_rejects_unknown_field():
             source_refs=[SourceRef(tool_call_id="call-1", record_id="med-1", field="dose")],
             confidence=0.9,
         )
+
+
+# ---------------------------------------------------------------------------
+# document_citations (P3.6) -- the document-sourced counterpart to source_refs
+# ---------------------------------------------------------------------------
+
+
+def _doc_citation() -> DocumentCitation:
+    return DocumentCitation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="Glucose",
+        quote_or_value="Glucose: 105 mg/dL",
+    )
+
+
+def test_claim_with_only_document_citations_round_trips():
+    claim = Claim(text="Glucose is 105 mg/dL.", document_citations=[_doc_citation()])
+
+    restored = Claim.model_validate(claim.model_dump())
+
+    assert restored == claim
+    assert restored.source_refs == []
+
+
+def test_claim_with_source_refs_and_document_citations_round_trips():
+    claim = Claim(
+        text="On Lisinopril; glucose 105 mg/dL.",
+        source_refs=[SourceRef(tool_call_id="call-1", record_id="med-1", field="dose")],
+        document_citations=[_doc_citation()],
+    )
+
+    restored = Claim.model_validate(claim.model_dump())
+
+    assert restored == claim
+
+
+def test_claim_rejects_zero_citations_of_either_shape():
+    with pytest.raises(ValidationError):
+        Claim(text="Unsupported claim.", source_refs=[], document_citations=[])
+
+
+def test_claim_rejects_no_citation_fields_at_all():
+    with pytest.raises(ValidationError):
+        Claim(text="Unsupported claim.")
 
 
 def test_claim_is_frozen():
