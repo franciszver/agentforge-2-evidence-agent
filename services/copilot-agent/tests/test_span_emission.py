@@ -141,6 +141,9 @@ def test_stream_chat_emits_a_tool_span_per_dispatched_tool_call(tmp_path: Path) 
     assert tool_span.error_category is None
     assert tool_span.duration_ms == pytest.approx(250.0, abs=1.0)
     assert tool_span.args_hash is not None
+    # P3.8: every recorded span carries its own place in the P3.5 span tree
+    # -- a non-``None`` span_id even where there is no ambient parent yet.
+    assert tool_span.span_id is not None
 
 
 def test_stream_chat_emits_a_failed_tool_span_with_error_category(tmp_path: Path) -> None:
@@ -180,6 +183,10 @@ def test_stream_chat_emits_llm_spans_from_both_planner_and_extractor(tmp_path: P
     assert {(span.tokens_in, span.tokens_out) for span in llm_spans} == {(10, 5), (20, 8), (30, 12)}
     assert all(span.model == "qwen3:4b" for span in llm_spans)
     assert all(span.status == SpanStatus.OK for span in llm_spans)
+    # P3.8: same span-tree discipline as the tool span above -- each llm
+    # span gets its own id, and no two calls share one.
+    assert all(span.span_id is not None for span in llm_spans)
+    assert len({span.span_id for span in llm_spans}) == 3
 
 
 def test_stream_chat_emits_a_failed_llm_span(tmp_path: Path) -> None:

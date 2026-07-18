@@ -85,7 +85,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.correlation import get_correlation_id
+from app.correlation import get_correlation_id, get_span_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import (
     ClaimExtractor,
@@ -104,7 +104,7 @@ from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerCompleted, PlannerResult, ReasoningDelta, ToolCallTrace, ToolDispatched
 from app.rendering import RenderedAnswer, RenderedClaim
-from app.trace_store import TraceStore
+from app.trace_store import TraceStore, record_span_best_effort
 from app.verdict import VerdictResult, to_trace_record
 
 _logger = logging.getLogger(__name__)
@@ -657,30 +657,6 @@ def _sse(event: ChatEvent, data: dict[str, object]) -> str:
     return f"event: {event.value}\ndata: {json.dumps(data)}\n\n"
 
 
-def _record_span_best_effort(operation: str, write: Callable[[], object]) -> None:
-    """Emit one trace span, best-effort. Observability must NEVER crash the
-    /chat response: a failed span write (a root-owned ``/data`` ->
-    ``PermissionError``, a full disk, a locked DB) is logged
-    (correlation-tagged by the ``app.correlation`` logging seam; the payload
-    carries only the operation label, never PHI) and swallowed, so the
-    clinician's answer streams normally. A persistent trace-store failure
-    surfaces on ``/ready``, which already gates trace-store writability --
-    ``/chat`` degrades gracefully rather than 500ing.
-
-    Catches ``Exception`` (not ``BaseException``): a ``GeneratorExit`` raised
-    while a write runs in the ``finally`` below is a client disconnect and
-    must keep propagating, not be swallowed here.
-    """
-    try:
-        write()
-    except Exception:
-        _logger.warning(
-            "trace span write failed; continuing without it",
-            extra={"operation": operation},
-            exc_info=True,
-        )
-
-
 def _tool_call_frame(trace_store: TraceStore, correlation_id: str, call: ToolCallTrace) -> str:
     """Build the ``tool_call`` SSE frame for one dispatch and record its tool
     span (best-effort), shared by both the streaming path (P2.12, called once
@@ -697,9 +673,16 @@ def _tool_call_frame(trace_store: TraceStore, correlation_id: str, call: ToolCal
             tool_name=call.tool.value,
             args=call.args,
             error_category=call.error,
+            # P3.8: mint this span's own id, parented under whatever span
+            # (if any) is already open in this correlation's context --
+            # ``None`` today (this call site opens no span of its own), but
+            # a real ambient parent once a caller nests tool dispatch under
+            # a ``span_scope`` (e.g. a future supervisor-driven /chat path).
+            span_id=str(uuid.uuid4()),
+            parent_span_id=get_span_id(),
         )
 
-    _record_span_best_effort("tool_span", _write_tool_span)
+    record_span_best_effort(_logger, "tool_span", _write_tool_span)
     return _sse(ChatEvent.TOOL_CALL, {"tool": call.tool.value, "args": call.args, "error": call.error})
 
 
@@ -723,9 +706,12 @@ def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: lis
                 model=llm_call.model,
                 tokens_in=llm_call.tokens_in,
                 tokens_out=llm_call.tokens_out,
+                # P3.8: same span-tree discipline as _write_tool_span above.
+                span_id=str(uuid.uuid4()),
+                parent_span_id=get_span_id(),
             )
 
-        _record_span_best_effort("llm_span", _write_llm_span)
+        record_span_best_effort(_logger, "llm_span", _write_llm_span)
 
 
 def _stream_chat(
@@ -884,7 +870,8 @@ def _stream_chat(
         # Yield the frame before the trace write -- the client shouldn't wait
         # on a disk write for data it already has.
         yield _sse(ChatEvent.VERIFICATION, build_verification_payload(verdict_result, rendered))
-        _record_span_best_effort(
+        record_span_best_effort(
+            _logger,
             "verification_span",
             lambda: trace_store.record_verification_span(
                 correlation_id=correlation_id,
@@ -916,7 +903,8 @@ def _stream_chat(
         request_ok = False
         raise
     finally:
-        _record_span_best_effort(
+        record_span_best_effort(
+            _logger,
             "request_span",
             lambda: trace_store.record_request_span(
                 correlation_id=correlation_id,

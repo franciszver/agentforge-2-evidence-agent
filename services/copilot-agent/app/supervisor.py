@@ -57,7 +57,7 @@ from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
 from app.schemas.reranking import RerankedChunk
-from app.trace_store import TraceStore
+from app.trace_store import TraceStore, record_span_best_effort
 
 _logger = logging.getLogger(__name__)
 
@@ -264,13 +264,17 @@ class Supervisor:
     ) -> None:
         """Persist the just-completed handoff as a durable ``worker`` span,
         best-effort (P3.8) -- a trace-store write failure must never break a
-        handoff that otherwise succeeded, mirroring ``app.chat``'s
-        ``_record_span_best_effort`` for tool/llm spans. No-op when no
-        ``trace_store`` was injected (the default)."""
+        handoff that otherwise succeeded. Shares ``app.trace_store``'s
+        ``record_span_best_effort`` with ``app.chat``'s tool/llm spans
+        rather than reimplementing the same try/except-log-continue
+        discipline here. No-op when no ``trace_store`` was injected (the
+        default)."""
         if self._trace_store is None:
             return
-        try:
-            self._trace_store.record_worker_span(
+        trace_store = self._trace_store
+
+        def _write_worker_span() -> int:
+            return trace_store.record_worker_span(
                 correlation_id=worker_span.correlation_id,
                 start_ts=start_ts,
                 end_ts=end_ts,
@@ -281,5 +285,5 @@ class Supervisor:
                 parent_span_id=worker_span.parent_span_id,
                 error_category=error_type,
             )
-        except Exception:
-            _logger.warning("worker span write failed; continuing without it", exc_info=True)
+
+        record_span_best_effort(_logger, "worker_span", _write_worker_span)

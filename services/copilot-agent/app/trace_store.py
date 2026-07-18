@@ -63,8 +63,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -192,6 +193,32 @@ def hash_args(args: Mapping[str, Any], secret: str) -> str:
     return hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
 
 
+def record_span_best_effort(logger: logging.Logger, operation: str, write: Callable[[], object]) -> None:
+    """Emit one trace span, best-effort. Observability must NEVER crash the
+    caller: a failed span write (a root-owned ``/data`` -> ``PermissionError``,
+    a full disk, a locked DB) is logged (correlation-tagged by the
+    ``app.correlation`` logging seam; the payload carries only the operation
+    label, never PHI) and swallowed. Shared by every span-writing caller --
+    ``app.chat`` (tool/llm spans) and ``app.supervisor`` (worker spans) --
+    so the best-effort discipline lives in exactly one place rather than
+    being reimplemented per caller. ``logger`` is the CALLER's own logger
+    (not this module's), so log lines keep attributing to the module that
+    triggered the write.
+
+    Catches ``Exception`` (not ``BaseException``): a ``GeneratorExit`` raised
+    while a write runs in a caller's ``finally`` block is a client
+    disconnect and must keep propagating, not be swallowed here.
+    """
+    try:
+        write()
+    except Exception:
+        logger.warning(
+            "trace span write failed; continuing without it",
+            extra={"operation": operation},
+            exc_info=True,
+        )
+
+
 _ALWAYS_COLUMNS = ("correlation_id", "span_type", "start_ts", "end_ts", "duration_ms", "status")
 # Every span-type-specific column, derived from ``_COLUMNS`` (single source of
 # truth) rather than re-listed -- see ``TraceStore._insert``.
@@ -306,9 +333,15 @@ class TraceStore:
         tool_name: str,
         args: Mapping[str, Any],
         error_category: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
     ) -> int:
         """Record one planner tool dispatch. ``args`` is hashed via
-        :func:`hash_args` and never stored raw -- see module docstring."""
+        :func:`hash_args` and never stored raw -- see module docstring.
+        ``span_id``/``parent_span_id`` (P3.8) carry this span's place in the
+        P3.5 span tree (``app.correlation.SpanContext``), same as
+        ``record_worker_span`` -- optional/nullable so a caller with no
+        ambient span (nothing currently open in context) is unaffected."""
         return self._insert(
             span_type=SpanType.TOOL,
             correlation_id=correlation_id,
@@ -318,6 +351,8 @@ class TraceStore:
             tool_name=tool_name,
             args_hash=hash_args(args, self._hash_secret),
             error_category=error_category,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
         )
 
     def record_worker_span(
@@ -365,8 +400,12 @@ class TraceStore:
         model: str,
         tokens_in: int | None = None,
         tokens_out: int | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
     ) -> int:
-        """Record one Ollama call (planner turn, quarantine summary, or extraction)."""
+        """Record one Ollama call (planner turn, quarantine summary, or
+        extraction). ``span_id``/``parent_span_id`` (P3.8) carry this span's
+        place in the P3.5 span tree, same as ``record_tool_span``."""
         return self._insert(
             span_type=SpanType.LLM,
             correlation_id=correlation_id,
@@ -376,6 +415,8 @@ class TraceStore:
             model=model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
         )
 
     def record_verification_span(
