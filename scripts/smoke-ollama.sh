@@ -42,26 +42,18 @@ if ! compose ps --status running --services 2>/dev/null | grep -qx "ollama"; the
     exit 1
 fi
 
-echo "Checking model '${MODEL}' is present..."
 if ! model_list="$(compose exec -T ollama ollama list)"; then
     echo "FAIL: 'ollama list' failed inside the ollama container" >&2
     exit 1
 fi
 
-if ! grep -qF "${MODEL}" <<< "${model_list}"; then
-    echo "FAIL: model '${MODEL}' not found in 'ollama list' output:" >&2
-    echo "${model_list}" >&2
-    echo "Provision it first with: bash scripts/pull-model.sh" >&2
-    exit 1
-fi
-echo "Model present."
-
-# Phase 2 (#10): local vision-language model + embedding model, provisioned
-# by the same `scripts/pull-model.sh` mechanism as qwen3:4b above.
-for phase2_model in "qwen2.5vl:7b" "nomic-embed-text"; do
-    echo "Checking model '${phase2_model}' is present..."
-    if ! grep -qF "${phase2_model}" <<< "${model_list}"; then
-        echo "FAIL: model '${phase2_model}' not found in 'ollama list' output:" >&2
+# Phase 2 (#10): qwen2.5vl:7b (vision-language) and nomic-embed-text
+# (embedding) are provisioned by the same `scripts/pull-model.sh` mechanism
+# as qwen3:4b, so all three are checked the same way.
+for model in "${MODEL}" "qwen2.5vl:7b" "nomic-embed-text"; do
+    echo "Checking model '${model}' is present..."
+    if ! grep -qF "${model}" <<< "${model_list}"; then
+        echo "FAIL: model '${model}' not found in 'ollama list' output:" >&2
         echo "${model_list}" >&2
         echo "Provision it first with: bash scripts/pull-model.sh" >&2
         exit 1

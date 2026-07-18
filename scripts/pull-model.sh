@@ -28,12 +28,11 @@ IMAGE="ollama/ollama:0.12.6@sha256:352e045b937ac29d3d9550c22fb85525f60a89e064df3
 VOLUME="development-easy_ollamamodels"
 CONTAINER="ollama-pull"
 
-# name|tag|manifest_path_suffix|expected_digest ("" = no pin enforced, e.g.
-# the pre-Phase-2 qwen3:4b).
+# name|expected_digest ("" = no pin enforced, e.g. the pre-Phase-2 qwen3:4b).
 MODELS=(
-    "qwen3:4b|qwen3/4b|"
-    "qwen2.5vl:7b|qwen2.5vl/7b|5ced39dfa4bac325dc183dd1e4febaa1c46b3ea28bce48896c8e69c1e79611cc"
-    "nomic-embed-text|nomic-embed-text/latest|0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+    "qwen3:4b|"
+    "qwen2.5vl:7b|5ced39dfa4bac325dc183dd1e4febaa1c46b3ea28bce48896c8e69c1e79611cc"
+    "nomic-embed-text|0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
 )
 
 echo "Provisioning models into volume '${VOLUME}'..."
@@ -65,7 +64,7 @@ if ! docker exec "${CONTAINER}" ollama list >/dev/null 2>&1; then
 fi
 
 for spec in "${MODELS[@]}"; do
-    IFS='|' read -r model manifest_suffix expected_digest <<< "${spec}"
+    IFS='|' read -r model expected_digest <<< "${spec}"
 
     if docker exec "${CONTAINER}" ollama list | grep -qF "${model}"; then
         echo "Model '${model}' already present in volume; re-pulling is a cheap no-op."
@@ -75,8 +74,10 @@ for spec in "${MODELS[@]}"; do
     docker exec "${CONTAINER}" ollama pull "${model}"
 
     if [[ -n "${expected_digest}" ]]; then
+        manifest_suffix="${model/:/\/}"
+        [[ "${manifest_suffix}" == "${model}" ]] && manifest_suffix="${model}/latest"
         manifest_path="/root/.ollama/models/manifests/registry.ollama.ai/library/${manifest_suffix}"
-        actual_digest="$(docker exec "${CONTAINER}" sh -c "sha256sum '${manifest_path}'" | awk '{print $1}')"
+        actual_digest="$(docker exec "${CONTAINER}" sha256sum "${manifest_path}" | awk '{print $1}')"
         if [[ "${actual_digest}" != "${expected_digest}" ]]; then
             echo "FAIL: model '${model}' manifest digest mismatch" >&2
             echo "  expected: ${expected_digest}" >&2
