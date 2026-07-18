@@ -206,6 +206,8 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
     user-authored text about the response) is allowed to appear verbatim."""
     sentinel_drug_name = "Lisinopril-10mg-PATIENT-SPECIFIC"
     sentinel_note = "Patient reports chest pain since Tuesday"
+    sentinel_worker_name = "evidence-retriever"
+    sentinel_sub_task_type = "RetrieveSubTask"
 
     store.record_request_span(correlation_id="corr-phi", start_ts=0.0, end_ts=1.0, ok=True)
     store.record_tool_span(
@@ -229,11 +231,34 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
         feedback_thumb=FeedbackThumb.UP,
         feedback_comment="Great answer, matched the chart.",
     )
+    # P3.8: worker spans (app.supervisor handoffs) belong in "one of every
+    # span type" too -- exercises the WORKER span type plus its
+    # worker_name/sub_task_type/span_id/parent_span_id columns. These are
+    # closed-set/non-identifying by contract (never a sub-task field value --
+    # see app.supervisor's module docstring), so, unlike the tool ``args``
+    # above, they are EXPECTED to persist verbatim -- asserted via
+    # ``get_spans`` below, not added to the not-in-raw-bytes checks.
+    store.record_worker_span(
+        correlation_id="corr-phi",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        worker_name=sentinel_worker_name,
+        sub_task_type=sentinel_sub_task_type,
+        span_id="span-outer",
+        parent_span_id="span-root",
+    )
 
     raw_bytes = Path(db_path).read_bytes()
 
     assert sentinel_drug_name.encode() not in raw_bytes
     assert sentinel_note.encode() not in raw_bytes
+
+    worker_span = next(span for span in store.get_spans("corr-phi") if span.span_type == SpanType.WORKER)
+    assert worker_span.worker_name == sentinel_worker_name
+    assert worker_span.sub_task_type == sentinel_sub_task_type
+    assert worker_span.span_id == "span-outer"
+    assert worker_span.parent_span_id == "span-root"
 
 
 def test_hash_args_is_deterministic_and_order_independent() -> None:
