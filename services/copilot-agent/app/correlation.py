@@ -57,6 +57,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import Message, Receive, Scope, Send
@@ -66,6 +67,16 @@ CORRELATION_ID_HEADER = "X-Correlation-ID"
 _correlation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "correlation_id", default=None
 )
+
+# P3.5 extension: a lightweight span-id stack, layered on top of the
+# correlation id above rather than a parallel tracing scheme. One
+# correlation id per invocation (unchanged); within it, ``span_scope`` lets
+# nested code (e.g. ``app.supervisor.Supervisor`` handing work to a worker)
+# open a child span whose ``parent_span_id`` is whatever span was open when
+# it was entered. This is what lets a supervisor->worker->supervisor handoff
+# chain be reconstructed from logs alone: same correlation id, span/
+# parent-span pointers forming a tree.
+_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("span_id", default=None)
 
 
 def new_correlation_id() -> str:
@@ -97,6 +108,43 @@ def correlation_scope(correlation_id: str | None = None) -> Iterator[str]:
         yield value
     finally:
         _correlation_id.reset(token)
+
+
+def get_span_id() -> str | None:
+    """Return the currently-open span id, or ``None`` if no ``span_scope`` is
+    open in this context (e.g. before the supervisor has started one)."""
+    return _span_id.get()
+
+
+@dataclass(frozen=True)
+class SpanContext:
+    """One open span: its own id, its parent's id (``None`` at the root),
+    and the correlation id it belongs to -- everything a caller needs to log
+    a handoff event that a span tree can later be reconstructed from."""
+
+    span_id: str
+    parent_span_id: str | None
+    correlation_id: str
+
+
+@contextmanager
+def span_scope() -> Iterator[SpanContext]:
+    """Open a new span as a child of whatever span (if any) is currently
+    open, for the ``with`` block; restores the previous span on exit.
+
+    Nesting ``span_scope`` calls is exactly how a supervisor->worker
+    handoff gets parented: the supervisor opens one span for the whole
+    request, and each worker invocation opens its own nested ``span_scope``
+    -- its ``parent_span_id`` comes out as the supervisor's span id with no
+    extra plumbing, because the parent is read from this same contextvar.
+    """
+    parent_span_id = _span_id.get()
+    span_id = str(uuid.uuid4())
+    token = _span_id.set(span_id)
+    try:
+        yield SpanContext(span_id=span_id, parent_span_id=parent_span_id, correlation_id=get_correlation_id())
+    finally:
+        _span_id.reset(token)
 
 
 class CorrelationIdMiddleware:
@@ -188,6 +236,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
         record = base_factory(*args, **kwargs)
         record.correlation_id = _correlation_id.get() or "-"
+        record.span_id = _span_id.get() or "-"
         return record
 
     logging.setLogRecordFactory(_record_factory)
