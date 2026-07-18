@@ -35,7 +35,7 @@ import io
 import json
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -43,7 +43,18 @@ from typing import Any, Literal, Protocol
 import pypdfium2 as pdfium
 
 from app.ollama_client import OllamaError
-from app.schemas.ingestion import Citation, ExtractedLabRow, LabFlagCode, LabPageExtraction, LabResultFact
+from app.schemas.common import ToolSchemaModel
+from app.schemas.ingestion import (
+    Citation,
+    ExtractedLabRow,
+    IntakeFormExtraction,
+    IntakeFormFact,
+    LabFlagCode,
+    LabPageExtraction,
+    LabResultFact,
+)
+
+DocumentFact = LabResultFact | IntakeFormFact
 
 _logger = logging.getLogger(__name__)
 
@@ -92,6 +103,29 @@ legible, else null.
   - abnormal_flag: one of "H", "L", "A", "N", or null if no flag is legible.
 """
 
+_INTAKE_EXTRACTION_PROMPT = """\
+You are extracting a patient-intake-form page image into structured data. \
+Read ONLY what is legible on this page image. For any field you cannot \
+read -- blurred, cropped, obscured, or simply absent -- set it to null (or \
+an empty list/dict for a list/dict field). NEVER guess or infer a value \
+that is not visibly present on the page; a missing or illegible field must \
+be reported as not-found, not as your best guess.
+
+Report, for THIS page only (a real intake form may span several pages, and \
+not every section appears on every page):
+  - demographics: a dict of legible demographic fields (e.g. "name", \
+"dob", "sex") present on this page -- only include keys you can actually \
+read; leave it empty if none are legible here.
+  - chief_concern: the patient's stated reason for the visit, or null if \
+not on this page / illegible.
+  - medications: a list of medication names/doses legible on this page, or \
+an empty list if none are on this page.
+  - allergies: a list of allergies legible on this page, or an empty list \
+if none are on this page.
+  - family_history: a list of family-history entries legible on this page, \
+or an empty list if none are on this page.
+"""
+
 
 class _Extractor(Protocol):
     """The one capability ``attach_and_extract`` needs from the VLM client:
@@ -119,9 +153,10 @@ class DocumentStore(Protocol):
 
 class FactStore(Protocol):
     """Where extracted facts are persisted. A stopgap for FHIR
-    ``Observation`` writes -- see module docstring."""
+    ``Observation``/``Patient``/``Condition``/``AllergyIntolerance`` writes
+    -- see module docstring."""
 
-    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[LabResultFact]) -> None: ...
+    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -141,7 +176,7 @@ class IngestionResult:
     """
 
     source_id: str
-    facts: list[LabResultFact]
+    facts: list[DocumentFact]
     pages_total: int
     failed_pages: list[int]
 
@@ -196,20 +231,29 @@ def render_pdf_pages_to_png(file_path: Path) -> list[bytes]:
         pdf.close()
 
 
-def _extract_page(ollama_client: _Extractor, *, page_index: int, image_png: bytes) -> LabPageExtraction | None:
+def _extract_page(
+    ollama_client: _Extractor,
+    *,
+    page_index: int,
+    image_png: bytes,
+    schema: type[ToolSchemaModel],
+    prompt: str,
+) -> ToolSchemaModel | None:
     """Run the schema-constrained VLM extraction call for one page.
 
-    Returns ``None`` -- never an empty ``LabPageExtraction`` -- when the
-    call fails outright, so a failed page stays distinguishable from a page
-    that was successfully read and legitimately had zero rows (see
-    ``IngestionResult.failed_pages``).
+    Returns ``None`` -- never an empty extraction -- when the call fails
+    outright, so a failed page stays distinguishable from a page that was
+    successfully read and legitimately had nothing to extract (see
+    ``IngestionResult.failed_pages``). ``schema``/``prompt`` are the one
+    doc-type-specific piece of this shared per-page call -- everything else
+    about running/handling the extraction is identical across doc types.
     """
     image_b64 = base64.b64encode(image_png).decode("ascii")
-    messages = [{"role": "user", "content": _LAB_EXTRACTION_PROMPT}]
+    messages = [{"role": "user", "content": prompt}]
     try:
-        result = ollama_client.extract(messages, LabPageExtraction, images=[image_b64])
+        result = ollama_client.extract(messages, schema, images=[image_b64])
     except OllamaError:
-        _logger.warning("lab pdf page extraction failed", extra={"page_index": page_index})
+        _logger.warning("document page extraction failed", extra={"page_index": page_index})
         return None
     return result  # type: ignore[no-any-return]
 
@@ -267,26 +311,114 @@ def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int
     )
 
 
+def _assemble_lab_facts(extraction: Any, *, source_id: str, page_index: int) -> list[DocumentFact]:
+    """``lab_pdf``'s row-to-fact assembly: one ``LabResultFact`` per row on
+    the page (zero, one, or many facts per page)."""
+    return [_to_lab_result_fact(row, source_id=source_id, page_index=page_index) for row in extraction.rows]
+
+
+def _quote_and_field_for_intake(extraction: IntakeFormExtraction) -> tuple[str, str]:
+    """Deterministic, literal rendering of what the model read on this
+    intake-form page: which sections were legible (``field_or_chunk_id``)
+    and a literal quote of their content (``quote_or_value``). Only
+    sections actually populated on THIS page contribute -- never claims a
+    section was read when it was absent/illegible here."""
+    sections: list[tuple[str, str]] = []
+    legible_demographics = {k: v for k, v in extraction.demographics.items() if v is not None}
+    if legible_demographics:
+        sections.append(("demographics", "demographics: " + ", ".join(f"{k}={v}" for k, v in legible_demographics.items())))
+    if extraction.chief_concern is not None:
+        sections.append(("chief_concern", f"chief_concern: {extraction.chief_concern}"))
+    if extraction.medications:
+        sections.append(("medications", "medications: " + "; ".join(extraction.medications)))
+    if extraction.allergies:
+        sections.append(("allergies", "allergies: " + "; ".join(extraction.allergies)))
+    if extraction.family_history:
+        sections.append(("family_history", "family_history: " + "; ".join(extraction.family_history)))
+    if not sections:
+        return "", ""
+    return ", ".join(name for name, _ in sections), "; ".join(quote for _, quote in sections)
+
+
+def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, page_index: int) -> list[IntakeFormFact]:
+    """``intake_form``'s row-to-fact assembly: one ``IntakeFormFact`` per
+    page carrying whatever this page had legible (zero facts if the page had
+    nothing legible at all -- nothing to attach a citation to)."""
+    field_or_chunk_id, quote = _quote_and_field_for_intake(extraction)
+    if not field_or_chunk_id:
+        return []
+    citation = Citation(
+        source_type="intake_form",
+        source_id=source_id,
+        page_or_section=f"page {page_index + 1}",
+        field_or_chunk_id=field_or_chunk_id,
+        quote_or_value=quote,
+    )
+    return [
+        IntakeFormFact(
+            demographics=extraction.demographics,
+            chief_concern=extraction.chief_concern,
+            medications=extraction.medications,
+            allergies=extraction.allergies,
+            family_history=extraction.family_history,
+            citation=citation,
+        )
+    ]
+
+
+def _assemble_intake_facts(extraction: Any, *, source_id: str, page_index: int) -> list[DocumentFact]:
+    return _to_intake_form_facts(extraction, source_id=source_id, page_index=page_index)  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class _DocTypeHandler:
+    """The doc-type-specific slice of ``attach_and_extract``: which schema
+    constrains the VLM's decoding, what prompt drives it, and how a page's
+    extraction assembles into facts. Everything else in
+    ``attach_and_extract`` (validate-then-store, per-page rendering,
+    failed-page bookkeeping, storage) is shared across every entry here --
+    deliberately two entries, not a speculative plugin system."""
+
+    extraction_schema: type[ToolSchemaModel]
+    prompt: str
+    assemble: Callable[..., list[DocumentFact]]
+
+
+_DOC_TYPE_HANDLERS: dict[str, _DocTypeHandler] = {
+    "lab_pdf": _DocTypeHandler(
+        extraction_schema=LabPageExtraction,
+        prompt=_LAB_EXTRACTION_PROMPT,
+        assemble=_assemble_lab_facts,
+    ),
+    "intake_form": _DocTypeHandler(
+        extraction_schema=IntakeFormExtraction,
+        prompt=_INTAKE_EXTRACTION_PROMPT,
+        assemble=_assemble_intake_facts,
+    ),
+}
+
+
 def attach_and_extract(
     patient_id: int,
     file_path: str | Path,
-    doc_type: Literal["lab_pdf"],
+    doc_type: Literal["lab_pdf", "intake_form"],
     *,
     ollama_client: _Extractor,
     document_store: DocumentStore,
     fact_store: FactStore,
 ) -> IngestionResult:
-    """Extract structured ``LabResultFact``s from a lab-report PDF.
+    """Extract structured facts from a lab-report PDF or patient intake
+    form.
 
-    First P3.1 slice: only ``doc_type="lab_pdf"`` is implemented (raises
-    ``ValueError`` for anything else -- ``intake_form`` extraction is a
-    separate, not-yet-built slice, never silently attempted here). Renders
-    every page to an image, runs one schema-constrained VLM extraction call
-    per page (``LabPageExtraction``), and deterministically assembles the
-    per-row results into ``LabResultFact``s carrying a ``Citation`` back to
-    their exact page. Persists the source document and the extracted facts
-    via the injected stores (see module docstring's storage-honesty note)
-    before returning.
+    Both doc types share this one code path (validate-then-store, per-page
+    rendering, failed-page bookkeeping, storage); only the extraction
+    schema, VLM prompt, and page-to-fact assembly are doc-type-specific,
+    dispatched via ``_DOC_TYPE_HANDLERS``. Renders every page to an image,
+    runs one schema-constrained VLM extraction call per page, and
+    deterministically assembles each page's extraction into facts carrying
+    a ``Citation`` back to their exact page. Persists the source document
+    and the extracted facts via the injected stores (see module docstring's
+    storage-honesty note) before returning.
 
     **Validate-then-store.** The PDF is opened and checked against
     ``MAX_PAGES``/``MAX_PAGE_POINTS`` (``_validate_pdf``) BEFORE anything is
@@ -297,10 +429,14 @@ def attach_and_extract(
     **Partial extraction.** A page whose VLM call fails outright is recorded
     in the returned ``IngestionResult.failed_pages`` (1-based) rather than
     silently contributing zero facts indistinguishable from "this page had
-    no lab rows" -- see that field's docstring for the caller obligation.
+    nothing to extract" -- see that field's docstring for the caller
+    obligation.
     """
-    if doc_type != "lab_pdf":
-        raise ValueError(f"attach_and_extract only supports doc_type='lab_pdf' in this slice, got {doc_type!r}")
+    handler = _DOC_TYPE_HANDLERS.get(doc_type)
+    if handler is None:
+        raise ValueError(
+            f"attach_and_extract only supports doc_type in {sorted(_DOC_TYPE_HANDLERS)}, got {doc_type!r}"
+        )
 
     path = Path(file_path)
     pdf = _open_pdf(path)
@@ -312,16 +448,20 @@ def attach_and_extract(
     source_id = document_store.save_source_document(patient_id, doc_type, path)
 
     pages = render_pdf_pages_to_png(path)
-    facts: list[LabResultFact] = []
+    facts: list[DocumentFact] = []
     failed_pages: list[int] = []
     for page_index, image_png in enumerate(pages):
-        extraction = _extract_page(ollama_client, page_index=page_index, image_png=image_png)
+        extraction = _extract_page(
+            ollama_client,
+            page_index=page_index,
+            image_png=image_png,
+            schema=handler.extraction_schema,
+            prompt=handler.prompt,
+        )
         if extraction is None:
             failed_pages.append(page_index + 1)
             continue
-        facts.extend(
-            _to_lab_result_fact(row, source_id=source_id, page_index=page_index) for row in extraction.rows
-        )
+        facts.extend(handler.assemble(extraction, source_id=source_id, page_index=page_index))
 
     fact_store.save_facts(patient_id, source_id, facts)
     return IngestionResult(source_id=source_id, facts=facts, pages_total=len(pages), failed_pages=failed_pages)
@@ -349,7 +489,7 @@ class LocalIngestionStore:
         dest.write_bytes(file_path.read_bytes())
         return source_id
 
-    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[LabResultFact]) -> None:
+    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None:
         dest = self._base_dir / "facts" / f"{source_id}.json"
         payload = {
             "patient_id": patient_id,

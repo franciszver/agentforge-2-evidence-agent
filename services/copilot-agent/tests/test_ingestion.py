@@ -402,6 +402,7 @@ def test_unrecognized_flag_code_keeps_the_row_but_nulls_the_flag_and_quotes_it(s
     potassium = next(f for f in result.facts if f.test == "Potassium")
     assert potassium.abnormal_flag is None
     assert potassium.value == "4.1"  # every other field on the row survives
+    assert "XX" in potassium.citation.quote_or_value
 
 
 # ---------------------------------------------------------------------------
@@ -563,4 +564,3 @@ def test_intake_form_page_with_nothing_legible_yields_no_fact_for_that_page(stor
     assert len(result.facts) == 1
     assert result.failed_pages == []
     assert result.pages_total == 2
-    assert "XX" in potassium.citation.quote_or_value
