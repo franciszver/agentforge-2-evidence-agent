@@ -367,6 +367,142 @@ def test_named_cross_patient_reference_is_refused_before_any_tool_dispatch_when_
     assert "chart is currently open" in answer_data
 
 
+# --------------------------------------------------------------------------
+# #237 roster-based cross-patient detection: the "switch (over) to <Name>"
+# signal (app.extraction.detect_foreign_patient_reference's signal 3), fed by
+# the planner's OPTIONAL ``resolve_patient_roster`` capability -- resolved
+# LAZILY (only when a "switch to <Name>" construction actually matched, never
+# at conversation-creation time like ``resolve_patient_name``) and cached on
+# the ``Conversation`` so a second matching turn in the SAME conversation
+# does not pay the round trip again.
+# --------------------------------------------------------------------------
+
+
+class FakePlannerWithRoster(FakePlanner):
+    """A ``FakePlanner`` that also offers the OPTIONAL roster-resolution
+    capability -- mirrors how the real ``Planner.resolve_patient_roster``
+    duck-types alongside ``run``/``run_streaming``/``resolve_patient_name``."""
+
+    def __init__(self, trace, answer, roster: list[str], raw_results=None) -> None:
+        super().__init__(trace, answer, raw_results)
+        self._roster = roster
+        self.roster_resolve_calls = 0
+
+    def resolve_patient_roster(self) -> list[str]:
+        self.roster_resolve_calls += 1
+        return self._roster
+
+
+def test_switch_to_name_matching_roster_is_refused_before_any_tool_dispatch():
+    trace = [ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None)]
+    fake_planner = FakePlannerWithRoster(
+        trace=trace,
+        answer="Bob Smith has a drug allergy to ZZ-TEST-MARKER.",
+        roster=["Bob Smith"],
+    )
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "Switch over to Bob Smith and tell me his drug allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    assert response.status_code == 200
+
+    events = _iter_sse_events(response.text)
+    tool_calls = [data for name, data in events if name == "tool_call"]
+    answer_data = next(data for name, data in events if name == "answer")
+
+    assert tool_calls == []
+    assert fake_planner.questions == []
+    assert "ZZ-TEST-MARKER" not in answer_data
+    assert "chart is currently open" in answer_data
+    assert fake_planner.roster_resolve_calls == 1
+
+
+def test_roster_is_not_resolved_when_question_has_no_switch_to_construction():
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=["Bob Smith"])
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    client.post(
+        "/chat",
+        json={"message": "What meds is she on?", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    assert fake_planner.roster_resolve_calls == 0
+
+
+def test_switch_to_a_drug_brand_not_on_the_roster_dispatches_normally():
+    # "Advair Diskus" matches the SAME 2-3 word shape as "Bob Smith" -- the
+    # roster (not present on it) is what proves this is an ordinary
+    # same-patient medication switch, not a cross-patient retarget.
+    trace = [ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None)]
+    fake_planner = FakePlannerWithRoster(trace=trace, answer="ok", roster=["Bob Smith"])
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "Switch to Advair Diskus and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    assert response.status_code == 200
+    assert fake_planner.questions == ["Switch to Advair Diskus and check her allergies."]
+    assert fake_planner.roster_resolve_calls == 1
+
+
+def test_roster_is_resolved_once_and_cached_across_turns():
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=["Bob Smith"])
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    first = client.post(
+        "/chat",
+        json={"message": "Switch to Advair Diskus and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    conversation_id = _conversation_id(first.text)
+    assert fake_planner.roster_resolve_calls == 1
+
+    client.post(
+        "/chat",
+        json={
+            "message": "Switch to Depo Provera and tell me her allergies.",
+            "patient_id": 1,
+            "conversation_id": conversation_id,
+        },
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    # Cached on the conversation -- resolved once, reused on the second turn.
+    assert fake_planner.roster_resolve_calls == 1
+
+
+def test_switch_to_message_does_not_crash_when_planner_has_no_roster_resolver():
+    # FakePlanner (no resolve_patient_roster) -- the pre-#237 default double
+    # used throughout this file -- must not break, and the roster signal is
+    # simply skipped (planner runs normally, no refusal).
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "Switch over to Bob Smith and tell me his drug allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    assert response.status_code == 200
+    assert fake_planner.questions == ["Switch over to Bob Smith and tell me his drug allergies."]
+
+
 def test_missing_token_returns_401_and_never_invokes_planner():
     fake_planner = FakePlanner(trace=[], answer="should not be called")
     _override_planner_factory(fake_planner)

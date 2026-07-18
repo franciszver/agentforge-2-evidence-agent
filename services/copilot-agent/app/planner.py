@@ -88,7 +88,7 @@ from app.tools.appointments import get_appointments
 from app.tools.encounters import get_encounters
 from app.tools.labs import get_recent_labs
 from app.tools.medications import get_medications
-from app.tools.patient_summary import get_patient_name, get_patient_summary
+from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
 from app.tools.problems import get_problems
 from app.tools.vitals import get_vitals
 
@@ -473,6 +473,23 @@ class Planner:
         implements ``run()`` simply has no name to offer.
         """
         return get_patient_name(self._openemr, self._token, self._patient_id)
+
+    def resolve_patient_roster(self) -> list[str]:
+        """Every OTHER patient's own display name (#237 roster-based
+        cross-patient detection), for ``app.extraction
+        .detect_foreign_patient_reference``'s "switch to <Name>" signal.
+
+        ``[]`` on any OpenEMR API error (fail-safe -- see
+        ``app.tools.patient_summary.get_patient_roster``). An OPTIONAL
+        capability, not part of ``app.chat.PlannerProtocol`` -- callers
+        duck-type it via ``getattr`` (same pattern as ``resolve_patient_name``
+        / ``run_streaming``), and unlike ``resolve_patient_name`` (resolved
+        ONCE per conversation, at creation time), callers invoke this LAZILY
+        -- only when a candidate "switch to <Name>" construction has already
+        matched -- so a conversation that never mentions another patient by
+        name never pays this round trip.
+        """
+        return get_patient_roster(self._openemr, self._token, self._patient_id)
 
     def run(self, question: str) -> PlannerResult:
         """Run the loop to completion and return the finished result.

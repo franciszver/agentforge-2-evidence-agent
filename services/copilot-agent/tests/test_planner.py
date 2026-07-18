@@ -500,3 +500,71 @@ def test_resolve_patient_name_returns_none_when_patient_not_found(make_openemr_c
     )
 
     assert planner.resolve_patient_name() is None
+
+
+# --- resolve_patient_roster (#237 roster-based cross-patient detection) -----
+#
+# Best-effort every-OTHER-patient's display name, for the roster-based
+# "switch to <Name>" signal (app.extraction.detect_foreign_patient_reference)
+# -- same getattr-duck-typed OPTIONAL-capability pattern as
+# resolve_patient_name, called lazily (only when a candidate name
+# construction actually matched) rather than at conversation-creation time --
+# see app.chat's wiring comment for why.
+
+
+def test_resolve_patient_roster_returns_every_other_patients_name(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(
+                200,
+                json={
+                    "validationErrors": [],
+                    "internalErrors": [],
+                    "data": [
+                        {
+                            "pid": BOUND_PATIENT_ID,
+                            "fname": "Wanda",
+                            "lname": "Moore",
+                            "DOB": "1950-01-01",
+                            "sex": "Female",
+                            "uuid": "u1",
+                        },
+                        {
+                            "pid": BOUND_PATIENT_ID + 1,
+                            "fname": "Bob",
+                            "lname": "Smith",
+                            "DOB": "1960-01-01",
+                            "sex": "Male",
+                            "uuid": "u2",
+                        },
+                    ],
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    planner = Planner(
+        ollama_client=object(),
+        openemr_client=make_openemr_client(handler),
+        token="tok",
+        patient_id=BOUND_PATIENT_ID,
+        registry={},
+    )
+
+    assert planner.resolve_patient_roster() == ["Bob Smith"]
+
+
+def test_resolve_patient_roster_returns_empty_list_on_api_error(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(403, json={"error": "insufficient_scope"})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    planner = Planner(
+        ollama_client=object(),
+        openemr_client=make_openemr_client(handler),
+        token="tok",
+        patient_id=BOUND_PATIENT_ID,
+        registry={},
+    )
+
+    assert planner.resolve_patient_roster() == []

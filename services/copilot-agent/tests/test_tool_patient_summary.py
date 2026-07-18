@@ -19,7 +19,7 @@ from app.config import Settings
 from app.openemr_auth import fetch_token_password_grant, register_client
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
-from app.tools.patient_summary import get_patient_name, get_patient_summary
+from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
 
 PHIL_UUID = "a243a1bb-178f-4092-8c67-52dfaf67fca6"
 
@@ -230,6 +230,51 @@ def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
     name = get_patient_name(make_openemr_client(handler), token="tok", patient_id=1)
 
     assert name is None
+
+
+# --------------------------------------------------------------------------
+# get_patient_roster (#237 roster-based cross-patient detection) -- the same
+# roster fetch/select pattern as get_patient_name, but keeping every OTHER
+# patient's display name instead of the bound one's -- feeds
+# app.extraction.detect_foreign_patient_reference's "switch to <Name>" signal
+# (a referenced name is foreign only if it matches a real DIFFERENT patient).
+# --------------------------------------------------------------------------
+
+
+def test_get_patient_roster_returns_every_other_patients_name(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=PATIENT_LIST_BODY)
+        raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
+
+    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+
+    assert roster == ["Susan Underwood"]
+
+
+def test_get_patient_roster_excludes_the_bound_patient_itself(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=PATIENT_LIST_BODY)
+        raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
+
+    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+
+    assert "Phil Belford" not in roster
+
+
+def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client):
+    # Fail-safe: an unavailable roster is [] -- never an exception -- so the
+    # caller's roster signal is skipped entirely (behavior identical to no
+    # roster at all), never a crash or a false refusal.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(403, json={"error": "insufficient_scope"})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+
+    assert roster == []
 
 
 @pytest.mark.integration

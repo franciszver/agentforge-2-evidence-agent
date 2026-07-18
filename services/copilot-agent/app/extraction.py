@@ -73,7 +73,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -655,11 +655,90 @@ def _is_foreign_named_patient(question: str, bound_patient_name: str | None) -> 
     )
 
 
-def detect_foreign_patient_reference(
-    question: str, bound_patient_id: int, bound_patient_name: str | None = None
+# #237 roster-based cross-patient detection: the "switch (over) to <Name>"
+# construction #223 originally had to drop and #224 could not safely revive
+# by SHAPE alone (see ``detect_foreign_patient_reference``'s docstring) --
+# resurrected here as a CONSTRUCTION regex only. Requires 2-3 capitalized
+# words (same shape #224's draft used), which excludes virtually every real
+# drug name in casual clinical shorthand (single tokens: Lisinopril,
+# Coumadin, Metformin, ...) -- but unlike #224's draft, whether a MATCHED
+# 2-3 word candidate actually triggers a refusal is now decided by a patient
+# ROSTER (``_matches_roster`` below), never by requiring a following
+# possessive clinical phrase.
+_SWITCH_TO_NAME_RE = re.compile(
+    r"\b(?i:switch(?:ing)?\s+(?:over\s+)?to)\s+((?:[A-Z][A-Za-z'\-]*\s+){1,2}[A-Z][A-Za-z'\-]*)\b"
+)
+
+# Trailing possessive on a captured candidate: "switch to Bob Smith's chart"
+# captures "Bob Smith's" (the ASCII apostrophe is inside the name char class
+# above, deliberately -- names like O'Brien need it), which would fail the
+# exact full-name comparisons below and silently bypass the refusal. Both
+# apostrophe forms: ASCII ' (what keyboards produce) and U+2019 ’ (what
+# smart-quote autocorrect produces; not in the char class, so the capture
+# already ends before it -- included here for symmetry/robustness).
+_POSSESSIVE_SUFFIX_RE = re.compile(r"['’]s$")
+
+
+def _matches_roster(candidate: str, roster: Sequence[str]) -> bool:
+    """Whether ``candidate`` (a 2-3 word name captured from a "switch to
+    <Name>" construction) names a real, DIFFERENT patient on ``roster`` --
+    an exact, case-insensitive FULL-NAME match only.
+
+    Deliberately NOT first-name-only (unlike ``_same_named_patient``'s
+    bound-patient comparison, which allows the clinician to refer to the
+    currently-open patient by first name alone): a roster can hold many
+    patients, so a bare first name could match several of them, and it is
+    not possible to say WHICH one is meant. Firing on an ambiguous partial
+    match would be a confident wrong action -- worse than a missed refusal,
+    consistent with this guard's fail-safe bias throughout. In practice
+    ``_SWITCH_TO_NAME_RE`` only ever captures 2-3 word phrases anyway, so
+    this is never actually asked to resolve a bare first name; the
+    full-name-only restriction is a deliberate, explicit statement of
+    intent rather than a currently load-bearing case.
+    """
+    candidate_cf = candidate.strip().casefold()
+    return any(candidate_cf == entry.strip().casefold() for entry in roster)
+
+
+def _is_foreign_switch_to_name(
+    question: str,
+    bound_patient_name: str | None,
+    roster_provider: Callable[[], Sequence[str]] | None,
 ) -> bool:
-    """Deterministic PRE-dispatch guard (#223, extended by #224): does
-    ``question`` explicitly reference a DIFFERENT patient than
+    """The roster-based "switch (over) to <Name>" signal (#237): ``True``
+    only when a captured 2-3 word name (i) is not the bound patient and (ii)
+    matches a roster entry. The roster is resolved LAZILY, via
+    ``roster_provider()``, and ONLY when a candidate has already matched and
+    is not already known to be the bound patient -- so a question with no
+    "switch to <Name>" construction, or one that names the bound patient,
+    never pays the roster round trip. ``roster_provider is None`` (no roster
+    available) fail-safe SKIPS this signal entirely, same posture as
+    ``_is_foreign_named_patient`` with no bound name.
+
+    A trailing possessive on the capture ("switch to Bob Smith's chart" ->
+    "Bob Smith's") is stripped via ``_POSSESSIVE_SUFFIX_RE`` BEFORE both
+    comparisons, so possessive phrasing neither bypasses the roster match
+    nor turns the bound patient's own name into an unknown candidate that
+    triggers a pointless roster fetch."""
+    match = _SWITCH_TO_NAME_RE.search(question)
+    if match is None:
+        return False
+    candidate = _POSSESSIVE_SUFFIX_RE.sub("", match.group(1).strip())
+    if bound_patient_name is not None and _same_named_patient(candidate, bound_patient_name):
+        return False
+    if roster_provider is None:
+        return False
+    return _matches_roster(candidate, roster_provider())
+
+
+def detect_foreign_patient_reference(
+    question: str,
+    bound_patient_id: int,
+    bound_patient_name: str | None = None,
+    roster_provider: Callable[[], Sequence[str]] | None = None,
+) -> bool:
+    """Deterministic PRE-dispatch guard (#223, extended by #224 and #237):
+    does ``question`` explicitly reference a DIFFERENT patient than
     ``bound_patient_id``/``bound_patient_name``?
 
     This hardens #194's ``apply_subject_check`` above, which only runs AFTER
@@ -672,7 +751,7 @@ def detect_foreign_patient_reference(
     ``runner.pipeline.run_case``) short-circuits to a refusal BEFORE the
     planner runs at all -- no tool dispatch, no model call.
 
-    **Two signals, evaluated independently (either firing is enough):**
+    **Three signals, evaluated independently (any one firing is enough):**
       1. An explicit foreign patient NUMBER ("patient 999", "patient #999",
          "patient id 999") whose value differs from the bound id, via
          ``_GUARD_PATIENT_NUMBER_RE`` (which excludes dosing forms like "give
@@ -687,29 +766,39 @@ def detect_foreign_patient_reference(
          conversation-creation wiring and ``runner.pipeline.run_case``'s
          ``case.patient_name``); with no bound name to compare against it is
          skipped and this function's behavior is byte-identical to #223
-         (numeric only). This mirrors the guard's existing bias throughout:
-         a wrongly hard-refused legitimate clinical question is a worse
-         regression than a missed refusal.
+         (numeric only). Needs no roster -- unaffected by #237.
+      3. "switch (over) to <Name>" (``_is_foreign_switch_to_name`` /
+         ``_SWITCH_TO_NAME_RE``) whose captured name is NOT the bound patient
+         AND matches a real DIFFERENT patient on ``roster_provider()`` (#237
+         -- see that function's docstring). This is the construction #223
+         had to drop entirely (a bare capitalized word collides with a drug
+         name, "switch to Lisinopril") and #224 could not safely revive by
+         requiring only a 2-3 word name plus a following possessive clinical
+         phrase -- that gate's own FP probe still misfired on ~6 of 7
+         realistic two-word drug-BRAND switches ("switch to Advair Diskus and
+         check her allergies", "switch to Depo Provera and tell me her
+         allergies") because a two-word brand name is structurally identical
+         to a two-word person name; no amount of surrounding-phrase shape
+         resolves that ambiguity. A roster does: a referenced name matching a
+         real, different patient is unambiguously a retarget, and a name
+         matching no patient is never a patient reference at all -- it is
+         evaluated as a plain medication/etc. mention. ``roster_provider`` is
+         a zero-arg callable, resolved LAZILY (only when signal 3's
+         construction has already matched and isn't the bound patient) so a
+         conversation that never uses this construction never pays the
+         round trip; ``None`` (no roster available -- e.g. the resolve
+         failed) skips this signal entirely, same fail-safe posture as
+         signal 2 with no bound name.
 
-    **Deliberately NOT a signal: "switch (over) to <Name>".** A #224 draft
-    added it (gated on a 2-3 word name plus a following third-person
-    possessive clinical ask), but the gate's FP probe showed it misfires on
-    ~6 of 7 realistic two-word drug-BRAND switches -- "switch to Advair
-    Diskus and check her allergies", "switch to Depo Provera and tell me her
-    allergies", "switch to Plan B and review her meds" -- because a two-word
-    brand name is structurally identical to a two-word person name and these
-    ARE ordinary same-patient medication-switch questions. That is the exact
-    clinical false positive that forced #223 to remove its own name path
-    (see #223's history), so it is left out here too. Distinguishing a
-    "switch to <Name>" retarget from a drug-brand switch needs a ROSTER of the
-    other real patients (a referenced name matching a real DIFFERENT patient
-    is unambiguously a retarget; a name matching no patient is a drug, not a
-    patient reference) -- the clean future fix, out of scope for this
-    bare-regex guard.
+    This mirrors the guard's existing bias throughout: a wrongly
+    hard-refused legitimate clinical question is a worse regression than a
+    missed refusal.
     """
     if any(int(match.group(1)) != bound_patient_id for match in _GUARD_PATIENT_NUMBER_RE.finditer(question)):
         return True
-    return _is_foreign_named_patient(question, bound_patient_name)
+    if _is_foreign_named_patient(question, bound_patient_name):
+        return True
+    return _is_foreign_switch_to_name(question, bound_patient_name, roster_provider)
 
 
 _CROSS_PATIENT_REFUSAL_ANSWER = (

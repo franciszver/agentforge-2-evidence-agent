@@ -485,11 +485,20 @@ class Conversation:
     .detect_foreign_patient_reference``'s named cross-patient signals; a
     ``None`` name simply disables those signals for this conversation,
     falling back to #223's numeric-only detection.
+
+    ``patient_roster`` (#237 roster-based detection) is every OTHER
+    patient's display name, resolved LAZILY -- unlike ``patient_name``, NOT
+    at conversation-creation time -- see ``_stream_chat``'s
+    ``_roster_provider`` closure. ``None`` means "not yet resolved" (the
+    common case: most turns never mention another patient by name);
+    populated on first use and cached here so a second matching turn in the
+    SAME conversation does not pay the round trip again.
     """
 
     conversation_id: str
     patient_id: int
     patient_name: str | None = None
+    patient_roster: list[str] | None = None
     history: list[Turn] = field(default_factory=list)
 
 
@@ -740,19 +749,36 @@ def _stream_chat(
         # unconditionally (a cheap attribute lookup, no side effect) so it is
         # available below regardless of which branch runs next.
         run_streaming = getattr(planner, "run_streaming", None)
-        # #223 (extended by #224): deterministic PRE-dispatch cross-patient
-        # refusal guard, checked BEFORE the planner runs at all. Unlike
-        # #194's apply_subject_check below (which only rewrites the answer
-        # TEXT after tools have already been dispatched), this
+
+        def _roster_provider() -> list[str]:
+            # #237: resolved LAZILY -- this closure is only ever CALLED by
+            # detect_foreign_patient_reference when a "switch to <Name>"
+            # construction has already matched and isn't the bound patient,
+            # so a turn that never uses that construction never pays this
+            # round trip. Cached on the conversation so a second matching
+            # turn in the SAME conversation reuses it instead of re-fetching.
+            if conversation.patient_roster is None:
+                resolve_roster = getattr(planner, "resolve_patient_roster", None)
+                conversation.patient_roster = resolve_roster() if resolve_roster is not None else []
+            return conversation.patient_roster
+
+        # #223 (extended by #224, #237): deterministic PRE-dispatch
+        # cross-patient refusal guard, checked BEFORE the planner runs at
+        # all. Unlike #194's apply_subject_check below (which only rewrites
+        # the answer TEXT after tools have already been dispatched), this
         # short-circuits BEFORE any tool dispatch or model call -- the only
         # way to guarantee a forbidden tool never runs. ``conversation
         # .patient_name`` (resolved once at conversation-creation time, see
         # ``_resolve_conversation_patient_name``) enables the guard's named
         # signals; ``None`` (name-binding unavailable) falls back to #223's
-        # numeric-only detection. See app.extraction
+        # numeric-only detection. ``_roster_provider`` enables the #237
+        # roster-based "switch to <Name>" signal. See app.extraction
         # .detect_foreign_patient_reference.
         cross_patient_reference_detected = detect_foreign_patient_reference(
-            message, conversation.patient_id, conversation.patient_name
+            message,
+            conversation.patient_id,
+            conversation.patient_name,
+            roster_provider=_roster_provider,
         )
         if cross_patient_reference_detected:
             result = cross_patient_refusal_result()

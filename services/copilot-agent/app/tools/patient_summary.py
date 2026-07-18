@@ -105,6 +105,15 @@ def get_patient_name(client: OpenEmrClient, token: str, patient_id: int) -> str 
     return " ".join(parts) if parts else None
 
 
+def _fetch_all_patients(client: OpenEmrClient, token: str) -> list[dict[str, Any]]:
+    """Fetch the full REST patient roster (``GET /apis/default/api/patient``),
+    unfiltered. Shared by ``_fetch_demographics`` (select one pid) and
+    ``get_patient_roster`` (#237 -- collect every OTHER patient's name)."""
+    payload = client.get_rest("patient", token=token)
+    records = payload.get("data") if isinstance(payload, dict) else None
+    return [record for record in records or [] if isinstance(record, dict)]
+
+
 def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> dict[str, Any]:
     """Fetch the patient roster and select the matching ``pid``.
 
@@ -113,12 +122,40 @@ def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> d
     also an error (``NOT_FOUND``): unlike an empty *section*, a missing
     patient is not a valid state for a summary request.
     """
-    payload = client.get_rest("patient", token=token)
-    records = payload.get("data") if isinstance(payload, dict) else None
-    for record in records or []:
+    for record in _fetch_all_patients(client, token):
         if record.get("pid") == patient_id:
             return record
     raise OpenEmrApiError(ErrorCategory.NOT_FOUND, "OpenEMR patient not found")
+
+
+def get_patient_roster(client: OpenEmrClient, token: str, patient_id: int) -> list[str]:
+    """Every OTHER patient's own "First Last" display name (#237 roster-based
+    cross-patient detection) -- ``patient_id`` itself is excluded.
+
+    Fail-safe: ``[]`` on any OpenEMR API error (timeout, insufficient scope,
+    ...), never a raised exception -- callers
+    (``app.extraction.detect_foreign_patient_reference``) treat an empty/
+    unavailable roster as "roster signal unavailable" and skip it entirely,
+    the same posture ``get_patient_name`` already takes for the name-binding
+    signal. Reuses the same full-roster fetch as ``_fetch_demographics``
+    (``GET /apis/default/api/patient``) -- this tool is only ever invoked
+    lazily, when a candidate "switch to <Name>" construction has already
+    matched, so it is not an extra round trip on the common (no such
+    construction) path.
+    """
+    try:
+        records = _fetch_all_patients(client, token)
+    except OpenEmrApiError:
+        return []
+    names: list[str] = []
+    for record in records:
+        if record.get("pid") == patient_id:
+            continue
+        fname, lname = record.get("fname"), record.get("lname")
+        parts = [part for part in (fname, lname) if isinstance(part, str) and part]
+        if parts:
+            names.append(" ".join(parts))
+    return names
 
 
 def _count_rest_list(client: OpenEmrClient, token: str, path: str) -> int:

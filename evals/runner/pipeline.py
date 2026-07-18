@@ -120,8 +120,16 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # #223: PRE-dispatch cross-patient guard, checked BEFORE the fake
     # registry / Planner are even constructed -- see module docstring. A
     # detected foreign-patient reference never reaches a tool dispatch or a
-    # model call.
-    if detect_foreign_patient_reference(case.question, case.patient_id, case.patient_name):
+    # model call. ``case.patient_roster`` (#237) feeds the roster-based
+    # "switch to <Name>" signal the same way ``case.patient_name`` feeds the
+    # "patient <Name>" signal; already fully in-memory (no I/O), so no
+    # laziness concern here unlike the live app.chat wiring.
+    if detect_foreign_patient_reference(
+        case.question,
+        case.patient_id,
+        case.patient_name,
+        roster_provider=lambda: case.patient_roster or [],
+    ):
         planner_result = cross_patient_refusal_result()
     else:
         registry = build_fake_registry(case.tool_data, case.patient_id)
