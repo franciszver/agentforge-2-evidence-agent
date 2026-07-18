@@ -39,9 +39,10 @@ from app.ingestion import (
     render_pdf_pages_to_png,
 )
 from app.ollama_client import OllamaError
-from app.schemas.ingestion import LabFlagCode, LabResultFact
+from app.schemas.ingestion import IntakeFormExtraction, IntakeFormFact, LabFlagCode, LabResultFact
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lab_report_synthetic.pdf"
+_INTAKE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "intake_form_synthetic.pdf"
 
 
 def _build_pdf(path: Path, page_sizes: list[tuple[float, float]]) -> Path:
@@ -75,10 +76,14 @@ _PAGE_2_ROWS = [
 
 
 class _FakeVlmOllama:
-    """Scripted VLM extraction double: returns one canned ``LabPageExtraction``
-    per call, in order (or raises), and records what it was called with."""
+    """Scripted VLM extraction double: returns one canned extraction result
+    per call, in order (or raises), and records what it was called with.
+    ``results`` is untyped-element (``LabPageExtraction`` for lab_pdf tests,
+    ``IntakeFormExtraction`` for intake_form tests) -- this one double is
+    reused for both doc types' tests, standing in for whichever schema the
+    real VLM call would be constrained to."""
 
-    def __init__(self, results: list[LabPageExtraction] | None = None, *, error: bool = False) -> None:
+    def __init__(self, results: list[Any] | None = None, *, error: bool = False) -> None:
         self._results = results or []
         self._error = error
         self.extract_calls: list[tuple[list[dict[str, Any]], type, list[str] | None]] = []
@@ -154,10 +159,15 @@ def test_attach_and_extract_calls_vlm_once_per_page_with_that_pages_image(fake_v
         assert len(images) == 1  # one image (this page) per call
 
 
+# P3.2 note: this test previously exercised "intake_form" as the unsupported
+# doc_type -- P3.2 implements that slice (see section 9 below), so it is now
+# a *supported* value and no longer proves anything about rejection. Updated
+# to a genuinely unsupported literal so the test still pins "an unknown
+# doc_type raises ValueError", the behavior it was actually written to cover.
 def test_attach_and_extract_rejects_unsupported_doc_type(fake_vlm, store):
-    with pytest.raises(ValueError, match="lab_pdf"):
+    with pytest.raises(ValueError, match="unknown_doc_type"):
         attach_and_extract(
-            1, _FIXTURE_PATH, "intake_form", ollama_client=fake_vlm, document_store=store, fact_store=store  # type: ignore[arg-type]
+            1, _FIXTURE_PATH, "unknown_doc_type", ollama_client=fake_vlm, document_store=store, fact_store=store  # type: ignore[arg-type]
         )
 
 
@@ -397,3 +407,189 @@ def test_unrecognized_flag_code_keeps_the_row_but_nulls_the_flag_and_quotes_it(s
     assert potassium.abnormal_flag is None
     assert potassium.value == "4.1"  # every other field on the row survives
     assert "XX" in potassium.citation.quote_or_value
+
+
+# ---------------------------------------------------------------------------
+# 9. doc_type="intake_form" (P3.2) -- shares attach_and_extract's one code
+#    path with lab_pdf; only the extraction schema/prompt/assembly differ.
+# ---------------------------------------------------------------------------
+
+# Mirrors scripts/generate_intake_form_fixture.py's page content exactly --
+# the scripted double stands in for what a real VLM reading these page
+# images would report, including the one deliberately unreadable field
+# (page 1's DOB, covered by an opaque box in the fixture).
+_INTAKE_PAGE_1_EXTRACTION = IntakeFormExtraction(
+    demographics={"name": "Test Patient", "dob": None, "sex": "F", "mrn": "TEST-000000"},
+    chief_concern="Intermittent chest tightness for the past 3 days.",
+    medications=[],
+    allergies=[],
+    family_history=[],
+)
+_INTAKE_PAGE_2_EXTRACTION = IntakeFormExtraction(
+    demographics={},
+    chief_concern=None,
+    medications=["Lisinopril 10mg daily", "Metformin 500mg twice daily", "Atorvastatin 20mg nightly"],
+    allergies=["Penicillin", "Shellfish"],
+    family_history=["Father: hypertension", "Mother: type 2 diabetes"],
+)
+
+
+@pytest.fixture
+def fake_intake_vlm() -> _FakeVlmOllama:
+    return _FakeVlmOllama([_INTAKE_PAGE_1_EXTRACTION, _INTAKE_PAGE_2_EXTRACTION])
+
+
+def test_attach_and_extract_intake_form_returns_schema_valid_facts_with_citations(fake_intake_vlm, store):
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=fake_intake_vlm, document_store=store, fact_store=store
+    )
+
+    assert isinstance(result, IngestionResult)
+    assert len(result.facts) == 2  # one fact per page (each page had legible content)
+    for fact in result.facts:
+        assert isinstance(fact, IntakeFormFact)
+        assert fact.citation.source_type == "intake_form"
+        assert fact.citation.source_id == result.source_id
+
+
+def test_attach_and_extract_intake_form_citations_carry_the_correct_page_number(fake_intake_vlm, store):
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=fake_intake_vlm, document_store=store, fact_store=store
+    )
+
+    demographics_fact = next(f for f in result.facts if f.demographics)
+    medications_fact = next(f for f in result.facts if f.medications)
+    assert demographics_fact.citation.page_or_section == "page 1"
+    assert medications_fact.citation.page_or_section == "page 2"
+
+
+def test_attach_and_extract_intake_form_calls_vlm_once_per_page_with_that_pages_image(fake_intake_vlm, store):
+    attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=fake_intake_vlm, document_store=store, fact_store=store
+    )
+
+    assert len(fake_intake_vlm.extract_calls) == 2
+    for _messages, schema, images in fake_intake_vlm.extract_calls:
+        assert schema is IntakeFormExtraction
+        assert images is not None
+        assert len(images) == 1
+
+
+def test_intake_form_redacted_field_yields_none_not_a_guessed_value(fake_intake_vlm, store):
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=fake_intake_vlm, document_store=store, fact_store=store
+    )
+
+    demographics_fact = next(f for f in result.facts if f.demographics)
+    assert demographics_fact.demographics["dob"] is None
+    # Every other demographic field on the same page was legible and is NOT
+    # None -- proves the None is specific to the redacted field.
+    assert demographics_fact.demographics["name"] == "Test Patient"
+    assert demographics_fact.demographics["sex"] == "F"
+
+
+def test_intake_form_redacted_field_citation_quote_does_not_claim_a_dob():
+    from app.ingestion import _to_intake_form_facts
+
+    facts = _to_intake_form_facts(_INTAKE_PAGE_1_EXTRACTION, source_id="src-1", page_index=0)
+
+    assert len(facts) == 1
+    quote = facts[0].citation.quote_or_value
+    # The citation quotes the legible demographics/chief_concern truthfully,
+    # never a fabricated DOB for the redacted field...
+    assert "1990" not in quote
+    # ...but it MUST truthfully carry what actually was legible on the page --
+    # a citation that quoted nothing would be just as dishonest as one that
+    # fabricated the DOB.
+    assert "Test Patient" in quote
+    assert "sex=F" in quote
+
+
+def test_intake_form_empty_string_fields_normalize_to_not_found(store):
+    """An empty/whitespace-only string is not legible data -- the VLM (or a
+    scripted double standing in for it) reporting "" for a field must be
+    treated the same as reporting None/omitting it entirely, never stored
+    or quoted as if something was actually read."""
+    blank_page = IntakeFormExtraction(
+        demographics={"name": "Test Patient", "dob": "   "},
+        chief_concern="",
+        medications=["Lisinopril 10mg daily", "", "   "],
+        allergies=[""],
+        family_history=["Father: hypertension", ""],
+    )
+    empty_page = IntakeFormExtraction(
+        demographics={}, chief_concern=None, medications=[], allergies=[], family_history=[]
+    )
+    vlm = _FakeVlmOllama([blank_page, empty_page])
+
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=vlm, document_store=store, fact_store=store
+    )
+
+    assert len(result.facts) == 1  # page 2 had nothing legible even before normalization
+    fact = result.facts[0]
+    assert fact.chief_concern is None
+    assert fact.demographics["dob"] is None
+    assert fact.demographics["name"] == "Test Patient"
+    assert fact.medications == ["Lisinopril 10mg daily"]
+    assert fact.allergies == []  # the sole entry was blank -- filtered, not stored as ""
+    assert fact.family_history == ["Father: hypertension"]
+
+    quote = fact.citation.quote_or_value
+    assert "chief_concern:" not in quote  # no section for a field that normalized to None
+    assert "allergies:" not in quote  # no section for a list that normalized to empty
+    for segment in quote.split("; "):
+        assert segment.strip() != ""  # no empty list items/sections leaked into the quote
+
+
+def test_intake_form_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
+    failing_vlm = _FakeVlmOllama(error=True)
+
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=failing_vlm, document_store=store, fact_store=store
+    )
+
+    assert result.facts == []
+    assert result.failed_pages == [1, 2]
+    assert result.pages_total == 2
+
+
+def test_intake_form_mixed_outcome_keeps_succeeded_page_facts_and_marks_only_the_failed_page(store):
+    class _MixedVlm:
+        """Page 1 succeeds, page 2 fails outright."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                return _INTAKE_PAGE_1_EXTRACTION
+            raise OllamaError("scripted failure on page 2")
+
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=_MixedVlm(), document_store=store, fact_store=store
+    )
+
+    assert len(result.facts) == 1
+    assert result.facts[0].citation.page_or_section == "page 1"
+    assert result.failed_pages == [2]
+    assert result.pages_total == 2
+
+
+def test_intake_form_page_with_nothing_legible_yields_no_fact_for_that_page(store):
+    empty_extraction = IntakeFormExtraction(
+        demographics={}, chief_concern=None, medications=[], allergies=[], family_history=[]
+    )
+    vlm = _FakeVlmOllama([_INTAKE_PAGE_1_EXTRACTION, empty_extraction])
+
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=vlm, document_store=store, fact_store=store
+    )
+
+    # Page 2 legitimately had nothing legible -- no fact fabricated for it --
+    # but it is NOT in failed_pages (the VLM call succeeded; it just read an
+    # empty page), distinct from an outright extraction failure.
+    assert len(result.facts) == 1
+    assert result.failed_pages == []
+    assert result.pages_total == 2
