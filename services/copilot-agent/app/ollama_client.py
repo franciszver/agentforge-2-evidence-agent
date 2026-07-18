@@ -159,7 +159,7 @@ class OllamaClient:
         body = self._build_body(messages, stream=True, options=options)
         start_ts = time.time()
         try:
-            response = self._post_chat(body)
+            response = self._post(_CHAT_PATH, body)
             content, tokens_in, tokens_out = self._assemble_stream(response)
         except OllamaError as exc:
             end_ts = time.time()
@@ -221,7 +221,7 @@ class OllamaClient:
         body = self._build_body(messages, stream=True, options=options)
         start_ts = time.time()
         try:
-            response = self._post_chat(body)
+            response = self._post(_CHAT_PATH, body)
             tokens_in, tokens_out = yield from self._stream_deltas(response)
         except OllamaError as exc:
             end_ts = time.time()
@@ -362,11 +362,11 @@ class OllamaClient:
         for attempt in range(1, self._max_retries + 1):
             start_ts = time.time()
             # Network/HTTP failures are NOT retried (see docstring): keep the
-            # ``_post_chat`` call OUT of the retry-catch below so an
+            # ``_post`` call OUT of the retry-catch below so an
             # ``OllamaError`` from it propagates immediately, after recording
             # the failed attempt's stats (symmetric with ``chat``).
             try:
-                response = self._post_chat(body)
+                response = self._post(_CHAT_PATH, body)
             except OllamaError as exc:
                 end_ts = time.time()
                 self.call_stats.append(
@@ -433,7 +433,7 @@ class OllamaClient:
         for attempt in range(1, self._max_retries + 1):
             start_ts = time.time()
             try:
-                response = self._post_embeddings(body)
+                response = self._post(_EMBEDDINGS_PATH, body)
             except OllamaError as exc:
                 end_ts = time.time()
                 self.call_stats.append(
@@ -480,21 +480,8 @@ class OllamaClient:
 
         raise OllamaError(f"embedding call failed after {self._max_retries} attempts")
 
-    def _post_embeddings(self, body: dict[str, Any]) -> httpx.Response:
-        url = f"{self._base_url}{_EMBEDDINGS_PATH}"
-        try:
-            response = self._client.post(url, json=body)
-        except httpx.TimeoutException as exc:
-            raise OllamaError("Ollama request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise OllamaError("Ollama request failed") from exc
-
-        if not response.is_success:
-            raise OllamaError(f"Ollama request failed (status {response.status_code})")
-        return response
-
-    def _post_chat(self, body: dict[str, Any]) -> httpx.Response:
-        url = f"{self._base_url}{_CHAT_PATH}"
+    def _post(self, path: str, body: dict[str, Any]) -> httpx.Response:
+        url = f"{self._base_url}{path}"
         try:
             response = self._client.post(url, json=body)
         except httpx.TimeoutException as exc:
