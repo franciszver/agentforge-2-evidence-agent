@@ -5,7 +5,7 @@
   of Phase 2 (Stages 3–6) builds toward. Where a number is measured, its
   source is the Phase 1 capacity run (`docs/ARCHITECTURE.md` §"Capacity
   reality"); where it is a target set in advance of Phase 2's own
-  measurement, it is marked "to be validated in P3G.4 perf baselines."
+  measurement, it is marked "to be validated in P3G.4 (#21) perf baselines."
 - **Related:** `docs/ARCHITECTURE.md` (Phase 1 / Week-1 architecture, frozen
   at v1.0 — this document extends it, does not replace it),
   `planning/PLAN.md` (frozen Phase 2 plan), `docs/USERS.md` (persona and
@@ -95,7 +95,7 @@ This extends, not replaces, the Phase 1 diagram in `docs/ARCHITECTURE.md`
 (agent internals, Ollama boundary, network egress posture, dev token bridge)
 — those trust boundaries are unchanged by Phase 2 and are not repeated here.
 
-## 1. Week-1 Baseline vs Week-2 New
+## Week-1 Baseline vs Week-2 New
 
 | Capability | Week-1 (v1.0, inherited) | Week-2 (Phase 2, this document) |
 |---|---|---|
@@ -107,9 +107,9 @@ This extends, not replaces, the Phase 1 diagram in `docs/ARCHITECTURE.md`
 | Eval gate | 31-case suite, category pass/fail, 0.8065 pass rate | + 50-case golden set, boolean rubrics (`schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`), PR-blocking CI gate |
 | Observability | Correlation IDs, request/verdict-level trace store | + Per-encounter cost/latency breakdown (tool sequence, per-step latency, token usage, retrieval hits, extraction confidence), worker spans as children of the supervisor span |
 | Models served | Qwen3-4B (planner, quarantine, extraction) | + 7B-class VLM (document extraction), embedding model, reranker — all local |
-| Access control | Per-user OAuth2/PKCE/SMART built, proven live, flag-gated OFF | Unchanged — same flag, same posture (see §8) |
+| Access control | Per-user OAuth2/PKCE/SMART built, proven live, flag-gated OFF | Unchanged — same flag, same posture (see §"Data Model, Lineage, and Access Control") |
 
-## 2. Phase 1 Debt Disposition
+## Phase 1 Debt Disposition
 
 Carried forward from the Phase 1 freeze checklist (`planning/PLAN.md` §"Phase
 1 freeze status"). None of these block Phase 2; each is a deliberate,
@@ -117,15 +117,15 @@ disclosed deferral:
 
 | Item | What it is | Why deferred | When addressed |
 |---|---|---|---|
-| CORS TODO (`src/RestControllers/Subscriber/CORSListener.php:56-57`) | `onKernelResponse` echoes the request's `Origin` header back verbatim into `Access-Control-Allow-Origin` rather than checking it against an allowlist, with an inline `@TODO: review security implications if we need to tighten this up` | Inherited OpenEMR base behavior, needed as-is to keep public API clients (SMART apps, third-party integrations) working; tightening it is a base-platform change orthogonal to the Co-Pilot's own scope | Base-platform hardening, not scheduled within Phase 2 or Phase 3 — tracked as an OpenEMR-base concern, revisit if/when the base project addresses it upstream |
-| `#185` async token introspection | `introspect_token`'s sync `httpx` call briefly occupies the FastAPI event loop when the per-user OAuth flag is on and the introspection cache misses | Low urgency: cached after first hit, and Phase 1's own capacity run showed the workload is GPU-inference-bound (~0.15 req/s), so a few-ms loop stall is negligible in practice | Before the per-user flag is ever flipped ON by default (see §8) — not required for Phase 2's document/RAG work, which doesn't touch this code path |
-| `#172` input-side PHI deterrent | Guidance/placeholder text on the feedback-comment field so clinicians aren't tempted to type patient identifiers into a 👎 comment (defense-in-depth on top of the existing export-side scrub from `#157`) | Non-urgent: local-first, trusted-network deployment keeps the residual risk low, and the export-side scrub already closes the public-repo leak surface | Opportunistic UI follow-up; not a Phase 2 dependency since Phase 2 introduces its own no-PHI-in-logs CI check (§4, §Stage 3 gate) covering the new ingestion/retrieval surface directly |
+| CORS TODO (`src/RestControllers/Subscriber/CORSListener.php:55-57`) | `onKernelResponse` echoes the request's `Origin` header back verbatim into `Access-Control-Allow-Origin` rather than checking it against an allowlist, with an inline `@TODO: review security implications if we need to tighten this up` | Inherited OpenEMR base behavior, needed as-is to keep public API clients (SMART apps, third-party integrations) working; tightening it is a base-platform change orthogonal to the Co-Pilot's own scope | Base-platform hardening, not scheduled within Phase 2 or Phase 3 — tracked as an OpenEMR-base concern, revisit if/when the base project addresses it upstream |
+| `#185` async token introspection | `introspect_token`'s sync `httpx` call briefly occupies the FastAPI event loop when the per-user OAuth flag is on and the introspection cache misses | Low urgency: cached after first hit, and Phase 1's own capacity run showed the workload is GPU-inference-bound (~0.15 req/s), so a few-ms loop stall is negligible in practice | Before the per-user flag is ever flipped ON by default (see §"Data Model, Lineage, and Access Control") — not required for Phase 2's document/RAG work, which doesn't touch this code path |
+| `#172` input-side PHI deterrent | Guidance/placeholder text on the feedback-comment field so clinicians aren't tempted to type patient identifiers into a 👎 comment (defense-in-depth on top of the existing export-side scrub from `#157`) | Non-urgent: local-first, trusted-network deployment keeps the residual risk low, and the export-side scrub already closes the public-repo leak surface | Opportunistic UI follow-up; not a Phase 2 dependency since Phase 2 introduces its own no-PHI-in-logs CI check (§"Testing Strategy", §Stage 3 gate) covering the new ingestion/retrieval surface directly |
 | `#175` encounter-planner tool-selection | For a "what's going on with her right now" question over a patient with only a stale encounter (no problems/vitals), the planner never calls `get_encounters`, so the Phase 1 recency-notice mechanism has nothing to attach to; kept as an honest `xfail` | Root cause is a 4B-model tool-selection weakness, not a code defect — fixing it needs prompt work plus live re-recording with uncertain payoff on this model tier | Revisit if Phase 2's supervisor/worker split changes the planner's tool-selection prompting anyway; otherwise stays a documented, measured `xfail` per its own acceptance criteria |
 | P5.6 fresh-clone validation | Confirm the stack runs end-to-end from a fresh clone using README instructions alone, no undocumented steps | N/A — already resolved | **Closed** at Phase 1 freeze; Phase 2 inherits a validated fresh-clone baseline and must keep it green as new services (VLM, embeddings, reranker, hybrid index) are added to the compose stack |
 
-## 3. Schemas
+## Schemas
 
-### 3.1 Extraction schemas
+### Extraction Schemas
 
 Both extraction targets follow the Phase 1 pattern established by
 `ollama_client.extract` (schema-constrained decoding into Pydantic) — the
@@ -162,7 +162,7 @@ class IntakeFormFact(BaseModel):
     citation: Citation
 ```
 
-### 3.2 Citation contract
+### Citation Contract
 
 Every clinical claim sourced from a Week-2 document — not just the raw
 extraction, but any answer the agent later builds on top of it — carries the
@@ -179,7 +179,7 @@ class DocumentCitation(BaseModel):
 
 This is the document-sourced counterpart to Phase 1's
 `{tool_call_id, record_id, field, asserted_value}` structured-data citation
-(`docs/ARCHITECTURE.md` §"Verification Design"). The Phase 1 verification
+(`docs/ARCHITECTURE.md` §"Verification Design (the flagship)"). The Phase 1 verification
 layer (`verification.py`) is extended, not replaced: it builds its
 `(tool_call_id, record_id, field) -> value` index for structured tool
 results exactly as before, and gains a parallel index keyed on
@@ -189,7 +189,7 @@ equality against the extracted (not re-inferred) value — so the "partial
 grounding is not grounding" rule applies identically to both citation
 shapes.
 
-### 3.3 Migration notes
+### Migration Notes
 
 No changes are expected to any Week-1 (Phase 1) database table or schema.
 Week-2 artifacts are additive:
@@ -207,7 +207,7 @@ Week-2 artifacts are additive:
   separate, non-PHI store (public documents only) and carry no migration
   concern for existing patient data.
 
-## 4. Testing Strategy
+## Testing Strategy
 
 Follows `docs/TEST_PLAN.md`'s red-first discipline, extended per code type:
 
@@ -237,11 +237,11 @@ Follows `docs/TEST_PLAN.md`'s red-first discipline, extended per code type:
   eval case for any new golden-set category, committed before the
   implementation that makes it pass.
 
-## 5. SLOs
+## SLOs
 
 Two targets, both explicitly provisional — set from Phase 1's measured
 hardware ceiling and stated engineering judgment, not from Phase 2's own
-measurement, which is P3G.4's job:
+measurement, which is P3G.4 (#21)'s job:
 
 - **p95 ingestion latency for a 2-page lab PDF, minimum spec: ≤ 45 seconds.
   To be validated in P3G.4 perf baselines.** Justification: Phase 1's P5.1
@@ -249,7 +249,7 @@ measurement, which is P3G.4's job:
   this exact hardware (RTX 5060 Laptop, 8GB VRAM). A document-ingestion
   request additionally requires (a) an Ollama model swap from the resident
   LLM to the VLM — sequential load/unload on an 8GB card, not concurrent
-  residency, per the minimum-spec operating mode in §6 — which is the
+  residency, per the minimum-spec operating mode in §"Reference Hardware & Model Tiers" — which is the
   dominant new cost and is budgeted generously at 10-20s given no measured
   swap time yet exists for this hardware/model pair; (b) VLM decode over a
   7B-class model, budgeted at roughly 2x a 4B call's latency for a
@@ -275,7 +275,7 @@ expectations as "research-informed priors, to be measured in Phase 5"
 (`docs/ARCHITECTURE.md` §"Capacity reality") before that run actually
 happened.
 
-## 6. Reference Hardware & Model Tiers
+## Reference Hardware & Model Tiers
 
 Two tiers, kept strictly separate — measured numbers are never blended with
 projected ones:
@@ -286,10 +286,10 @@ projected ones:
 | RAM | 32GB | (not constraining at this tier) |
 | Model residency | **Sequential VLM⇄LLM swap** — the VLM and Qwen3-4B are not resident simultaneously; embeddings and the reranker run on CPU to leave the full 8GB for whichever inference model is currently loaded | **All models resident simultaneously** — VLM, planner/extraction LLM, embeddings, and reranker all on-GPU, no swap latency |
 | VLM tier | 7B-class (e.g. `qwen2.5-vl:7b`) | Larger VLM (model swapped in as a config value, not a code change) |
-| Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §5, pending P3G.4) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
+| Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §"SLOs", pending P3G.4 (#21)) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
 
 **Model tiering is a config value, not a code fork.** The same extraction
-code, the same Pydantic schemas (§3), and the same no-fabrication contract
+code, the same Pydantic schemas (§"Schemas"), and the same no-fabrication contract
 ("not found" over guessing) apply regardless of which VLM is configured —
 swapping in a larger recommended-tier model changes extraction quality and
 latency, not the safety invariant the verification layer depends on. This
@@ -297,14 +297,14 @@ mirrors Phase 1's own local-inference philosophy: the trust story lives in
 the deterministic verification layer, not in betting on a particular
 model's reliability.
 
-## 7. Orchestration
+## Orchestration
 
 Phase 2 extends Phase 1's hand-rolled planner loop into a **supervisor**
 that delegates to two workers — **intake-extractor** (drives
 `attach_and_extract()` and the VLM) and **evidence-retriever** (drives
 hybrid RAG) — rather than adopting a third-party graph-orchestration
 framework. This is an owner decision, not a default: `planning/PLAN.md`
-and issue P3.5 name extending the custom loop as the primary path, with
+and issue P3.5 (#16) name extending the custom loop as the primary path, with
 LangGraph as a documented fallback only if handoff/trace requirements
 prove unwieldy in practice — that fallback decision point is P3.5.
 
@@ -353,7 +353,7 @@ supervisor→worker→supervisor chain end-to-end from a single correlation id,
 the same way Phase 1's trace store already reconstructs a full conversation
 from logs alone.
 
-## 8. Data Model, Lineage, and Access Control
+## Data Model, Lineage, and Access Control
 
 ### Lineage
 
@@ -363,10 +363,10 @@ source PDF page  →  extracted field (VLM, schema-constrained)  →  FHIR resou
 
 Each arrow is independently inspectable: the source document is stored
 in OpenEMR and addressable by `source_id`; the extracted field carries a
-`Citation` (§3.1) pointing back to the exact page/section and quoted text;
+`Citation` (§"Extraction Schemas") pointing back to the exact page/section and quoted text;
 the FHIR resource write carries the same field identifiers through to
 OpenEMR's system of record; and any later claim built from that resource
-carries a `DocumentCitation` (§3.2) that the verification layer re-checks
+carries a `DocumentCitation` (§"Citation Contract") that the verification layer re-checks
 against the extracted value, not a re-inference. A clinician can therefore
 click any citation chip and trace it all the way back to the source pixels
 on the original page.
@@ -384,9 +384,9 @@ the shared dev-token-bridge identity as the default. Week-2's ingestion and
 retrieval tools call the same `OpenEmrClient` under the same flag, so they
 inherit this posture unchanged — no new ACL surface, no new flag. Flipping
 `copilot_per_user_token_enabled` ON is the **first item in Path to
-Production** (§11), exactly as it was in Phase 1.
+Production** (§"Path to Production"), exactly as it was in Phase 1.
 
-## 9. Incident Response & Backup/Recovery
+## Incident Response & Backup/Recovery
 
 The deployment model is a single local appliance (Phase 1's "run where the
 data lives" thesis, unchanged) — RPO/RTO are set for a single-node
@@ -413,8 +413,7 @@ appliance, not a multi-region service:
   corpus's hybrid index (small, non-PHI, but backed up for continuity
   rather than requiring a rebuild).
 - **Degraded modes.** Extends Phase 1's existing `/health` vs `/ready`
-  distinction (`docs/ARCHITECTURE.md` §"Structurally, the system has five
-  pieces"): `/health` reports the FastAPI process is up; `/ready` reports
+  distinction (`docs/ARCHITECTURE.md` §"Architecture Diagram"): `/health` reports the FastAPI process is up; `/ready` reports
   whether the process can actually serve a request end-to-end. Phase 2
   extends `/ready`'s checks to the new models — if Ollama is unreachable,
   or the configured VLM/embedding/reranker model isn't loaded, `/ready`
@@ -423,7 +422,7 @@ appliance, not a multi-region service:
   continue to report ready independently, so a VLM outage degrades
   gracefully rather than taking down the whole agent.
 
-## 10. TCO
+## TCO
 
 Extends Phase 1's TCO approach (`docs/ARCHITECTURE.md` §"TCO") with the
 Week-2 hardware and volume dimension: **one dedicated on-prem GPU card vs a
@@ -432,7 +431,7 @@ Kept rough and honest, consistent with Phase 1's framing — these are
 estimates with a stated basis, not bills.
 
 - **Local (one-time + amortized).** A dedicated on-prem GPU sized to the
-  recommended tier (§6, 24-48GB+, all models resident) is a one-time
+  recommended tier (§"Reference Hardware & Model Tiers", 24-48GB+, all models resident) is a one-time
   hardware cost, amortized over its useful life exactly as Phase 1's TCO
   section amortized the dev laptop — no per-document API fee, no
   per-page-processed billing, and the same zero-egress property (no PHI
@@ -451,24 +450,20 @@ estimates with a stated basis, not bills.
   measured token-size basis from prompt templates), Phase 2 has no measured
   per-document extraction cost yet — this section is a first-principles
   estimate pending Phase 2's own cost-per-encounter instrumentation
-  (`planning/PLAN.md` Stage 3e), which is a Phase 2 requirement precisely
+  (`planning/PLAN.md` Stage 3 item (3e)), which is a Phase 2 requirement precisely
   because Phase 1's cost tracking was never wired into `/chat` either. Once
   that instrumentation lands, this section should be revisited with
   measured per-document token/latency figures rather than the estimate
   above.
 
-## 11. Path to Production
+## Path to Production
 
 Mirrors Phase 1's Path-to-Production structure (`docs/ARCHITECTURE.md`
 §"Path to Production"), reordered so the highest-narrative-weight item leads:
 
-1. **Flip `copilot_per_user_token_enabled` ON.** The real per-user
-   OAuth2/PKCE/SMART/introspection flow is built and proven live end-to-end
-   (§8) — the same flag Phase 1 left OFF by deliberate owner choice.
-   Week-2's ingestion and retrieval tools inherit this flag unchanged, so
-   flipping it covers Week-1 and Week-2 surfaces in one step. This is the
-   single highest-leverage production-readiness item and is listed first
-   for that reason, exactly as in Phase 1.
+1. **Flip `copilot_per_user_token_enabled` ON** — see §"Data Model, Lineage,
+   and Access Control" for what this unlocks and why it is off by default.
+   Highest-leverage item, listed first for that reason.
 2. **TLS everywhere.** Today's internal Docker network traffic (including
    the new VLM/embedding/reranker calls) is unencrypted, acceptable only
    because it never leaves a single host; a real deployment needs TLS
@@ -476,33 +471,36 @@ Mirrors Phase 1's Path-to-Production structure (`docs/ARCHITECTURE.md`
 3. **Secrets automation.** Model-serving and OpenEMR credentials move from
    local config/`.env` to a managed secrets store as part of any real
    deployment, rather than remaining developer-machine conventions.
-4. **Backup automation.** The nightly-snapshot RPO in §9 is a manual/cron
-   convention today; production hardening turns it into an automated,
-   monitored, tested restore procedure rather than an assumed cron job.
+4. **Backup automation.** The nightly-snapshot RPO in §"Incident Response &
+   Backup/Recovery" is a manual/cron convention today; production hardening
+   turns it into an automated, monitored, tested restore procedure rather
+   than an assumed cron job.
 5. **Monitoring.** Extend the existing hand-rolled trace-store dashboard
    (Phase 1) with the new Week-2 signals called out in `planning/PLAN.md`
-   Stage 3e and Stage 3 gate: extraction-failure rate, retrieval latency,
-   and eval-regression alerting (>5% category regression), plus BAA-covered
-   hosting, VPC, and HA exactly as Phase 1's own §4 Path-to-Production item
-   describes for a real multi-node deployment.
+   Stage 3 item (3e) and Stage 3 gate: extraction-failure rate, retrieval
+   latency, and eval-regression alerting (>5% category regression), plus
+   BAA-covered hosting, VPC, and HA exactly as Phase 1's own Path-to-Production
+   item 4 describes for a real multi-node deployment.
 
 ## Use-Case Traceability
 
 Every Week-2 capability above traces to `docs/USERS.md`'s UC1-UC5:
 
-- **Document ingestion (§1, §3)** — extends UC1 (pre-visit brief: "what
-  changed since I last saw her" can now include a just-uploaded lab PDF)
-  and UC3 (lab trend recall: a scanned report's values become queryable
-  the same way structured lab-tool data already is).
-- **Hybrid RAG over the guideline corpus (§1, §7)** — supports UC2
-  (medication safety: guideline-grounded context alongside the existing
-  allergy/interaction check) without adding a new device or workflow step.
-- **Citation contract + PDF overlay (§3.2, §8)** — extends the trust
-  mechanism UC1-UC4 already depend on (every Phase 1 answer is citable) to
-  document-sourced claims, so the "verified, before the door opens"
-  standard from `docs/USERS.md`'s persona section holds for the new source
-  type too.
-- **Supervisor/worker orchestration (§7)** — infrastructure supporting all
+- **Document ingestion (§"Week-1 Baseline vs Week-2 New", §"Schemas")** —
+  extends UC1 (pre-visit brief: "what changed since I last saw her" can now
+  include a just-uploaded lab PDF) and UC3 (lab trend recall: a scanned
+  report's values become queryable the same way structured lab-tool data
+  already is).
+- **Hybrid RAG over the guideline corpus (§"Week-1 Baseline vs Week-2 New",
+  §"Orchestration")** — supports UC2 (medication safety: guideline-grounded
+  context alongside the existing allergy/interaction check) without adding a
+  new device or workflow step.
+- **Citation contract + PDF overlay (§"Citation Contract", §"Data Model,
+  Lineage, and Access Control")** — extends the trust mechanism UC1-UC4
+  already depend on (every Phase 1 answer is citable) to document-sourced
+  claims, so the "verified, before the door opens" standard from
+  `docs/USERS.md`'s persona section holds for the new source type too.
+- **Supervisor/worker orchestration (§"Orchestration")** — infrastructure supporting all
   of the above; no user-facing behavior change on its own, but the logged
   handoffs are what let UC1's "answer spans encounters, labs, meds, and
   notes" synthesis now also span uploaded documents coherently.
