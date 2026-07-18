@@ -519,11 +519,14 @@ class LocalIngestionStore:
         self._base_dir = Path(base_dir)
         (self._base_dir / "documents").mkdir(parents=True, exist_ok=True)
         (self._base_dir / "facts").mkdir(parents=True, exist_ok=True)
+        (self._base_dir / "meta").mkdir(parents=True, exist_ok=True)
 
     def save_source_document(self, patient_id: int, doc_type: str, file_path: Path) -> str:
         source_id = uuid.uuid4().hex
         dest = self._base_dir / "documents" / f"{source_id}{file_path.suffix}"
         dest.write_bytes(file_path.read_bytes())
+        meta_dest = self._base_dir / "meta" / f"{source_id}.json"
+        meta_dest.write_text(json.dumps({"patient_id": patient_id}))
         return source_id
 
     def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None:
@@ -557,3 +560,21 @@ class LocalIngestionStore:
         if not matches:
             return None
         return matches[0].read_bytes()
+
+    def read_source_patient_id(self, source_id: str) -> int | None:
+        """Return the ``patient_id`` a stored document was saved under (the
+        sidecar written by ``save_source_document``), or ``None`` if
+        unknown -- an unrecognized ``source_id`` shape, or no document was
+        ever saved under it. Backs the flag-gated launch-patient binding
+        check on ``GET /documents/{source_id}`` (P3.7 citation overlay,
+        finding on cross-patient IDOR) -- the same defensive re-validation
+        discipline as ``read_source_document``.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            return None
+        meta_path = self._base_dir / "meta" / f"{source_id}.json"
+        if not meta_path.exists():
+            return None
+        payload = json.loads(meta_path.read_text())
+        patient_id = payload.get("patient_id")
+        return patient_id if isinstance(patient_id, int) else None
