@@ -543,7 +543,98 @@
         return { chip: chip, record: record };
     }
 
-    function renderClaimSegment(segment) {
+    // -------------------------------------------------------------------
+    // P3.7 citation overlay: click-to-source for document-cited claims.
+    //
+    // Capability decision (full write-up in
+    // services/copilot-agent/app/documents.py's module docstring): a
+    // qwen2.5vl:7b bbox-grounding probe against the committed lab fixture
+    // returned tight, accurate value-cell boxes on a clean render, but
+    // drifted onto the wrong table column/row once scan-realistic noise +
+    // a slight rotation were applied -- too unreliable to draw a pixel box
+    // from on a real scanned document (would risk pointing at the WRONG
+    // value, violating the project's no-fabrication thesis). This renders
+    // the HONEST fallback instead: a link that opens the real source PDF at
+    // the cited page (`#page=N`, the standard browser/PDF.js page-anchor
+    // convention) plus the citation's own literal quote text shown
+    // alongside it -- never a fabricated box.
+    // -------------------------------------------------------------------
+
+    // Parses "page N" (app.schemas.ingestion.Citation's page_or_section
+    // format), any case, tolerant of surrounding whitespace. Returns null
+    // for anything else -- e.g. a guideline_chunk citation's section-name
+    // page_or_section, which is not a PDF page number at all.
+    function parseCitedPageNumber(pageOrSection) {
+        if (typeof pageOrSection !== 'string') {
+            return null;
+        }
+        var match = /^\s*page\s+(\d+)\s*$/i.exec(pageOrSection);
+        if (!match) {
+            return null;
+        }
+        var pageNumber = parseInt(match[1], 10);
+        return isFinite(pageNumber) ? pageNumber : null;
+    }
+
+    // Only lab_pdf/intake_form document citations point at a stored source
+    // PDF (app.ingestion.LocalIngestionStore, served by
+    // GET /documents/{source_id} through public/source-doc-proxy.php) -- a
+    // guideline_chunk citation cites a corpus chunk, not a per-patient
+    // ingested document, so there is no source PDF to open for it.
+    var VIEWABLE_DOCUMENT_SOURCE_TYPES = { lab_pdf: true, intake_form: true };
+
+    // encodeURIComponent neutralizes any scheme/query-injection attempt in
+    // sourceId (e.g. a "javascript:..." or "&evil=1"-shaped value) -- the
+    // built URL always starts with the caller-supplied, trusted
+    // sourceDocBaseUrl.
+    function buildSourceDocUrl(sourceDocBaseUrl, sourceId) {
+        return sourceDocBaseUrl + '?source_id=' + encodeURIComponent(sourceId);
+    }
+
+    // Builds the (unattached) chip + record DOM for one DocumentCitation.
+    // `sourceDocBaseUrl` is the module's public/source-doc-proxy.php URL;
+    // omitted (e.g. an older caller) simply renders no view-source link.
+    function buildDocumentCitationChip(citation, sourceDocBaseUrl) {
+        citation = citation || {};
+
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'copilot-citation-chip copilot-document-citation-chip';
+        chip.textContent = citation.field_or_chunk_id ? String(citation.field_or_chunk_id) : 'source document';
+        chip.setAttribute('aria-expanded', 'false');
+
+        var record = document.createElement('div');
+        record.className = 'copilot-citation-record copilot-hidden';
+        appendRecordField(record, 'Page/section', citation.page_or_section);
+        appendRecordField(record, 'Quoted text', citation.quote_or_value);
+
+        var canViewSource = !!sourceDocBaseUrl &&
+            Object.prototype.hasOwnProperty.call(VIEWABLE_DOCUMENT_SOURCE_TYPES, citation.source_type) &&
+            typeof citation.source_id === 'string' && citation.source_id !== '';
+        if (canViewSource) {
+            var pageNumber = parseCitedPageNumber(citation.page_or_section);
+            var url = buildSourceDocUrl(sourceDocBaseUrl, citation.source_id);
+            if (pageNumber !== null) {
+                url += '#page=' + pageNumber;
+            }
+            var link = document.createElement('a');
+            link.className = 'copilot-citation-source-link';
+            link.textContent = 'View source page';
+            link.setAttribute('href', url);
+            link.setAttribute('target', '_blank');
+            link.setAttribute('rel', 'noopener noreferrer');
+            record.appendChild(link);
+        }
+
+        chip.addEventListener('click', function () {
+            var nowHidden = record.classList.toggle('copilot-hidden');
+            chip.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+        });
+
+        return { chip: chip, record: record };
+    }
+
+    function renderClaimSegment(segment, sourceDocBaseUrl) {
         var claim = document.createElement('div');
         claim.className = 'copilot-claim';
 
@@ -553,7 +644,8 @@
         claim.appendChild(text);
 
         var citations = Array.isArray(segment.citations) ? segment.citations : [];
-        if (citations.length > 0) {
+        var documentCitations = Array.isArray(segment.document_citations) ? segment.document_citations : [];
+        if (citations.length > 0 || documentCitations.length > 0) {
             var chips = document.createElement('div');
             chips.className = 'copilot-claim-chips';
             var records = document.createElement('div');
@@ -563,6 +655,11 @@
                 var built = buildCitationChip(citations[i]);
                 chips.appendChild(built.chip);
                 records.appendChild(built.record);
+            }
+            for (var j = 0; j < documentCitations.length; j++) {
+                var builtDoc = buildDocumentCitationChip(documentCitations[j], sourceDocBaseUrl);
+                chips.appendChild(builtDoc.chip);
+                records.appendChild(builtDoc.record);
             }
             claim.appendChild(chips);
             claim.appendChild(records);
@@ -626,7 +723,7 @@
     // Assembles the full verification block (banner + badge + claims) and
     // appends it to `container`. Returns the block element, or null for the
     // pending/degenerate payload (verdict absent) -- nothing to render yet.
-    function renderVerification(container, data) {
+    function renderVerification(container, data, sourceDocBaseUrl) {
         if (!data || !data.verdict) {
             return null;
         }
@@ -651,7 +748,7 @@
             for (var i = 0; i < segments.length; i++) {
                 var segment = segments[i];
                 if (segment && segment.type === 'claim') {
-                    claims.appendChild(renderClaimSegment(segment));
+                    claims.appendChild(renderClaimSegment(segment, sourceDocBaseUrl));
                 } else if (segment && segment.type === 'notice') {
                     claims.appendChild(renderNoticeSegment(segment));
                 }
@@ -1125,8 +1222,11 @@
                             appendMessage(options.messagesEl, 'assistant', answerText);
                             // Pending verification payloads (verdict null)
                             // render nothing; a populated one adds the
-                            // badge/chips/banner.
-                            renderVerification(options.messagesEl, verificationData);
+                            // badge/chips/banner. sourceDocBaseUrl (P3.7) is
+                            // optional -- an older/test caller that omits it
+                            // simply gets document-citation chips with no
+                            // view-source link (see buildDocumentCitationChip).
+                            renderVerification(options.messagesEl, verificationData, options.sourceDocBaseUrl);
                             if (responseCorrelationId) {
                                 var widget = renderFeedbackWidget(options.messagesEl, responseCorrelationId);
                                 attachFeedbackHandlers(widget, responseCorrelationId, {
@@ -1290,6 +1390,11 @@
             proxyUrl: baseUrl + '/chat-proxy.php',
             feedbackUrl: baseUrl + '/feedback-proxy.php',
             authorizeUrl: baseUrl + '/oauth-authorize.php',
+            // P3.7: same-origin bridge to GET /documents/{source_id} (see
+            // public/source-doc-proxy.php) -- opens the cited source PDF at
+            // its page when a document-citation chip's view-source link is
+            // clicked.
+            sourceDocBaseUrl: baseUrl + '/source-doc-proxy.php',
             fetchImpl: window.fetch.bind(window)
         });
         activeController.init();
@@ -1322,6 +1427,9 @@
         renderAboutLegend: renderAboutLegend,
         renderWarningBanner: renderWarningBanner,
         renderVerification: renderVerification,
+        parseCitedPageNumber: parseCitedPageNumber,
+        buildSourceDocUrl: buildSourceDocUrl,
+        buildDocumentCitationChip: buildDocumentCitationChip,
         buildFeedbackPayload: buildFeedbackPayload,
         renderFeedbackWidget: renderFeedbackWidget,
         applyFeedbackPendingState: applyFeedbackPendingState,
