@@ -564,17 +564,34 @@ class LocalIngestionStore:
     def read_source_patient_id(self, source_id: str) -> int | None:
         """Return the ``patient_id`` a stored document was saved under (the
         sidecar written by ``save_source_document``), or ``None`` if
-        unknown -- an unrecognized ``source_id`` shape, or no document was
-        ever saved under it. Backs the flag-gated launch-patient binding
-        check on ``GET /documents/{source_id}`` (P3.7 citation overlay,
-        finding on cross-patient IDOR) -- the same defensive re-validation
-        discipline as ``read_source_document``.
+        unknown -- an unrecognized ``source_id`` shape, no document was ever
+        saved under it, or the sidecar is missing/unreadable/malformed.
+        Backs the flag-gated launch-patient binding check on
+        ``GET /documents/{source_id}`` (P3.7 citation overlay, finding on
+        cross-patient IDOR) -- the same defensive re-validation discipline
+        as ``read_source_document``.
+
+        **Fails closed to ``None`` on ANY unreadable/malformed sidecar** --
+        a missing file, an ``OSError`` reading it, invalid JSON, or a
+        missing/non-int ``patient_id`` key -- rather than letting
+        ``json.JSONDecodeError``/``OSError`` propagate. This is required for
+        two reasons: with the flag OFF, the caller's checker is a no-op
+        regardless of the returned value, so a corrupt sidecar must not 500
+        an otherwise-unaffected request (the documented flag-OFF
+        byte-identical guarantee); with the flag ON, ``None`` is the
+        caller's existing "unresolvable" signal, which it already checks as
+        a sentinel pid that fails closed (403) rather than skipping the
+        check.
         """
         if not re.fullmatch(r"[0-9a-f]{32}", source_id):
             return None
         meta_path = self._base_dir / "meta" / f"{source_id}.json"
-        if not meta_path.exists():
+        try:
+            raw = meta_path.read_text()
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
             return None
-        payload = json.loads(meta_path.read_text())
+        if not isinstance(payload, dict):
+            return None
         patient_id = payload.get("patient_id")
         return patient_id if isinstance(patient_id, int) else None

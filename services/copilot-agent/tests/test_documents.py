@@ -190,3 +190,45 @@ def test_flag_off_cross_patient_token_still_succeeds_unchanged(
 
     assert resp.status_code == 200
     assert resp.content == b"%PDF-1.4 patient two's document"
+
+
+def _corrupt_meta_sidecar(tmp_path: Path, source_id: str) -> None:
+    """Simulate a corrupt/partially-written meta/<source_id>.json sidecar
+    (e.g. a crash mid-write) -- read_source_patient_id must fail closed to
+    None rather than let json.JSONDecodeError propagate."""
+    meta_path = tmp_path / "meta" / f"{source_id}.json"
+    meta_path.write_text("{not valid json")
+
+
+def test_flag_off_corrupt_meta_sidecar_still_serves_the_document(
+    client: TestClient, store: LocalIngestionStore, tmp_path: Path
+):
+    """Regression: read_source_patient_id's json.loads was unguarded, so a
+    corrupt sidecar 500'd GET /documents/{source_id} even with the flag OFF
+    -- breaking the documented flag-OFF byte-identical guarantee (before the
+    IDOR fix, the sidecar was never read at all)."""
+    pdf_path = tmp_path / "upload.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake pdf bytes")
+    source_id = store.save_source_document(1, "lab_pdf", pdf_path)
+    _corrupt_meta_sidecar(tmp_path, source_id)
+
+    resp = client.get(f"/documents/{source_id}", headers=_auth_headers())
+
+    assert resp.status_code == 200
+    assert resp.content == b"%PDF-1.4 fake pdf bytes"
+
+
+def test_flag_on_corrupt_meta_sidecar_fails_closed_to_403(
+    bound_client: TestClient, store: LocalIngestionStore, tmp_path: Path
+):
+    """Flag ON + a corrupt sidecar: patient_id is unresolvable, which must
+    fail CLOSED (403 via the sentinel -1 pid mismatching in
+    LaunchPatientMismatchError), never a 500 and never a silent pass."""
+    pdf_path = tmp_path / "upload.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake pdf bytes")
+    source_id = store.save_source_document(1, "lab_pdf", pdf_path)
+    _corrupt_meta_sidecar(tmp_path, source_id)
+
+    resp = bound_client.get(f"/documents/{source_id}", headers={"Authorization": f"Bearer {PATIENT_A_TOKEN}"})
+
+    assert resp.status_code == 403
