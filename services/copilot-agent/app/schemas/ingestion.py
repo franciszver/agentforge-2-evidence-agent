@@ -23,7 +23,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import ToolSchemaModel
 
@@ -132,10 +132,39 @@ class DocumentCitation(BaseModel):
     carries (`docs/W2_ARCHITECTURE.md` "Citation Contract") -- the
     document-sourced counterpart to Phase 1's
     ``{tool_call_id, record_id, field, asserted_value}`` shape. Not a tool
-    I/O contract, so it does not extend ``ToolSchemaModel``."""
+    I/O contract, so it does not extend ``ToolSchemaModel``.
 
-    source_type: Literal["lab_pdf", "intake_form"]
+    ``source_type`` additionally allows ``"guideline_chunk"`` (P3.6) beyond
+    the extraction-side ``Citation``'s ``"lab_pdf"``/``"intake_form"``: a
+    claim can also cite a hybrid-retrieval guideline chunk
+    (``app.schemas.retrieval.RetrievedChunk``), which has no VLM-extraction
+    step and therefore never appears on the extraction-side ``Citation``
+    above. For a ``"guideline_chunk"`` citation, ``source_id`` is the
+    corpus doc id, ``field_or_chunk_id`` is the chunk id
+    (``<doc_id>#<section-slug>``), and ``quote_or_value`` is the literal
+    text the claim quotes from that chunk -- see
+    ``app.verification.check_document_citation`` for how each source type is
+    re-validated against its RAW source.
+    """
+
+    source_type: Literal["lab_pdf", "intake_form", "guideline_chunk"]
     source_id: str
     page_or_section: str
     field_or_chunk_id: str
-    quote_or_value: str
+    # min_length=1 rejects a fully-empty string outright; the model
+    # validator below additionally rejects a WHITESPACE-only string (which
+    # satisfies min_length=1 but is just as void of asserted content) -- a
+    # security-gate finding: a blank quote would otherwise trivially
+    # "verify" any guideline_chunk citation (an empty/blank substring is
+    # vacuously present in any text), asserting nothing while reading as
+    # VALID. See ``app.verification.check_document_citation`` for the
+    # checker's OWN independent defensive guard against the same failure
+    # mode, for citations that bypass this schema (e.g. via
+    # ``model_construct``).
+    quote_or_value: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_non_blank_quote(self) -> "DocumentCitation":
+        if not self.quote_or_value.strip():
+            raise ValueError("quote_or_value must not be blank")
+        return self
