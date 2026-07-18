@@ -17,6 +17,7 @@ import pytest
 
 from app.retrieval import (
     CORPUS_DIR,
+    MAX_QUERY_CHARS,
     Chunk,
     DenseIndex,
     HybridRetriever,
@@ -200,3 +201,43 @@ def test_hybrid_retrieval_without_embedder_or_query_vector_raises():
 
     with pytest.raises(RetrievalError):
         retriever_no_embedder.retrieve_hybrid("What A1c target for most adults?", k=TOP_K)
+
+
+# --- query-length bound (DoS guard: unbounded query -> unbounded FTS5 MATCH
+# expression cost) -------------------------------------------------------
+
+
+def test_oversized_query_raises_retrieval_error_on_sparse(retriever: HybridRetriever):
+    oversized_query = "a" * (MAX_QUERY_CHARS + 1)
+
+    with pytest.raises(RetrievalError):
+        retriever.retrieve_sparse(oversized_query, k=TOP_K)
+
+
+def test_oversized_query_raises_retrieval_error_on_dense(retriever: HybridRetriever):
+    oversized_query = "a" * (MAX_QUERY_CHARS + 1)
+
+    with pytest.raises(RetrievalError):
+        retriever.retrieve_dense(oversized_query, k=TOP_K, query_vector=[0.0])
+
+
+def test_oversized_query_raises_retrieval_error_on_hybrid(retriever: HybridRetriever):
+    oversized_query = "a" * (MAX_QUERY_CHARS + 1)
+
+    with pytest.raises(RetrievalError):
+        retriever.retrieve_hybrid(oversized_query, k=TOP_K, query_vector=[0.0])
+
+
+def test_oversized_query_raises_retrieval_error_via_retrieve_dispatch(retriever: HybridRetriever):
+    oversized_query = "a" * (MAX_QUERY_CHARS + 1)
+
+    with pytest.raises(RetrievalError):
+        retriever.retrieve(oversized_query, k=TOP_K, mode=RetrievalMode.SPARSE)
+
+
+def test_boundary_length_query_at_exactly_max_chars_still_works(retriever: HybridRetriever):
+    boundary_query = "a" * MAX_QUERY_CHARS
+
+    results = retriever.retrieve_sparse(boundary_query, k=TOP_K)
+
+    assert isinstance(results, list)

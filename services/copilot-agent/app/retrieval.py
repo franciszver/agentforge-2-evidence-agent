@@ -25,6 +25,17 @@ directly, no wrapper needed. No test in this repo should ever require a
 live Ollama call to pass -- exactly the record/replay discipline
 `docs/W2_ARCHITECTURE.md` "Testing Strategy" already establishes for
 VLM/reranker calls, extended here to embeddings.
+
+**Query-length bound.** Every public ``retrieve*`` entry point rejects a
+query longer than ``MAX_QUERY_CHARS`` (2000, generous for any real clinical
+question) with ``RetrievalError`` -- an unbounded query turns into an
+unbounded FTS5 ``MATCH`` expression (one quoted ``OR`` clause per word
+token), which is cheap per-token but not free at arbitrary size; a
+multi-megabyte query is a low-effort DoS once an endpoint wires user input
+to these entry points. ``_fts_query`` additionally caps the token count fed
+into the FTS5 expression (``_MAX_QUERY_TOKENS``) as defense in depth, in
+case a future caller bypasses the character bound with some other query
+source.
 """
 
 from __future__ import annotations
@@ -45,6 +56,12 @@ from app.schemas.retrieval import RetrievalMode, RetrievedChunk
 CORPUS_DIR = Path(__file__).resolve().parent.parent / "corpus"
 EMBEDDINGS_PATH = Path(__file__).resolve().parent / "data" / "retrieval_embeddings.json"
 
+# DoS guard (see module docstring "Query-length bound"): the largest query
+# any public retrieve* entry point will accept, and the largest number of
+# word tokens _fts_query will ever build a MATCH expression from.
+MAX_QUERY_CHARS = 2000
+_MAX_QUERY_TOKENS = 64
+
 _SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
@@ -53,7 +70,18 @@ _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 class RetrievalError(Exception):
     """Raised when retrieval cannot proceed -- e.g. dense/hybrid retrieval
     was asked for without either a ``query_vector`` or a configured
-    ``Embedder``."""
+    ``Embedder``, or a query exceeds ``MAX_QUERY_CHARS``."""
+
+
+def _validate_query_length(query: str) -> None:
+    """Reject a query longer than ``MAX_QUERY_CHARS`` (see module docstring
+    "Query-length bound"). Called at the top of every public ``retrieve*``
+    entry point, before the query ever reaches ``SparseIndex``/
+    ``DenseIndex``."""
+    if len(query) > MAX_QUERY_CHARS:
+        raise RetrievalError(
+            f"Query exceeds the {MAX_QUERY_CHARS}-character limit ({len(query)} chars)"
+        )
 
 
 @dataclass(frozen=True)
@@ -159,8 +187,13 @@ def _fts_query(query: str) -> str:
     the FTS5 default implicit ``AND``) is deliberate -- a natural-language
     question's stopwords would rarely all appear verbatim in one short
     section, so requiring every token would starve recall; ``bm25()``
-    ranking already rewards rows that match more/rarer terms."""
-    tokens = _WORD_RE.findall(query)
+    ranking already rewards rows that match more/rarer terms.
+
+    Capped to the first ``_MAX_QUERY_TOKENS`` tokens -- defense in depth
+    alongside ``_validate_query_length``'s character bound (see module
+    docstring "Query-length bound"), in case some future caller reaches
+    this function with a query that bypassed the character check."""
+    tokens = _WORD_RE.findall(query)[:_MAX_QUERY_TOKENS]
     if not tokens:
         return '""'
     return " OR ".join(f'"{token}"' for token in tokens)
@@ -260,6 +293,7 @@ class HybridRetriever:
         return self.retrieve_hybrid(query, k, query_vector=query_vector)
 
     def retrieve_sparse(self, query: str, k: int) -> list[RetrievedChunk]:
+        _validate_query_length(query)
         hits = self._sparse.search(query, k)
         return [self._to_retrieved(chunk_id, {RetrievalMode.SPARSE.value: score}) for chunk_id, score in hits]
 
@@ -270,6 +304,7 @@ class HybridRetriever:
         *,
         query_vector: Sequence[float] | None = None,
     ) -> list[RetrievedChunk]:
+        _validate_query_length(query)
         vector = self._resolve_query_vector(query, query_vector)
         hits = self._dense.search(vector, k)
         return [self._to_retrieved(chunk_id, {RetrievalMode.DENSE.value: score}) for chunk_id, score in hits]
@@ -297,6 +332,7 @@ class HybridRetriever:
         just outside a narrow top-k in one mode can still surface via
         fusion once a wider pool is candidates.
         """
+        _validate_query_length(query)
         pool = max(k, 10)
         sparse_hits = self._sparse.search(query, pool)
         vector = self._resolve_query_vector(query, query_vector)
