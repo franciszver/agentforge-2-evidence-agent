@@ -494,9 +494,52 @@ def test_intake_form_redacted_field_citation_quote_does_not_claim_a_dob():
     facts = _to_intake_form_facts(_INTAKE_PAGE_1_EXTRACTION, source_id="src-1", page_index=0)
 
     assert len(facts) == 1
+    quote = facts[0].citation.quote_or_value
     # The citation quotes the legible demographics/chief_concern truthfully,
-    # never a fabricated DOB for the redacted field.
-    assert "1990" not in facts[0].citation.quote_or_value
+    # never a fabricated DOB for the redacted field...
+    assert "1990" not in quote
+    # ...but it MUST truthfully carry what actually was legible on the page --
+    # a citation that quoted nothing would be just as dishonest as one that
+    # fabricated the DOB.
+    assert "Test Patient" in quote
+    assert "sex=F" in quote
+
+
+def test_intake_form_empty_string_fields_normalize_to_not_found(store):
+    """An empty/whitespace-only string is not legible data -- the VLM (or a
+    scripted double standing in for it) reporting "" for a field must be
+    treated the same as reporting None/omitting it entirely, never stored
+    or quoted as if something was actually read."""
+    blank_page = IntakeFormExtraction(
+        demographics={"name": "Test Patient", "dob": "   "},
+        chief_concern="",
+        medications=["Lisinopril 10mg daily", "", "   "],
+        allergies=[""],
+        family_history=["Father: hypertension", ""],
+    )
+    empty_page = IntakeFormExtraction(
+        demographics={}, chief_concern=None, medications=[], allergies=[], family_history=[]
+    )
+    vlm = _FakeVlmOllama([blank_page, empty_page])
+
+    result = attach_and_extract(
+        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=vlm, document_store=store, fact_store=store
+    )
+
+    assert len(result.facts) == 1  # page 2 had nothing legible even before normalization
+    fact = result.facts[0]
+    assert fact.chief_concern is None
+    assert fact.demographics["dob"] is None
+    assert fact.demographics["name"] == "Test Patient"
+    assert fact.medications == ["Lisinopril 10mg daily"]
+    assert fact.allergies == []  # the sole entry was blank -- filtered, not stored as ""
+    assert fact.family_history == ["Father: hypertension"]
+
+    quote = fact.citation.quote_or_value
+    assert "chief_concern:" not in quote  # no section for a field that normalized to None
+    assert "allergies:" not in quote  # no section for a list that normalized to empty
+    for segment in quote.split("; "):
+        assert segment.strip() != ""  # no empty list items/sections leaked into the quote
 
 
 def test_intake_form_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
