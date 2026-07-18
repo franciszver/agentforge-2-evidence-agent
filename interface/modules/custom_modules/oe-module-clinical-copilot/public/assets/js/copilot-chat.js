@@ -519,21 +519,19 @@
         record.appendChild(row);
     }
 
-    function buildCitationChip(citation) {
-        citation = citation || {};
-
+    // Shared chip-shell builder: the button + hidden record div + click-to-
+    // toggle wiring is identical for every citation-chip flavor (plain
+    // in-EMR citation, document citation) -- only the label text, the extra
+    // class, and which record fields get populated differ per flavor.
+    function createCitationChipShell(labelText, extraClassName) {
         var chip = document.createElement('button');
         chip.type = 'button';
-        chip.className = 'copilot-citation-chip';
-        chip.textContent = citation.field ? String(citation.field) : 'source';
+        chip.className = extraClassName ? 'copilot-citation-chip ' + extraClassName : 'copilot-citation-chip';
+        chip.textContent = labelText;
         chip.setAttribute('aria-expanded', 'false');
 
         var record = document.createElement('div');
         record.className = 'copilot-citation-record copilot-hidden';
-        appendRecordField(record, 'Field', citation.field);
-        appendRecordField(record, 'Value', citation.value);
-        appendRecordField(record, 'Record', citation.record_id);
-        appendRecordField(record, 'Source', citation.tool_call_id);
 
         chip.addEventListener('click', function () {
             var nowHidden = record.classList.toggle('copilot-hidden');
@@ -541,6 +539,18 @@
         });
 
         return { chip: chip, record: record };
+    }
+
+    function buildCitationChip(citation) {
+        citation = citation || {};
+
+        var shell = createCitationChipShell(citation.field ? String(citation.field) : 'source');
+        appendRecordField(shell.record, 'Field', citation.field);
+        appendRecordField(shell.record, 'Value', citation.value);
+        appendRecordField(shell.record, 'Record', citation.record_id);
+        appendRecordField(shell.record, 'Source', citation.tool_call_id);
+
+        return shell;
     }
 
     // -------------------------------------------------------------------
@@ -597,16 +607,12 @@
     function buildDocumentCitationChip(citation, sourceDocBaseUrl) {
         citation = citation || {};
 
-        var chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'copilot-citation-chip copilot-document-citation-chip';
-        chip.textContent = citation.field_or_chunk_id ? String(citation.field_or_chunk_id) : 'source document';
-        chip.setAttribute('aria-expanded', 'false');
-
-        var record = document.createElement('div');
-        record.className = 'copilot-citation-record copilot-hidden';
-        appendRecordField(record, 'Page/section', citation.page_or_section);
-        appendRecordField(record, 'Quoted text', citation.quote_or_value);
+        var shell = createCitationChipShell(
+            citation.field_or_chunk_id ? String(citation.field_or_chunk_id) : 'source document',
+            'copilot-document-citation-chip'
+        );
+        appendRecordField(shell.record, 'Page/section', citation.page_or_section);
+        appendRecordField(shell.record, 'Quoted text', citation.quote_or_value);
 
         var canViewSource = !!sourceDocBaseUrl &&
             Object.prototype.hasOwnProperty.call(VIEWABLE_DOCUMENT_SOURCE_TYPES, citation.source_type) &&
@@ -623,15 +629,10 @@
             link.setAttribute('href', url);
             link.setAttribute('target', '_blank');
             link.setAttribute('rel', 'noopener noreferrer');
-            record.appendChild(link);
+            shell.record.appendChild(link);
         }
 
-        chip.addEventListener('click', function () {
-            var nowHidden = record.classList.toggle('copilot-hidden');
-            chip.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
-        });
-
-        return { chip: chip, record: record };
+        return shell;
     }
 
     function renderClaimSegment(segment, sourceDocBaseUrl) {
