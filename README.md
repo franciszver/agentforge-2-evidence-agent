@@ -27,6 +27,11 @@ See the plan in the private planning repo
 (`plans/complete-agentforge-2-evidence-agent.md`) for the full scope, the
 fully-local tooling decisions, and how this inherits Phase 1's as-built state.
 
+**Live operational plan:** the
+[Multimodal Evidence Agent project board](https://github.com/users/franciszver/projects/3)
+tracks all work — stages as milestones, tasks as issues, one issue = one
+branch = one PR.
+
 ## AgentForge series
 
 1. [agentforge-1-clinical-copilot](https://github.com/franciszver/agentforge-1-clinical-copilot) — Clinical Co-Pilot Foundation
