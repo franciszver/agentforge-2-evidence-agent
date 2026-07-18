@@ -76,10 +76,14 @@ _PAGE_2_ROWS = [
 
 
 class _FakeVlmOllama:
-    """Scripted VLM extraction double: returns one canned ``LabPageExtraction``
-    per call, in order (or raises), and records what it was called with."""
+    """Scripted VLM extraction double: returns one canned extraction result
+    per call, in order (or raises), and records what it was called with.
+    ``results`` is untyped-element (``LabPageExtraction`` for lab_pdf tests,
+    ``IntakeFormExtraction`` for intake_form tests) -- this one double is
+    reused for both doc types' tests, standing in for whichever schema the
+    real VLM call would be constrained to."""
 
-    def __init__(self, results: list[LabPageExtraction] | None = None, *, error: bool = False) -> None:
+    def __init__(self, results: list[Any] | None = None, *, error: bool = False) -> None:
         self._results = results or []
         self._error = error
         self.extract_calls: list[tuple[list[dict[str, Any]], type, list[str] | None]] = []
@@ -430,27 +434,9 @@ _INTAKE_PAGE_2_EXTRACTION = IntakeFormExtraction(
 )
 
 
-class _FakeVlmOllamaIntake:
-    """Scripted VLM extraction double for intake-form pages: same shape as
-    ``_FakeVlmOllama`` but scripted with ``IntakeFormExtraction`` results."""
-
-    def __init__(self, results: list[IntakeFormExtraction] | None = None, *, error: bool = False) -> None:
-        self._results = results or []
-        self._error = error
-        self.extract_calls: list[tuple[list[dict[str, Any]], type, list[str] | None]] = []
-
-    def extract(
-        self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None
-    ) -> Any:
-        self.extract_calls.append((prompt_or_messages, schema, images))
-        if self._error:
-            raise OllamaError("scripted VLM extraction failure")
-        return self._results[len(self.extract_calls) - 1]
-
-
 @pytest.fixture
-def fake_intake_vlm() -> _FakeVlmOllamaIntake:
-    return _FakeVlmOllamaIntake([_INTAKE_PAGE_1_EXTRACTION, _INTAKE_PAGE_2_EXTRACTION])
+def fake_intake_vlm() -> _FakeVlmOllama:
+    return _FakeVlmOllama([_INTAKE_PAGE_1_EXTRACTION, _INTAKE_PAGE_2_EXTRACTION])
 
 
 def test_attach_and_extract_intake_form_returns_schema_valid_facts_with_citations(fake_intake_vlm, store):
@@ -514,7 +500,7 @@ def test_intake_form_redacted_field_citation_quote_does_not_claim_a_dob():
 
 
 def test_intake_form_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
-    failing_vlm = _FakeVlmOllamaIntake(error=True)
+    failing_vlm = _FakeVlmOllama(error=True)
 
     result = attach_and_extract(
         1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=failing_vlm, document_store=store, fact_store=store
@@ -552,7 +538,7 @@ def test_intake_form_page_with_nothing_legible_yields_no_fact_for_that_page(stor
     empty_extraction = IntakeFormExtraction(
         demographics={}, chief_concern=None, medications=[], allergies=[], family_history=[]
     )
-    vlm = _FakeVlmOllamaIntake([_INTAKE_PAGE_1_EXTRACTION, empty_extraction])
+    vlm = _FakeVlmOllama([_INTAKE_PAGE_1_EXTRACTION, empty_extraction])
 
     result = attach_and_extract(
         1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=vlm, document_store=store, fact_store=store
