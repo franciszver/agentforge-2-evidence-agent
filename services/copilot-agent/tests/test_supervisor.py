@@ -32,7 +32,7 @@ from app.correlation import correlation_scope
 from app.ingestion import LocalIngestionStore, attach_and_extract
 from app.reranking import RERANKER_SCORES_PATH, RecordedRerankScorer, Reranker, retrieve_and_rerank
 from app.retrieval import CORPUS_DIR, HybridRetriever, build_retriever_from_corpus, recorded_query_vector
-from app.schemas.ingestion import ExtractedLabRow, LabPageExtraction
+from app.schemas.ingestion import LabPageExtraction
 from app.supervisor import (
     EvidenceRetrieverWorker,
     IngestSubTask,
@@ -42,7 +42,7 @@ from app.supervisor import (
     SupervisorResult,
 )
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
-from tests.test_ingestion import _FakeVlmOllama, _FIXTURE_PATH
+from tests.test_ingestion import _FakeVlmOllama, _FIXTURE_PATH, _PAGE_1_ROWS, _PAGE_2_ROWS
 
 _PHI_MARKER = "Warfarin 5mg — patient allergic to penicillin, 123 Main St"
 
@@ -176,8 +176,7 @@ def test_worker_failure_propagates_and_is_logged(caplog: pytest.LogCaptureFixtur
 
 
 def test_intake_extractor_worker_delegates_and_preserves_citations(tmp_path: Path):
-    rows = [ExtractedLabRow(test="Hemoglobin A1c", value="5.4", unit="%", reference_range="4.0-5.6", collection_date="2026-06-01", abnormal_flag="N")]
-    ollama = _FakeVlmOllama(results=[LabPageExtraction(rows=rows)])
+    ollama = _FakeVlmOllama([LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)])
     store = LocalIngestionStore(tmp_path)
     worker = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
     sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
