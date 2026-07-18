@@ -367,6 +367,9 @@ def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, p
 
 
 def _assemble_intake_facts(extraction: Any, *, source_id: str, page_index: int) -> list[DocumentFact]:
+    # _to_intake_form_facts concretely returns list[IntakeFormFact], narrower
+    # than _DocTypeHandler.assemble's registry-wide Callable[..., list[DocumentFact]]
+    # shape (shared across both doc types) -- not a suppressed type error.
     return _to_intake_form_facts(extraction, source_id=source_id, page_index=page_index)  # type: ignore[return-value]
 
 

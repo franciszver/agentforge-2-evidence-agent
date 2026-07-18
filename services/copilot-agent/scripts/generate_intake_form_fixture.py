@@ -17,17 +17,14 @@ has ``fpdf2`` installed per ``pyproject.toml``'s ``dev`` extra):
 
 from __future__ import annotations
 
-import datetime
 from pathlib import Path
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-_OUTPUT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "intake_form_synthetic.pdf"
+from _fixture_pdf_common import PINNED_CREATION_DATE, draw_title, redact_rect
 
-# Pinned (not "now") so regenerating this fixture is byte-stable -- see
-# scripts/generate_lab_pdf_fixture.py's identical rationale.
-_PINNED_CREATION_DATE = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+_OUTPUT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "intake_form_synthetic.pdf"
 
 _DEMOGRAPHICS = [
     ("Name", "Test Patient"),
@@ -53,8 +50,7 @@ _VALUE_WIDTH = 70
 
 
 def _draw_title(pdf: FPDF, text: str) -> None:
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    draw_title(pdf, text)
     pdf.ln(2)
 
 
@@ -92,13 +88,12 @@ def _redact_page_1_dob(pdf: FPDF) -> None:
     demographics_header_top = title_row_top + 7  # "Demographics" heading
     dob_row_top = demographics_header_top + _ROW_HEIGHT * 1  # DOB is the 2nd row
     value_col_x = pdf.l_margin + _LABEL_WIDTH
-    pdf.set_fill_color(0, 0, 0)
-    pdf.rect(value_col_x, dob_row_top, _VALUE_WIDTH, _ROW_HEIGHT, style="F")
+    redact_rect(pdf, value_col_x, dob_row_top, _VALUE_WIDTH, _ROW_HEIGHT)
 
 
 def generate(output_path: Path = _OUTPUT_PATH) -> None:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_creation_date(_PINNED_CREATION_DATE)
+    pdf.set_creation_date(PINNED_CREATION_DATE)
 
     pdf.add_page()
     _draw_title(pdf, "Synthetic Patient Intake Form (test fixture -- not a real patient)")

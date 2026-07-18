@@ -18,19 +18,14 @@ has ``fpdf2`` installed per ``pyproject.toml``'s ``dev`` extra):
 
 from __future__ import annotations
 
-import datetime
 from pathlib import Path
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-_OUTPUT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "lab_report_synthetic.pdf"
+from _fixture_pdf_common import PINNED_CREATION_DATE, draw_title, redact_rect
 
-# Pinned (not "now") so regenerating this fixture is byte-stable -- fpdf2
-# stamps the PDF's /CreationDate metadata with the real wall-clock time by
-# default, which would otherwise make every regeneration produce a
-# spuriously different committed file even with identical visible content.
-_PINNED_CREATION_DATE = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+_OUTPUT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "lab_report_synthetic.pdf"
 
 # (test, value, unit, reference_range, collection_date, abnormal_flag)
 _PAGE_1_ROWS = [
@@ -54,8 +49,7 @@ _HEADERS = ["Test", "Value", "Unit", "Reference Range", "Collection Date", "Flag
 
 
 def _draw_header(pdf: FPDF) -> None:
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, "Synthetic Lab Report (test fixture -- not a real patient)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    draw_title(pdf, "Synthetic Lab Report (test fixture -- not a real patient)")
     pdf.set_font("Helvetica", "", 11)
     pdf.cell(0, 7, "Patient: Test Patient", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.cell(0, 7, "DOB: 1990-01-01 (synthetic)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -83,13 +77,12 @@ def _redact_page_2_creatinine_date(pdf: FPDF) -> None:
     header_row_top = pdf.t_margin + 10 + 7 * 3 + 4  # title + 3 demographic lines + gap
     date_col_x = pdf.l_margin + sum(_COL_WIDTHS[:4])
     row_top = header_row_top + _ROW_HEIGHT * (1 + 3)  # +1 header row, +3 rows before Creatinine (4th row)
-    pdf.set_fill_color(0, 0, 0)
-    pdf.rect(date_col_x, row_top, _COL_WIDTHS[4], _ROW_HEIGHT, style="F")
+    redact_rect(pdf, date_col_x, row_top, _COL_WIDTHS[4], _ROW_HEIGHT)
 
 
 def generate(output_path: Path = _OUTPUT_PATH) -> None:
     pdf = FPDF(orientation="L", unit="mm", format="A4")
-    pdf.set_creation_date(_PINNED_CREATION_DATE)
+    pdf.set_creation_date(PINNED_CREATION_DATE)
 
     pdf.add_page()
     _draw_header(pdf)

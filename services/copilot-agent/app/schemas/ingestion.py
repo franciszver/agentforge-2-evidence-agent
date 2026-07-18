@@ -117,17 +117,13 @@ class IntakeFormExtraction(ToolSchemaModel):
     family_history: list[str]
 
 
-class IntakeFormFact(ToolSchemaModel):
-    """One page's worth of extracted intake-form data. Per the no-fabrication
+class IntakeFormFact(IntakeFormExtraction):
+    """One page's worth of extracted intake-form data -- ``IntakeFormExtraction``
+    plus the ``Citation`` back to its source page. Per the no-fabrication
     contract, any demographic key/``chief_concern`` the model could not read
     on this page is absent/``None``, and any list section with nothing
     legible on this page is empty -- never guessed from another page."""
 
-    demographics: dict[str, str | None]
-    chief_concern: str | None
-    medications: list[str]
-    allergies: list[str]
-    family_history: list[str]
     citation: Citation
 
 
