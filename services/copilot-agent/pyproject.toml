@@ -11,6 +11,9 @@ dependencies = [
     "httpx>=0.27",
     # PDF page rendering for document ingestion (P3.1, app/ingestion.py).
     "pypdfium2>=4",
+    # YAML front-matter parsing (corpus docs, app/retrieval.py) and
+    # app/review_queue.py's pre-existing (previously undeclared) use.
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]

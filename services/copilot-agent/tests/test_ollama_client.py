@@ -750,6 +750,92 @@ def test_extract_logs_failure_after_exhausting_retries_without_leaking_output(ca
     assert secret_output not in _all_log_text(records)
 
 
+# --- embed: dense embeddings for hybrid retrieval (P3.3) --------------------
+
+
+def test_embed_posts_to_embeddings_path_with_embedding_model_and_prompt():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"embedding": [0.1, 0.2, 0.3]})
+
+    client = _client(handler, embedding_model="nomic-embed-text")
+    result = client.embed("some clinical guideline text")
+
+    assert captured["url"] == "http://ollama:11434/api/embeddings"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body == {"model": "nomic-embed-text", "prompt": "some clinical guideline text"}
+    assert result == [0.1, 0.2, 0.3]
+
+
+def test_embed_never_touches_chat_model():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embedding": [1.0]})
+
+    client = _client(handler, model="qwen3:4b", embedding_model="nomic-embed-text")
+    client.embed("text")
+
+    assert client.call_stats[-1].model == "nomic-embed-text"
+
+
+def test_embed_retries_on_malformed_response_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"not_embedding": []})
+        return httpx.Response(200, json={"embedding": [0.5, 0.6]})
+
+    client = _client(handler, max_retries=2)
+    result = client.embed("text")
+
+    assert result == [0.5, 0.6]
+    assert calls["n"] == 2
+
+
+def test_embed_raises_after_exhausting_retries_on_malformed_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embedding": "not-a-list"})
+
+    client = _client(handler, max_retries=2)
+
+    with pytest.raises(OllamaError):
+        client.embed("text")
+
+
+def test_embed_raises_immediately_on_http_error_without_retrying():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500)
+
+    client = _client(handler, max_retries=3)
+
+    with pytest.raises(OllamaError):
+        client.embed("text")
+
+    assert calls["n"] == 1
+
+
+def test_embed_does_not_log_the_input_text(caplog):
+    caplog.set_level(logging.INFO, logger="app.ollama_client")
+    secret_text = "SUPER_SECRET_GUIDELINE_QUERY_TOKEN"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embedding": [0.1]})
+
+    client = _client(handler)
+    client.embed(secret_text)
+
+    records = [r for r in caplog.records if r.name == "app.ollama_client"]
+    assert secret_text not in _all_log_text(records)
+
+
 # --- live integration: real qwen3:4b -----------------------------------
 #
 # Ollama is internal-only on the dev stack's docker network (no host port
@@ -785,3 +871,16 @@ def test_live_extract_against_real_qwen3_returns_valid_schema():
 
     assert isinstance(result, _Animal)
     assert result.legs > 0
+
+
+@pytest.mark.integration
+def test_live_embed_against_real_nomic_embed_text_returns_a_vector():
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+    settings = Settings(ollama_base_url=base_url, ollama_api_timeout_seconds=120.0)
+    client = OllamaClient.from_settings(settings)
+
+    result = client.embed("What A1c target for most adults?")
+
+    assert isinstance(result, list)
+    assert len(result) > 0
+    assert all(isinstance(v, float) for v in result)

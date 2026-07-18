@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:4b"
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
+    # Dense-embedding model for hybrid guideline-corpus retrieval (P3.3,
+    # app/retrieval.py) -- distinct from ollama_model (chat/extraction).
+    ollama_embedding_model: str = "nomic-embed-text"
 
     # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
     # ``openemr_base_url``.
