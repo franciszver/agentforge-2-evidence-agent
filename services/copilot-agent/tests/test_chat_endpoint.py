@@ -728,6 +728,7 @@ def test_stream_emits_populated_verification_frame_with_real_claim():
                     "value": "Lisinopril",
                 }
             ],
+            "document_citations": [],
         }
     ]
     assert verification_data["warnings"]["allergy_conflicts"] == []

@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     copilot_per_user_token_enabled: bool = False
     copilot_introspection_cache_ttl_seconds: float = 60.0
 
+    # Base dir for ``app.ingestion.LocalIngestionStore`` (P3.1's disclosed
+    # local-disk placeholder for OpenEMR document storage -- see that
+    # module's docstring). ``app.documents``'s GET /documents/{source_id}
+    # (P3.7) reads stored source PDFs from here for the citation overlay.
+    copilot_ingestion_base_dir: str = "/data/ingestion"
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""

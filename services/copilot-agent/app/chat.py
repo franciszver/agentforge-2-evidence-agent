@@ -578,6 +578,19 @@ def _serialize_segments(rendered: RenderedAnswer) -> list[dict[str, object]]:
                         }
                         for ref in segment.source_refs
                     ],
+                    # P3.7 citation overlay: the actual DocumentCitation
+                    # fields (not just document_citation_count), so the UI
+                    # can open the cited source page/quote.
+                    "document_citations": [
+                        {
+                            "source_type": citation.source_type,
+                            "source_id": citation.source_id,
+                            "page_or_section": citation.page_or_section,
+                            "field_or_chunk_id": citation.field_or_chunk_id,
+                            "quote_or_value": citation.quote_or_value,
+                        }
+                        for citation in segment.document_citations
+                    ],
                 }
             )
         else:  # Notice
