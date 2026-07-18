@@ -50,3 +50,21 @@ Documentation/EHI_Export/schemaspy/schemas/* export-ignore
 Documentation/EHI_Export/schemaspy/schemas/openemr.meta.xml -export-ignore
 .phpstan/**/*.* text eol=lf
 .phpstan/*.* text eol=lf
+
+# Pin LF on files whose tests compare raw bytes against a fixture, or that
+# are executed as shell scripts. Without eol=lf, core.autocrlf=true checks
+# these out as CRLF on Windows, which breaks them:
+#  - Twig/layout-field render fixtures: the test compares dynamically
+#    rendered (LF-only) HTML against the fixture file's raw bytes via
+#    assertSame(), so a CRLF fixture never matches.
+#  - SymfonyBackgroundServiceSpawnerTest.php: writes an embedded #!/bin/sh
+#    script from a nowdoc to a temp file and executes it; a stray \r in the
+#    shebang/body breaks busybox ash.
+#  - *.sh / *.bash / *.bats: any shell script's shebang line breaks the
+#    same way if checked out with a trailing \r.
+tests/Tests/Isolated/Common/Twig/fixtures/render/*.html eol=lf
+tests/Tests/Services/Common/Layouts/fixtures/**/*.html eol=lf
+tests/Tests/Isolated/Services/Background/SymfonyBackgroundServiceSpawnerTest.php eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.bats text eol=lf
