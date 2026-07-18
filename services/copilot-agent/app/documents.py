@@ -28,6 +28,17 @@ source documents.
 **No PHI in logs.** Only ``source_id`` (an opaque, server-generated
 identifier -- not a name/DOB/MRN) and outcome are logged, never file
 contents.
+
+**Launch-patient binding (flag-gated).** Mirrors ``/chat``'s #124 Phase 5
+binding exactly: gated by the SAME ``copilot_per_user_token_enabled`` flag,
+using the SAME ``get_launch_binding_checker()`` dependency. Flag OFF: a
+no-op, byte-identical to before -- binding is deliberately inactive per the
+documented ACL-OFF posture (the flag flip is a Path-to-Production step).
+Flag ON: the document's OWN stored ``patient_id`` (resolved via
+``LocalIngestionStore.read_source_patient_id``, the sidecar
+``save_source_document`` now persists) is checked against the token's
+launch patient, rejecting a mismatch with 403 -- closing the cross-patient
+IDOR a valid token would otherwise exploit by source_id alone.
 """
 
 from __future__ import annotations
@@ -38,9 +49,12 @@ import re
 from fastapi import Depends, Header, HTTPException, Response
 
 from app.chat import (
+    LaunchBindingChecker,
+    LaunchPatientMismatchError,
     TokenValidationError,
     TokenValidator,
     extract_bearer_token,
+    get_launch_binding_checker,
     get_token_validator,
 )
 from app.config import Settings, get_settings
@@ -63,6 +77,7 @@ def source_document_endpoint(
     source_id: str,
     authorization: str | None = Header(default=None),
     validator: TokenValidator = Depends(get_token_validator),
+    launch_binding_checker: LaunchBindingChecker = Depends(get_launch_binding_checker),
     store: LocalIngestionStore = Depends(get_document_store),
 ) -> Response:
     try:
@@ -78,5 +93,23 @@ def source_document_endpoint(
     if content is None:
         _logger.warning("source document not found", extra={"source_id": source_id})
         raise HTTPException(status_code=404, detail="document not found")
+
+    # #124 Phase 5 parity (see module docstring): same flag-gated
+    # launch-patient binding /chat enforces via get_launch_binding_checker(),
+    # applied here against the document's OWN stored patient_id rather than a
+    # request-body patient_id. An unresolvable patient_id (e.g. a document
+    # saved before this sidecar existed) is checked as -1 -- a pid no launch
+    # roster will ever resolve to -- so it fails closed under the SAME
+    # verify() fail-safe semantics /chat already relies on, rather than
+    # silently skipping the check. Flag OFF -> the checker is a no-op.
+    patient_id = store.read_source_patient_id(source_id)
+    try:
+        launch_binding_checker(token, patient_id if patient_id is not None else -1)
+    except LaunchPatientMismatchError as exc:
+        # Log-safe: no token, pid, or UUID -- just that a binding was refused.
+        _logger.warning("source document request rejected: token launch-context patient binding mismatch")
+        raise HTTPException(
+            status_code=403, detail="patient_id is not authorized for this token"
+        ) from exc
 
     return Response(content=content, media_type="application/pdf")
