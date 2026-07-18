@@ -43,7 +43,7 @@ from typing import Any, Literal, Protocol
 import pypdfium2 as pdfium
 
 from app.ollama_client import OllamaError
-from app.schemas.ingestion import Citation, ExtractedLabRow, LabPageExtraction, LabResultFact
+from app.schemas.ingestion import Citation, ExtractedLabRow, LabFlagCode, LabPageExtraction, LabResultFact
 
 _logger = logging.getLogger(__name__)
 
@@ -126,10 +126,24 @@ class FactStore(Protocol):
 
 @dataclass(frozen=True)
 class IngestionResult:
-    """The result of one ``attach_and_extract`` call."""
+    """The result of one ``attach_and_extract`` call.
+
+    ``failed_pages`` (1-based, matching ``Citation.page_or_section``'s own
+    "page N" numbering) lists every page whose VLM extraction call failed
+    outright -- DISTINCT from a page that was successfully read and
+    legitimately contained zero lab rows (that page is simply absent from
+    ``failed_pages`` and contributes no facts). **Callers MUST treat a
+    non-empty ``failed_pages`` as a PARTIAL extraction**: ``facts`` only
+    ever reflects the pages that succeeded, and a caller presenting this
+    result to a clinician must surface which pages could not be processed
+    rather than silently presenting ``facts`` as complete for the whole
+    document.
+    """
 
     source_id: str
     facts: list[LabResultFact]
+    pages_total: int
+    failed_pages: list[int]
 
 
 def _open_pdf(file_path: Path) -> pdfium.PdfDocument:
@@ -182,35 +196,65 @@ def render_pdf_pages_to_png(file_path: Path) -> list[bytes]:
         pdf.close()
 
 
-def _extract_page(ollama_client: _Extractor, *, page_index: int, image_png: bytes) -> LabPageExtraction:
+def _extract_page(ollama_client: _Extractor, *, page_index: int, image_png: bytes) -> LabPageExtraction | None:
+    """Run the schema-constrained VLM extraction call for one page.
+
+    Returns ``None`` -- never an empty ``LabPageExtraction`` -- when the
+    call fails outright, so a failed page stays distinguishable from a page
+    that was successfully read and legitimately had zero rows (see
+    ``IngestionResult.failed_pages``).
+    """
     image_b64 = base64.b64encode(image_png).decode("ascii")
     messages = [{"role": "user", "content": _LAB_EXTRACTION_PROMPT}]
     try:
         result = ollama_client.extract(messages, LabPageExtraction, images=[image_b64])
     except OllamaError:
         _logger.warning("lab pdf page extraction failed", extra={"page_index": page_index})
-        return LabPageExtraction(rows=[])
+        return None
     return result  # type: ignore[no-any-return]
 
 
-def _quote_for_row(row: ExtractedLabRow) -> str:
+def _normalize_flag_code(raw: str | None) -> LabFlagCode | None:
+    """Case-insensitively normalize a VLM-reported raw flag code into
+    ``LabFlagCode``. An unrecognized code (not one of H/L/A/N, any case)
+    degrades to ``None`` -- fail-closed per the no-fabrication contract,
+    logged at WARNING with ONLY the code token itself (a flag letter/short
+    token is not PHI; no other row/page data is logged)."""
+    if raw is None:
+        return None
+    try:
+        return LabFlagCode(raw.strip().upper())
+    except ValueError:
+        _logger.warning("unrecognized lab abnormal-flag code", extra={"flag_code": raw})
+        return None
+
+
+def _quote_for_row(row: ExtractedLabRow, *, normalized_flag: LabFlagCode | None) -> str:
     """Deterministic, literal rendering of what the model read for this row.
 
     Never a new fact -- only a formatted view of already-extracted fields --
     which keeps ``Citation.quote_or_value``'s non-null contract satisfiable
-    even when ``value`` itself is ``None`` (not found).
+    even when ``value`` itself is ``None`` (not found). When the row's raw
+    flag code failed to normalize (``normalized_flag is None`` but
+    ``row.abnormal_flag`` was present), the raw code is appended verbatim --
+    the fact's own ``abnormal_flag`` is ``None`` (fail-closed), but the
+    citation must still quote what the page actually printed, truthfully.
     """
     value_part = row.value if row.value is not None else "(not found)"
-    return f"{row.test}: {value_part}"
+    quote = f"{row.test}: {value_part}"
+    if row.abnormal_flag is not None and normalized_flag is None:
+        quote += f" [flag: {row.abnormal_flag}]"
+    return quote
 
 
 def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int) -> LabResultFact:
+    normalized_flag = _normalize_flag_code(row.abnormal_flag)
     citation = Citation(
         source_type="lab_pdf",
         source_id=source_id,
         page_or_section=f"page {page_index + 1}",
         field_or_chunk_id=row.test,
-        quote_or_value=_quote_for_row(row),
+        quote_or_value=_quote_for_row(row, normalized_flag=normalized_flag),
     )
     return LabResultFact(
         test=row.test,
@@ -218,7 +262,7 @@ def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int
         unit=row.unit,
         reference_range=row.reference_range,
         collection_date=row.collection_date,
-        abnormal_flag=row.abnormal_flag,
+        abnormal_flag=normalized_flag,
         citation=citation,
     )
 
@@ -249,6 +293,11 @@ def attach_and_extract(
     written to ``document_store`` -- a malformed or out-of-bounds PDF raises
     ``IngestionError`` with nothing persisted, never an orphaned stored file
     left behind by a parse failure that happens after storage.
+
+    **Partial extraction.** A page whose VLM call fails outright is recorded
+    in the returned ``IngestionResult.failed_pages`` (1-based) rather than
+    silently contributing zero facts indistinguishable from "this page had
+    no lab rows" -- see that field's docstring for the caller obligation.
     """
     if doc_type != "lab_pdf":
         raise ValueError(f"attach_and_extract only supports doc_type='lab_pdf' in this slice, got {doc_type!r}")
@@ -262,15 +311,20 @@ def attach_and_extract(
 
     source_id = document_store.save_source_document(patient_id, doc_type, path)
 
+    pages = render_pdf_pages_to_png(path)
     facts: list[LabResultFact] = []
-    for page_index, image_png in enumerate(render_pdf_pages_to_png(path)):
+    failed_pages: list[int] = []
+    for page_index, image_png in enumerate(pages):
         extraction = _extract_page(ollama_client, page_index=page_index, image_png=image_png)
+        if extraction is None:
+            failed_pages.append(page_index + 1)
+            continue
         facts.extend(
             _to_lab_result_fact(row, source_id=source_id, page_index=page_index) for row in extraction.rows
         )
 
     fact_store.save_facts(patient_id, source_id, facts)
-    return IngestionResult(source_id=source_id, facts=facts)
+    return IngestionResult(source_id=source_id, facts=facts, pages_total=len(pages), failed_pages=failed_pages)
 
 
 class LocalIngestionStore:

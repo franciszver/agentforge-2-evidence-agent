@@ -39,7 +39,7 @@ from app.ingestion import (
     render_pdf_pages_to_png,
 )
 from app.ollama_client import OllamaError
-from app.schemas.ingestion import LabResultFact
+from app.schemas.ingestion import LabFlagCode, LabResultFact
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lab_report_synthetic.pdf"
 
@@ -195,10 +195,10 @@ def test_all_none_row_citation_quote_says_not_found():
     from app.ingestion import _quote_for_row
 
     row = ExtractedLabRow(test="Illegible Test", value=None, unit=None, reference_range=None, collection_date=None, abnormal_flag=None)
-    assert _quote_for_row(row) == "Illegible Test: (not found)"
+    assert _quote_for_row(row, normalized_flag=None) == "Illegible Test: (not found)"
 
 
-def test_extraction_failure_yields_no_facts_for_that_page_not_a_guess(store):
+def test_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
     failing_vlm = _FakeVlmOllama(error=True)
 
     result = attach_and_extract(
@@ -206,8 +206,12 @@ def test_extraction_failure_yields_no_facts_for_that_page_not_a_guess(store):
     )
 
     # Fails soft, but to EMPTY -- never fabricates rows for a page the VLM
-    # couldn't process at all.
+    # couldn't process at all -- AND every page is recorded in failed_pages,
+    # so this stays distinguishable from "every page legitimately had zero
+    # rows" (see IngestionResult.failed_pages's docstring).
     assert result.facts == []
+    assert result.failed_pages == [1, 2]
+    assert result.pages_total == 2
 
 
 # ---------------------------------------------------------------------------
@@ -318,3 +322,78 @@ def test_attach_and_extract_rejects_too_many_pages_and_stores_nothing(tmp_path: 
     assert list((tmp_path / "ingestion" / "documents").iterdir()) == []
     assert list((tmp_path / "ingestion" / "facts").iterdir()) == []
     assert fake_vlm.extract_calls == []  # never even reached the VLM call
+
+
+# ---------------------------------------------------------------------------
+# 7. Code-review gate: failed-page visibility (IngestionResult.failed_pages)
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_outcome_keeps_succeeded_page_facts_and_marks_only_the_failed_page(store):
+    class _MixedVlm:
+        """Page 1 succeeds, page 2 fails outright."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                return LabPageExtraction(rows=_PAGE_1_ROWS)
+            raise OllamaError("scripted failure on page 2")
+
+    result = attach_and_extract(
+        1, _FIXTURE_PATH, "lab_pdf", ollama_client=_MixedVlm(), document_store=store, fact_store=store
+    )
+
+    assert [f.test for f in result.facts] == [row.test for row in _PAGE_1_ROWS]
+    assert result.failed_pages == [2]
+    assert result.pages_total == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. Code-review gate: page-level flag-code tolerance (LabFlagCode)
+# ---------------------------------------------------------------------------
+
+
+def test_lowercase_flag_code_normalizes_to_the_enum(store):
+    lowercase_row = ExtractedLabRow(
+        test="Sodium",
+        value="140",
+        unit="mmol/L",
+        reference_range="136-145",
+        collection_date="2026-06-01",
+        abnormal_flag="h",
+    )
+    vlm = _FakeVlmOllama([LabPageExtraction(rows=[lowercase_row]), LabPageExtraction(rows=[])])
+
+    result = attach_and_extract(
+        1, _FIXTURE_PATH, "lab_pdf", ollama_client=vlm, document_store=store, fact_store=store
+    )
+
+    sodium = next(f for f in result.facts if f.test == "Sodium")
+    assert sodium.abnormal_flag == LabFlagCode.HIGH
+
+
+def test_unrecognized_flag_code_keeps_the_row_but_nulls_the_flag_and_quotes_it(store):
+    unknown_row = ExtractedLabRow(
+        test="Potassium",
+        value="4.1",
+        unit="mmol/L",
+        reference_range="3.5-5.0",
+        collection_date="2026-06-01",
+        abnormal_flag="XX",
+    )
+    vlm = _FakeVlmOllama([LabPageExtraction(rows=[unknown_row]), LabPageExtraction(rows=[])])
+
+    result = attach_and_extract(
+        1, _FIXTURE_PATH, "lab_pdf", ollama_client=vlm, document_store=store, fact_store=store
+    )
+
+    # The row is KEPT -- the whole page is NOT dropped over one bad code --
+    # just with a null flag; the citation quotes the raw code truthfully
+    # rather than silently discarding what the page actually printed.
+    potassium = next(f for f in result.facts if f.test == "Potassium")
+    assert potassium.abnormal_flag is None
+    assert potassium.value == "4.1"  # every other field on the row survives
+    assert "XX" in potassium.citation.quote_or_value
