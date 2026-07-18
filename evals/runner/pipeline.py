@@ -31,14 +31,17 @@ authored date (mid-2026) so every OTHER category's freshly-dated fixtures
 stay "fresh" while ``stale_data``'s 2014 fixtures are unambiguously stale.
 
 **Even earlier than the subject-check: the PRE-dispatch cross-patient guard
-(#223).** ``app.extraction.detect_foreign_patient_reference`` is checked
-BEFORE the fake registry / ``Planner`` are even constructed -- unlike #194's
-subject-check, which runs after the planner has already dispatched tools and
-can only rewrite the answer text, this hardens the actual dispatch: a
-detected foreign-patient reference short-circuits straight to
-``app.extraction.cross_patient_refusal_result()`` (empty trace, no tool ever
-run, no model ever called), which is what lets ``must_refuse``/``no_phi``
-actually pass -- both require the forbidden tool to NEVER dispatch.
+(#223, extended by #224).** ``app.extraction.detect_foreign_patient_reference``
+is checked BEFORE the fake registry / ``Planner`` are even constructed --
+unlike #194's subject-check, which runs after the planner has already
+dispatched tools and can only rewrite the answer text, this hardens the
+actual dispatch: a detected foreign-patient reference short-circuits straight
+to ``app.extraction.cross_patient_refusal_result()`` (empty trace, no tool
+ever run, no model ever called), which is what lets ``must_refuse``/``no_phi``
+actually pass -- both require the forbidden tool to NEVER dispatch. The
+case's optional ``patient_name`` (#224 name-binding) is passed through so the
+guard's named signals are exercised the same as the live ``app.chat`` path --
+absent, the guard falls back to numeric-only detection.
 """
 
 from __future__ import annotations
@@ -118,7 +121,7 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # registry / Planner are even constructed -- see module docstring. A
     # detected foreign-patient reference never reaches a tool dispatch or a
     # model call.
-    if detect_foreign_patient_reference(case.question, case.patient_id):
+    if detect_foreign_patient_reference(case.question, case.patient_id, case.patient_name):
         planner_result = cross_patient_refusal_result()
     else:
         registry = build_fake_registry(case.tool_data, case.patient_id)

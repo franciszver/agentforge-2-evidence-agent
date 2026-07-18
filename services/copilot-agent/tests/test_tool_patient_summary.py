@@ -19,7 +19,7 @@ from app.config import Settings
 from app.openemr_auth import fetch_token_password_grant, register_client
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
-from app.tools.patient_summary import get_patient_summary
+from app.tools.patient_summary import get_patient_name, get_patient_summary
 
 PHIL_UUID = "a243a1bb-178f-4092-8c67-52dfaf67fca6"
 
@@ -187,6 +187,49 @@ def test_patient_not_found_raises_not_found(make_openemr_client):
         get_patient_summary(make_openemr_client(handler), token="tok", patient_id=999999)
 
     assert excinfo.value.category == ErrorCategory.NOT_FOUND
+
+
+# --------------------------------------------------------------------------
+# get_patient_name (#224 name-binding) -- a single demographics-only round
+# trip (reuses the same roster fetch + client-side pid select as
+# get_patient_summary's ``_fetch_demographics``), not the full summary's 7
+# concurrent section-count calls. Used to resolve the bound patient's own
+# display name for ``app.extraction.detect_foreign_patient_reference``'s
+# named cross-patient signals.
+# --------------------------------------------------------------------------
+
+
+def test_get_patient_name_returns_first_and_last_name(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=PATIENT_LIST_BODY)
+        raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
+
+    name = get_patient_name(make_openemr_client(handler), token="tok", patient_id=1)
+
+    assert name == "Phil Belford"
+
+
+def test_get_patient_name_returns_none_when_patient_not_found(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=PATIENT_LIST_BODY)
+        raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
+
+    name = get_patient_name(make_openemr_client(handler), token="tok", patient_id=999999)
+
+    assert name is None
+
+
+def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(403, json={"error": "insufficient_scope"})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    name = get_patient_name(make_openemr_client(handler), token="tok", patient_id=1)
+
+    assert name is None
 
 
 @pytest.mark.integration

@@ -84,6 +84,27 @@ def get_patient_summary(client: OpenEmrClient, token: str, patient_id: int) -> P
         )
 
 
+def get_patient_name(client: OpenEmrClient, token: str, patient_id: int) -> str | None:
+    """The patient's own "First Last" display name, or ``None`` if it cannot
+    be resolved (patient not found, any OpenEMR API error).
+
+    A single demographics-only round trip via ``_fetch_demographics`` --
+    NOT the full ``get_patient_summary``, which additionally fans out 7
+    concurrent section-count calls this caller has no use for. Used to
+    resolve the bound patient's own display name for the #224 name-binding
+    cross-patient guard (``app.extraction.detect_foreign_patient_reference``);
+    callers there treat ``None`` as "name-binding unavailable" and fall back
+    to numeric-only detection rather than treating this as a hard failure.
+    """
+    try:
+        demographics = _fetch_demographics(client, token, patient_id)
+    except OpenEmrApiError:
+        return None
+    fname, lname = demographics.get("fname"), demographics.get("lname")
+    parts = [part for part in (fname, lname) if isinstance(part, str) and part]
+    return " ".join(parts) if parts else None
+
+
 def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> dict[str, Any]:
     """Fetch the patient roster and select the matching ``pid``.
 

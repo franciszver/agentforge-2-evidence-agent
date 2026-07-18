@@ -242,6 +242,131 @@ def test_resume_with_mismatched_patient_id_is_rejected():
     assert second.status_code in (400, 409)
 
 
+# --------------------------------------------------------------------------
+# #224 name-binding: Conversation gains the bound patient's own display name,
+# resolved once at conversation-creation time via the planner's OPTIONAL
+# ``resolve_patient_name`` capability (getattr-duck-typed, same pattern as
+# ``run_streaming``). ``FakePlanner`` above implements neither, so every
+# EXISTING test in this file (none of which set up a resolver) keeps getting
+# ``patient_name=None`` -- byte-identical pre-#224 behavior.
+# --------------------------------------------------------------------------
+
+
+class FakePlannerWithName(FakePlanner):
+    """A ``FakePlanner`` that also offers the OPTIONAL name-resolution
+    capability -- mirrors how the real ``Planner.resolve_patient_name``
+    duck-types alongside ``run``/``run_streaming``."""
+
+    def __init__(self, trace, answer, patient_name: str, raw_results=None) -> None:
+        super().__init__(trace, answer, raw_results)
+        self._patient_name = patient_name
+        self.resolve_calls = 0
+
+    def resolve_patient_name(self) -> str:
+        self.resolve_calls += 1
+        return self._patient_name
+
+
+def test_new_conversation_resolves_and_stores_the_bound_patient_name():
+    fake_planner = FakePlannerWithName(trace=[], answer="ok", patient_name="Wanda Moore")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    response = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    conversation_id = _conversation_id(response.text)
+
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert conversation.patient_name == "Wanda Moore"
+    assert fake_planner.resolve_calls == 1
+
+
+def test_resumed_conversation_does_not_re_resolve_the_patient_name():
+    fake_planner = FakePlannerWithName(trace=[], answer="ok", patient_name="Wanda Moore")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    first = client.post(
+        "/chat",
+        json={"message": "first question", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    conversation_id = _conversation_id(first.text)
+    assert fake_planner.resolve_calls == 1
+
+    client.post(
+        "/chat",
+        json={"message": "second question", "patient_id": 1, "conversation_id": conversation_id},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    # Resolved once at creation time, never again on resume.
+    assert fake_planner.resolve_calls == 1
+
+
+def test_new_conversation_leaves_patient_name_none_when_planner_has_no_resolver():
+    # FakePlanner (no resolve_patient_name) -- the pre-#224 default double
+    # used throughout this file -- must not break conversation creation.
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    store = ConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    response = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    conversation_id = _conversation_id(response.text)
+
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert conversation.patient_name is None
+
+
+def test_named_cross_patient_reference_is_refused_before_any_tool_dispatch_when_name_is_bound():
+    # "patient <Name>" (signal 1) naming a DIFFERENT patient than the bound
+    # "Wanda Moore" -- refused pre-dispatch, no tool ever run.
+    trace = [ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None)]
+    fake_planner = FakePlannerWithName(
+        trace=trace,
+        answer="Bob Smith has a drug allergy to ZZ-TEST-MARKER.",
+        patient_name="Wanda Moore",
+    )
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "Does patient Bob Smith have any drug allergies?", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    assert response.status_code == 200
+
+    events = _iter_sse_events(response.text)
+    tool_calls = [data for name, data in events if name == "tool_call"]
+    answer_data = next(data for name, data in events if name == "answer")
+
+    # No tool ever dispatched -- the fake planner's scripted run() was never
+    # even called (the pre-dispatch guard short-circuits before it).
+    assert tool_calls == []
+    assert fake_planner.questions == []
+    assert "ZZ-TEST-MARKER" not in answer_data
+    assert "chart is currently open" in answer_data
+
+
 def test_missing_token_returns_401_and_never_invokes_planner():
     fake_planner = FakePlanner(trace=[], answer="should not be called")
     _override_planner_factory(fake_planner)

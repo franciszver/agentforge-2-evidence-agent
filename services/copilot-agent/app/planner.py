@@ -88,7 +88,7 @@ from app.tools.appointments import get_appointments
 from app.tools.encounters import get_encounters
 from app.tools.labs import get_recent_labs
 from app.tools.medications import get_medications
-from app.tools.patient_summary import get_patient_summary
+from app.tools.patient_summary import get_patient_name, get_patient_summary
 from app.tools.problems import get_problems
 from app.tools.vitals import get_vitals
 
@@ -458,6 +458,21 @@ class Planner:
         # The summarizer gets ONLY the ollama client -- never the registry,
         # openemr client, or token -- so it structurally cannot call a tool.
         self._summarizer = QuarantinedSummarizer(ollama_client=ollama_client)
+
+    def resolve_patient_name(self) -> str | None:
+        """Best-effort resolve this conversation's bound patient display name
+        (#224 name-binding), e.g. for ``app.extraction
+        .detect_foreign_patient_reference``'s named cross-patient signals.
+
+        ``None`` on any OpenEMR API error (patient not found, timeout, ...)
+        -- callers treat a missing name as "name-binding unavailable", which
+        that guard already handles by falling back to its pre-#224
+        numeric-only signal. An OPTIONAL capability, not part of
+        ``app.chat.PlannerProtocol`` -- callers duck-type it via ``getattr``
+        (same pattern as ``run_streaming``), so a test double that only
+        implements ``run()`` simply has no name to offer.
+        """
+        return get_patient_name(self._openemr, self._token, self._patient_id)
 
     def run(self, question: str) -> PlannerResult:
         """Run the loop to completion and return the finished result.

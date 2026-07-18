@@ -475,10 +475,21 @@ def _user_identity_from_token(token: str) -> str:
 
 @dataclass
 class Conversation:
-    """One multi-turn conversation, bound to the patient it was created for."""
+    """One multi-turn conversation, bound to the patient it was created for.
+
+    ``patient_name`` (#224 name-binding) is the bound patient's own display
+    name, resolved ONCE at creation time (see ``chat_endpoint``'s
+    ``_resolve_conversation_patient_name`` call) -- ``None`` when it could
+    not be resolved (e.g. an OpenEMR API error, or a planner double with no
+    ``resolve_patient_name`` capability). Fed into ``app.extraction
+    .detect_foreign_patient_reference``'s named cross-patient signals; a
+    ``None`` name simply disables those signals for this conversation,
+    falling back to #223's numeric-only detection.
+    """
 
     conversation_id: str
     patient_id: int
+    patient_name: str | None = None
     history: list[Turn] = field(default_factory=list)
 
 
@@ -495,8 +506,10 @@ class ConversationStore:
     def get(self, conversation_id: str) -> Conversation | None:
         return self._conversations.get(conversation_id)
 
-    def create(self, patient_id: int) -> Conversation:
-        conversation = Conversation(conversation_id=str(uuid.uuid4()), patient_id=patient_id)
+    def create(self, patient_id: int, patient_name: str | None = None) -> Conversation:
+        conversation = Conversation(
+            conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
+        )
         self._conversations[conversation.conversation_id] = conversation
         return conversation
 
@@ -727,14 +740,20 @@ def _stream_chat(
         # unconditionally (a cheap attribute lookup, no side effect) so it is
         # available below regardless of which branch runs next.
         run_streaming = getattr(planner, "run_streaming", None)
-        # #223: deterministic PRE-dispatch cross-patient refusal guard,
-        # checked BEFORE the planner runs at all. Unlike #194's
-        # apply_subject_check below (which only rewrites the answer TEXT
-        # after tools have already been dispatched), this short-circuits
-        # BEFORE any tool dispatch or model call -- the only way to
-        # guarantee a forbidden tool never runs. See
-        # app.extraction.detect_foreign_patient_reference.
-        cross_patient_reference_detected = detect_foreign_patient_reference(message, conversation.patient_id)
+        # #223 (extended by #224): deterministic PRE-dispatch cross-patient
+        # refusal guard, checked BEFORE the planner runs at all. Unlike
+        # #194's apply_subject_check below (which only rewrites the answer
+        # TEXT after tools have already been dispatched), this
+        # short-circuits BEFORE any tool dispatch or model call -- the only
+        # way to guarantee a forbidden tool never runs. ``conversation
+        # .patient_name`` (resolved once at conversation-creation time, see
+        # ``_resolve_conversation_patient_name``) enables the guard's named
+        # signals; ``None`` (name-binding unavailable) falls back to #223's
+        # numeric-only detection. See app.extraction
+        # .detect_foreign_patient_reference.
+        cross_patient_reference_detected = detect_foreign_patient_reference(
+            message, conversation.patient_id, conversation.patient_name
+        )
         if cross_patient_reference_detected:
             result = cross_patient_refusal_result()
         elif run_streaming is not None:
@@ -869,6 +888,29 @@ def _stream_chat(
         )
 
 
+async def _resolve_conversation_patient_name(planner: PlannerProtocol) -> str | None:
+    """Best-effort resolve the bound patient's display name for a brand-new
+    conversation (#224 name-binding), via the planner's OPTIONAL
+    ``resolve_patient_name`` capability -- duck-typed via ``getattr``, the
+    same pattern ``_stream_chat`` already uses for ``run_streaming``: a
+    ``PlannerProtocol`` double that only implements ``run()`` simply has no
+    name to offer, and every caller of ``detect_foreign_patient_reference``
+    already treats ``None`` as "name-binding unavailable" (falls back to
+    #223's numeric-only signal) -- never a hard failure.
+
+    Dispatched to FastAPI's threadpool because a real resolve is a blocking
+    HTTP round trip (mirrors ``_validate_token``'s own threadpool dispatch,
+    same reason: this runs inside the ``async`` ``chat_endpoint`` body).
+    Called ONCE per conversation, at creation time -- never on resume (see
+    ``chat_endpoint``), so an established conversation never pays this cost
+    again on later turns.
+    """
+    resolve = getattr(planner, "resolve_patient_name", None)
+    if resolve is None:
+        return None
+    return await run_in_threadpool(resolve)
+
+
 def extract_bearer_token(authorization: str | None) -> str:
     """Pull the token out of an ``Authorization: Bearer <token>`` header.
 
@@ -915,6 +957,8 @@ async def chat_endpoint(
 
     user = _user_identity_from_token(token)
 
+    planner = planner_factory(request.patient_id)
+
     if request.conversation_id:
         conversation = store.get(request.conversation_id)
         if conversation is None:
@@ -925,9 +969,10 @@ async def chat_endpoint(
                 detail="conversation_id is bound to a different patient_id",
             )
     else:
-        conversation = store.create(request.patient_id)
-
-    planner = planner_factory(request.patient_id)
+        # #224: resolve the bound patient's own display name ONCE, at
+        # conversation-creation time -- see _resolve_conversation_patient_name.
+        patient_name = await _resolve_conversation_patient_name(planner)
+        conversation = store.create(request.patient_id, patient_name=patient_name)
 
     return StreamingResponse(
         _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user, clock),

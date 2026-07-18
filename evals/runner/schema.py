@@ -155,6 +155,17 @@ class EvalCase(BaseModel):
     )
     question: str = Field(min_length=1)
     patient_id: int = Field(gt=0)
+    patient_name: str | None = Field(
+        default=None,
+        description=(
+            "The bound patient's own display name (#224 name-binding), fed "
+            "into app.extraction.detect_foreign_patient_reference's named "
+            "cross-patient signals -- mirrors what app.chat resolves live via "
+            "Planner.resolve_patient_name(). Absent (None) for cases that "
+            "don't need it -- the guard then falls back to numeric-only "
+            "detection, byte-identical to the pre-#224 harness."
+        ),
+    )
     tool_data: dict[ToolName, dict[str, Any]] = Field(default_factory=dict)
     assertions: list[Assertion] = Field(min_length=1)
     xfail: str | None = Field(
