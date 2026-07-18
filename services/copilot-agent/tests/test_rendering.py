@@ -17,8 +17,9 @@ import pytest
 
 from app.rendering import Notice, RenderedAnswer, RenderedClaim, render_answer
 from app.schemas.common import SourceRef
+from app.schemas.ingestion import DocumentCitation
 from app.schemas.verification import Claim
-from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult
+from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult, DocumentCitationCheckResult
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers -- seed ClaimCheckResult directly, bypassing the checker.
@@ -63,9 +64,17 @@ def test_all_passing_claims_are_kept_in_order():
     result = render_answer([first, second])
 
     assert result.segments == [
-        RenderedClaim(text="The patient is on Lisinopril.", source_refs=[c.source_ref for c in first.citation_results]),
         RenderedClaim(
-            text="Blood pressure is 120/80.", source_refs=[c.source_ref for c in second.citation_results]
+            text="The patient is on Lisinopril.",
+            source_refs=[c.source_ref for c in first.citation_results],
+            document_citation_count=0,
+            all_citations_verified=True,
+        ),
+        RenderedClaim(
+            text="Blood pressure is 120/80.",
+            source_refs=[c.source_ref for c in second.citation_results],
+            document_citation_count=0,
+            all_citations_verified=True,
         ),
     ]
 
@@ -184,6 +193,65 @@ def test_one_failing_citation_among_several_still_strips_the_whole_claim():
     [segment] = render_answer([claim_result]).segments
 
     assert isinstance(segment, Notice)
+
+
+# ---------------------------------------------------------------------------
+# Document-only verified claims (P3.6 follow-up) -- a claim verified SOLELY
+# by document_citations (no SourceRefs -- legal per app.schemas.verification.
+# Claim) must not render indistinguishable from a genuinely-uncited claim:
+# document_citation_count/all_citations_verified surface that real evidence
+# backed it, even though chip rendering for document citations isn't wired
+# yet (RenderedClaim.source_refs stays SourceRef-only).
+# ---------------------------------------------------------------------------
+
+
+def _document_citation() -> DocumentCitation:
+    return DocumentCitation(
+        source_type="lab_pdf",
+        source_id="doc-1",
+        page_or_section="page 1",
+        field_or_chunk_id="Glucose",
+        quote_or_value="Glucose: 105 mg/dL",
+    )
+
+
+def test_document_only_verified_claim_surfaces_document_citation_count_and_verified_flag():
+    claim = Claim(text="Glucose is 105 mg/dL.", document_citations=[_document_citation()])
+    claim_result = ClaimCheckResult(
+        claim=claim,
+        citation_results=[
+            DocumentCitationCheckResult(document_citation=_document_citation(), status=CitationStatus.VALID)
+        ],
+    )
+
+    [segment] = render_answer([claim_result]).segments
+
+    assert isinstance(segment, RenderedClaim)
+    assert segment.source_refs == []
+    assert segment.document_citation_count == 1
+    assert segment.all_citations_verified is True
+
+
+def test_mixed_source_ref_and_document_citation_claim_counts_both_shapes():
+    claim = Claim(
+        text="On Lisinopril; glucose 105 mg/dL.",
+        source_refs=[_ref()],
+        document_citations=[_document_citation()],
+    )
+    claim_result = ClaimCheckResult(
+        claim=claim,
+        citation_results=[
+            _citation(CitationStatus.VALID),
+            DocumentCitationCheckResult(document_citation=_document_citation(), status=CitationStatus.VALID),
+        ],
+    )
+
+    [segment] = render_answer([claim_result]).segments
+
+    assert isinstance(segment, RenderedClaim)
+    assert len(segment.source_refs) == 1
+    assert segment.document_citation_count == 1
+    assert segment.all_citations_verified is True
 
 
 # ---------------------------------------------------------------------------

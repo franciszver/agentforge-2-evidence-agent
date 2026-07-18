@@ -57,6 +57,8 @@ def test_verified_payload_serializes_claims_with_citations():
                         asserted_value="10 mg",
                     )
                 ],
+                document_citation_count=0,
+                all_citations_verified=True,
             )
         ]
     )
