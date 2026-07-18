@@ -18,12 +18,19 @@ has ``fpdf2`` installed per ``pyproject.toml``'s ``dev`` extra):
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
 _OUTPUT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "lab_report_synthetic.pdf"
+
+# Pinned (not "now") so regenerating this fixture is byte-stable -- fpdf2
+# stamps the PDF's /CreationDate metadata with the real wall-clock time by
+# default, which would otherwise make every regeneration produce a
+# spuriously different committed file even with identical visible content.
+_PINNED_CREATION_DATE = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
 
 # (test, value, unit, reference_range, collection_date, abnormal_flag)
 _PAGE_1_ROWS = [
@@ -82,6 +89,7 @@ def _redact_page_2_creatinine_date(pdf: FPDF) -> None:
 
 def generate(output_path: Path = _OUTPUT_PATH) -> None:
     pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_creation_date(_PINNED_CREATION_DATE)
 
     pdf.add_page()
     _draw_header(pdf)
