@@ -82,7 +82,9 @@ class SourceDocumentProxyControllerTest extends TestCase
     }
 
     /**
-     * @return array<int, string>
+     * @return array<string, array{string}>
+     *
+     * @codeCoverageIgnore Data providers run before coverage instrumentation starts.
      */
     public static function malformedSourceIdProvider(): array
     {
