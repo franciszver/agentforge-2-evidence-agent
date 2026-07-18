@@ -140,6 +140,33 @@ describe('renderFeedbackWidget', () => {
 
         expect(container.children).toHaveLength(2);
     });
+
+    // #172: input-side PHI deterrent, complementing #157's export-side scrub.
+    // The comment is about the RESPONSE, not the patient -- a persistent hint
+    // (not just a placeholder, which disappears once the clinician starts
+    // typing) says so up front.
+    test('shows persistent guidance against entering patient-identifying details', () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+
+        expect(widget.commentHint).toBeTruthy();
+        expect(widget.commentHint.textContent.toLowerCase()).toMatch(/response/);
+        expect(widget.commentHint.textContent.toLowerCase()).toMatch(/patient/);
+        // The hint must live inside the comment wrapper so it appears/disappears
+        // alongside the comment box, and must precede the textarea in the DOM
+        // so it is visible before the clinician starts typing.
+        expect(widget.commentWrap.contains(widget.commentHint)).toBe(true);
+        const hintIndex = Array.prototype.indexOf.call(widget.commentWrap.children, widget.commentHint);
+        const inputIndex = Array.prototype.indexOf.call(widget.commentWrap.children, widget.commentInput);
+        expect(hintIndex).toBeLessThan(inputIndex);
+    });
+
+    test('the comment placeholder also steers toward the response, not patient details', () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+
+        expect(widget.commentInput.getAttribute('placeholder').toLowerCase()).toMatch(/response/);
+    });
 });
 
 // ---------------------------------------------------------------------------

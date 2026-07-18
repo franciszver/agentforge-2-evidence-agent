@@ -73,7 +73,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -582,3 +582,331 @@ def apply_subject_check(result: PlannerResult, *, question: str, patient_id: int
 
     scope_notice = f"I can only answer about the currently open patient (patient {patient_id})."
     return _with_answer(result, scope_notice)
+
+
+# Dosing/quantity nouns that turn a "patient <N>" number into a DOSE
+# instruction ("give patient 2 tablets", "patient 5 mg") rather than a
+# reference to a different patient. When one immediately follows the number,
+# the guard must NOT fire -- otherwise an ordinary dosing question about the
+# bound patient would be wrongly refused. See ``_GUARD_PATIENT_NUMBER_RE``.
+_DOSING_NOUNS = (
+    r"tablets?|tabs?|pills?|capsules?|caps?|mg|mcg|ml|g|units?|"
+    r"doses?|times|puffs?|drops?|days?|weeks?|months?"
+)
+
+# The guard's OWN foreign-patient-number pattern: identical to #194's
+# ``_PATIENT_NUMBER_RE`` but with a trailing negative lookahead so a
+# "patient <N>" whose number is immediately followed by a dosing/quantity
+# noun (a dosing instruction, not a patient reference) does NOT match. Kept
+# SEPARATE from ``_PATIENT_NUMBER_RE`` deliberately -- #194's
+# ``apply_subject_check`` runs POST-answer and only ever rewrites text, so
+# its looser number match is harmless there; this guard runs PRE-dispatch and
+# a false positive here hard-refuses a legitimate question, so it must be
+# tighter. Sharing one pattern would force #194's tests and this guard's to
+# move in lockstep for no benefit.
+_GUARD_PATIENT_NUMBER_RE = re.compile(
+    rf"\bpatient\s*(?:id\s*)?#?\s*(\d+)\b(?!\s+(?:{_DOSING_NOUNS})\b)",
+    re.IGNORECASE,
+)
+
+# #224 name-binding: a NAME the question introduces via "patient <Name>" --
+# up to three capitalized words. Nobody says "patient Lisinopril" (a lowercase
+# clinical shorthand almost never follows the bare word "patient" the way a
+# person's name does), so this construction is treated as a genuine patient
+# reference UNCONDITIONALLY -- the only question is whether the named patient
+# is the BOUND one or a foreign one (``_is_foreign_named_patient`` below
+# answers that by comparing against the caller-supplied bound name). Only
+# "patient" is matched case-insensitively (scoped inline flag, same trick as
+# ``_PAIRED_NAME_NUMBER_RE`` above); the name capture stays case-SENSITIVE.
+# The trailing negative lookahead excludes "patient id 452" / "patient ID 452"
+# (a NUMBER reference, ``_GUARD_PATIENT_NUMBER_RE`` above already handles it)
+# -- a captured word immediately followed by a number is not a name.
+_PATIENT_NAMED_RE = re.compile(
+    r"\b(?i:patient)\s+((?:[A-Z][A-Za-z'\-]*\s+){0,2}[A-Z][A-Za-z'\-]*)\b(?!\s*#?\d)"
+)
+
+
+def _same_named_patient(candidate: str, bound_patient_name: str) -> bool:
+    """Whether ``candidate`` (a name captured from the question) refers to the
+    SAME patient as ``bound_patient_name`` -- an exact case-insensitive match
+    (full name), or ``candidate`` is a single word that is itself one of
+    ``bound_patient_name``'s own words (a clinician referring to the
+    currently-open patient by first name only: "patient Wanda" when the bound
+    patient is "Wanda Moore")."""
+    candidate_cf = candidate.strip().casefold()
+    bound_cf = bound_patient_name.strip().casefold()
+    if candidate_cf == bound_cf:
+        return True
+    return candidate_cf in bound_cf.split()
+
+
+def _is_foreign_named_patient(question: str, bound_patient_name: str | None) -> bool:
+    """The "patient <Name>" signal (see ``_PATIENT_NAMED_RE``): ``True`` when
+    the question names a patient via this construction and that name is NOT
+    the bound patient. Skipped entirely (returns ``False``) when
+    ``bound_patient_name`` is unknown -- with nothing to compare against, the
+    fail-safe posture is to not fire (same bias as the rest of this guard:
+    a wrongly-refused legitimate question is worse than a missed refusal)."""
+    if bound_patient_name is None:
+        return False
+    return any(
+        not _same_named_patient(match.group(1), bound_patient_name)
+        for match in _PATIENT_NAMED_RE.finditer(question)
+    )
+
+
+# #237 roster-based cross-patient detection: the "switch (over) to <Name>"
+# construction #223 originally had to drop and #224 could not safely revive
+# by SHAPE alone (see ``detect_foreign_patient_reference``'s docstring) --
+# resurrected here as a CONSTRUCTION regex only. Requires 2-3 capitalized
+# words (same shape #224's draft used), which excludes virtually every real
+# drug name in casual clinical shorthand (single tokens: Lisinopril,
+# Coumadin, Metformin, ...) -- but unlike #224's draft, whether a MATCHED
+# 2-3 word candidate actually triggers a refusal is now decided by a patient
+# ROSTER (``_matches_roster`` below), never by requiring a following
+# possessive clinical phrase.
+_SWITCH_TO_NAME_RE = re.compile(
+    r"\b(?i:switch(?:ing)?\s+(?:over\s+)?to)\s+((?:[A-Z][A-Za-z'\-]*\s+){1,2}[A-Z][A-Za-z'\-]*)\b"
+)
+
+# Trailing possessive on a captured candidate: "switch to Bob Smith's chart"
+# captures "Bob Smith's" (the ASCII apostrophe is inside the name char class
+# above, deliberately -- names like O'Brien need it), which would fail the
+# exact full-name comparisons below and silently bypass the refusal. Both
+# apostrophe forms: ASCII ' (what keyboards produce) and U+2019 ’ (what
+# smart-quote autocorrect produces; not in the char class, so the capture
+# already ends before it -- included here for symmetry/robustness).
+_POSSESSIVE_SUFFIX_RE = re.compile(r"['’]s$")
+
+
+def _matches_roster(candidate: str, roster: Sequence[str]) -> bool:
+    """Whether ``candidate`` (a 2-3 word name captured from a "switch to
+    <Name>" construction) names a real, DIFFERENT patient on ``roster`` --
+    an exact, case-insensitive FULL-NAME match only.
+
+    Deliberately NOT first-name-only (unlike ``_same_named_patient``'s
+    bound-patient comparison, which allows the clinician to refer to the
+    currently-open patient by first name alone): a roster can hold many
+    patients, so a bare first name could match several of them, and it is
+    not possible to say WHICH one is meant. Firing on an ambiguous partial
+    match would be a confident wrong action -- worse than a missed refusal,
+    consistent with this guard's fail-safe bias throughout. In practice
+    ``_SWITCH_TO_NAME_RE`` only ever captures 2-3 word phrases anyway, so
+    this is never actually asked to resolve a bare first name; the
+    full-name-only restriction is a deliberate, explicit statement of
+    intent rather than a currently load-bearing case.
+    """
+    candidate_cf = candidate.strip().casefold()
+    return any(candidate_cf == entry.strip().casefold() for entry in roster)
+
+
+def _is_foreign_switch_to_name(
+    question: str,
+    bound_patient_name: str | None,
+    roster_provider: Callable[[], Sequence[str]] | None,
+) -> bool:
+    """The roster-based "switch (over) to <Name>" signal (#237): ``True``
+    only when a captured 2-3 word name (i) is not the bound patient and (ii)
+    matches a roster entry. The roster is resolved LAZILY, via
+    ``roster_provider()``, and ONLY when a candidate has already matched and
+    is not already known to be the bound patient -- so a question with no
+    "switch to <Name>" construction, or one that names the bound patient,
+    never pays the roster round trip. ``roster_provider is None`` (no roster
+    available) fail-safe SKIPS this signal entirely, same posture as
+    ``_is_foreign_named_patient`` with no bound name.
+
+    A trailing possessive on the capture ("switch to Bob Smith's chart" ->
+    "Bob Smith's") is stripped via ``_POSSESSIVE_SUFFIX_RE`` BEFORE both
+    comparisons, so possessive phrasing neither bypasses the roster match
+    nor turns the bound patient's own name into an unknown candidate that
+    triggers a pointless roster fetch."""
+    match = _SWITCH_TO_NAME_RE.search(question)
+    if match is None:
+        return False
+    candidate = _POSSESSIVE_SUFFIX_RE.sub("", match.group(1).strip())
+    if bound_patient_name is not None and _same_named_patient(candidate, bound_patient_name):
+        return False
+    if roster_provider is None:
+        return False
+    return _matches_roster(candidate, roster_provider())
+
+
+def detect_foreign_patient_reference(
+    question: str,
+    bound_patient_id: int,
+    bound_patient_name: str | None = None,
+    roster_provider: Callable[[], Sequence[str]] | None = None,
+) -> bool:
+    """Deterministic PRE-dispatch guard (#223, extended by #224 and #237):
+    does ``question`` explicitly reference a DIFFERENT patient than
+    ``bound_patient_id``/``bound_patient_name``?
+
+    This hardens #194's ``apply_subject_check`` above, which only runs AFTER
+    ``Planner.run()`` has already dispatched tools and can merely rewrite the
+    answer TEXT. That is structurally too late to satisfy the eval suite's
+    ``must_refuse`` (the forbidden tool must NEVER dispatch) and ``no_phi``
+    (which also scans the quarantined tool-call trace, where a real record
+    value legitimately reappears once a tool actually runs) assertions.
+    Detected here, the caller (``app.chat._stream_chat``,
+    ``runner.pipeline.run_case``) short-circuits to a refusal BEFORE the
+    planner runs at all -- no tool dispatch, no model call.
+
+    **Three signals, evaluated independently (any one firing is enough):**
+      1. An explicit foreign patient NUMBER ("patient 999", "patient #999",
+         "patient id 999") whose value differs from the bound id, via
+         ``_GUARD_PATIENT_NUMBER_RE`` (which excludes dosing forms like "give
+         patient 2 tablets"). Unconditional -- #223's original signal,
+         unchanged, needs no name.
+      2. "patient <Name>" (``_is_foreign_named_patient`` /
+         ``_PATIENT_NAMED_RE``) whose name is NOT the bound patient -- safe
+         because the bare word "patient" followed by a capitalized token is a
+         person reference, never a drug ("patient Lisinopril" is not a phrase
+         anyone uses). Evaluated ONLY when ``bound_patient_name`` is supplied
+         (resolved once per conversation -- see ``app.chat``'s
+         conversation-creation wiring and ``runner.pipeline.run_case``'s
+         ``case.patient_name``); with no bound name to compare against it is
+         skipped and this function's behavior is byte-identical to #223
+         (numeric only). Needs no roster -- unaffected by #237.
+      3. "switch (over) to <Name>" (``_is_foreign_switch_to_name`` /
+         ``_SWITCH_TO_NAME_RE``) whose captured name is NOT the bound patient
+         AND matches a real DIFFERENT patient on ``roster_provider()`` (#237
+         -- see that function's docstring). This is the construction #223
+         had to drop entirely (a bare capitalized word collides with a drug
+         name, "switch to Lisinopril") and #224 could not safely revive by
+         requiring only a 2-3 word name plus a following possessive clinical
+         phrase -- that gate's own FP probe still misfired on ~6 of 7
+         realistic two-word drug-BRAND switches ("switch to Advair Diskus and
+         check her allergies", "switch to Depo Provera and tell me her
+         allergies") because a two-word brand name is structurally identical
+         to a two-word person name; no amount of surrounding-phrase shape
+         resolves that ambiguity. A roster does: a referenced name matching a
+         real, different patient is unambiguously a retarget, and a name
+         matching no patient is never a patient reference at all -- it is
+         evaluated as a plain medication/etc. mention. ``roster_provider`` is
+         a zero-arg callable, resolved LAZILY (only when signal 3's
+         construction has already matched and isn't the bound patient) so a
+         conversation that never uses this construction never pays the
+         round trip; ``None`` (no roster available -- e.g. the resolve
+         failed) skips this signal entirely, same fail-safe posture as
+         signal 2 with no bound name.
+
+    This mirrors the guard's existing bias throughout: a wrongly
+    hard-refused legitimate clinical question is a worse regression than a
+    missed refusal.
+    """
+    if any(int(match.group(1)) != bound_patient_id for match in _GUARD_PATIENT_NUMBER_RE.finditer(question)):
+        return True
+    if _is_foreign_named_patient(question, bound_patient_name):
+        return True
+    return _is_foreign_switch_to_name(question, bound_patient_name, roster_provider)
+
+
+_CROSS_PATIENT_REFUSAL_ANSWER = (
+    "I can only answer about the patient whose chart is currently open. "
+    "Please open the other patient's chart to ask about them."
+)
+
+
+def cross_patient_refusal_result() -> PlannerResult:
+    """The refusal ``PlannerResult`` for ``detect_foreign_patient_reference``
+    (#223): empty trace, empty raw_results, empty llm_calls -- no tool was
+    ever dispatched and no model was ever called -- carrying a clean, generic
+    decline that names neither the foreign patient nor the bound one."""
+    return PlannerResult(answer=_CROSS_PATIENT_REFUSAL_ANSWER, trace=[], raw_results=[], llm_calls=[])
+
+
+# A demonstrative ("that"/"this") pointing at a medication CONCEPT, with no
+# named drug -- "that new medication", "this med", "that drug", "this
+# prescription". General on purpose: it matches the referring PATTERN, not
+# any particular fixture wording, so it fires on any real clinician phrasing
+# of the same ambiguity (see ``clarify_unresolvable_referent``). Deliberately
+# scoped to the medication domain only -- "that test"/"this diagnosis" are a
+# different ambiguity class, out of scope here. Case-insensitive.
+#
+# COMPOUND-CONCEPT EXCLUSION (negative lookahead): the medication noun must
+# NOT be immediately followed by a word that turns it into a compound clinical
+# CONCEPT rather than a standalone unresolved referent -- e.g. "that drug
+# interaction between metformin and iodinated contrast", "this drug class",
+# "that drug-drug interaction between X and Y", "that drug allergy". These
+# name drugs and mean a concept ("drug interaction", "drug allergy"); firing
+# on them and asking "which medication do you mean?" is a UX regression. The
+# ``(?:-\w+)?`` allows the hyphenated "drug-drug" compound before the concept
+# noun. "safe", "used", "still", "yet" etc. are deliberately NOT excluded, so
+# a genuinely ambiguous "is that drug safe with her allergy?" still fires.
+_UNRESOLVABLE_MEDICATION_REFERENT_RE = re.compile(
+    r"\b(?:that|this)\s+(?:new\s+)?(?:medication|med|drug|prescription)\b"
+    r"(?!(?:-\w+)?\s+(?:interactions?|class(?:es)?|allerg(?:y|ies)|levels?|"
+    r"combinations?|regimens?|reconciliation|between)\b)",
+    re.IGNORECASE,
+)
+
+_CLARIFY_UNRESOLVABLE_REFERENT_ANSWER = (
+    "Which medication do you mean? I don't see one referenced earlier in our "
+    "conversation -- please name it and I'll check."
+)
+
+
+def clarify_unresolvable_referent(
+    result: PlannerResult, *, question: str, has_prior_turns: bool
+) -> PlannerResult:
+    """Deterministic post-answer guard (#225) against confident-guessing on
+    an unresolvable demonstrative medication reference -- e.g. bound to a
+    patient, asked "Did she start that new medication?", nothing in the
+    conversation names a medication. A small model is prone to silently
+    picking whichever medication a tool happens to return and answering as
+    if the referent were resolved ("Yes, she started the medication...")
+    instead of asking the clinician which one is meant.
+
+    **The signal, both conditions required:**
+      1. ``question`` contains an unresolvable demonstrative medication
+         reference via ``_UNRESOLVABLE_MEDICATION_REFERENT_RE`` -- "that/this
+         [new] medication/med/drug/prescription". General pattern, not the
+         literal fixture phrase -- matches any equivalent real phrasing. Its
+         negative lookahead EXCLUDES compound clinical concepts where the
+         same words name a concept rather than an unresolved referent ("that
+         drug interaction between X and Y", "this drug class", "that drug
+         allergy") -- see the pattern's own comment.
+      2. ``has_prior_turns`` is ``False`` -- this is the FIRST turn of the
+         conversation, so no earlier turn could have already named the
+         medication the demonstrative now points back to.
+
+    **Why condition 2 is load-bearing (multi-turn safety).** A demonstrative
+    like "that medication" is only ambiguous in isolation. In an ongoing
+    conversation ("Her BP is well controlled on the new dose." / "Did she
+    start that new medication?"), an earlier turn may well have already
+    named it -- firing here would wrongly interrupt a legitimate,
+    already-disambiguated exchange with a clarifying question the clinician
+    already answered. This function does not attempt to resolve the
+    referent against prior turns (that would need real coreference
+    resolution, well beyond a deterministic regex guard); it stays
+    conservative and simply never fires once history exists, exactly the
+    same fail-closed-toward-not-interrupting posture #223's guard takes
+    toward not wrongly refusing ordinary dosing questions. The caller
+    passes ``has_prior_turns=False`` unconditionally for the eval harness
+    (single-turn by construction, so the condition always evaluates true)
+    and ``bool(conversation.history)`` for the live ``/chat`` endpoint.
+
+    On a hit the answer is replaced outright with a clean clarifying
+    question that carries no patient data, mirroring the fixed-notice
+    pattern of ``apply_subject_check``/``cross_patient_refusal_result``.
+
+    **Ordering vs the other deterministic guards.** Callers must NOT invoke
+    this when ``detect_foreign_patient_reference`` (#223) already
+    short-circuited to ``cross_patient_refusal_result()`` -- that is a
+    different question class (cross-patient authorization, not referent
+    ambiguity), and it takes priority: overriding an already-correct
+    cross-patient refusal with a medication-clarification question would
+    silently discard the more important refusal. Beyond that, this function
+    only ever inspects ``question`` (never ``result.answer``), so its
+    position relative to ``apply_subject_check`` doesn't affect correctness;
+    both wiring points place it right after ``apply_subject_check`` and
+    before ``apply_recency_notice``, keeping the post-answer guards grouped
+    together in one readable sequence. Independent of ``run_verification``/
+    claim extraction, same reasoning as ``apply_recency_notice``/
+    ``apply_subject_check``: a pure function, no LLM call. Returns
+    ``result`` unchanged (same object) when nothing fires."""
+    if has_prior_turns:
+        return result
+    if not _UNRESOLVABLE_MEDICATION_REFERENT_RE.search(question):
+        return result
+    return _with_answer(result, _CLARIFY_UNRESOLVABLE_REFERENT_ANSWER)

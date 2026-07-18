@@ -25,7 +25,7 @@ services:
 
   ollama:
     restart: always
-    image: ollama/ollama:0.12.6@sha256:352e045b937ac29d3d9550c22fb85525f60a89e064df34c26579bee5a93b3a16
+    image: ollama/ollama:0.32.0@sha256:57f573b47f1f71ebb445789f279fe3e596a8beab182f7cf486db9205bad87c5a
     volumes:
       - ollamamodels:/root/.ollama
     networks:

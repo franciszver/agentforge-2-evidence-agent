@@ -37,7 +37,24 @@ Two-call final answer (P2.9): once the planner decides to answer, it does
 NOT return the decision's ``final_answer`` directly. It reasons in free text
 (a ``chat`` call) and then extracts the final answer into the
 ``FinalAnswer`` schema via constrained decoding (an ``extract`` call) --
-constraining only the extraction, not the reasoning. See ``_finalize_answer``.
+constraining only the extraction, not the reasoning. See
+``_finalize_answer_streaming``.
+
+Streamed reasoning (P213): the free-text reasoning half of that two-call
+pattern is the only step in the whole planner loop that CAN stream -- the
+``extract(FinalAnswer)`` call cannot (schema decode needs the whole JSON).
+``_finalize_answer_streaming`` yields a ``ReasoningDelta`` event per
+reasoning token (via ``OllamaClient.chat_stream``, when the injected client
+implements it) before returning the verified ``FinalAnswer``, so a streaming
+caller (``app.chat._stream_chat``) can render the model's in-progress
+reasoning into a separate "thinking" surface as it arrives -- NEVER into the
+authoritative answer slot, which only ever carries the post-extraction,
+verified text. A double that only implements ``chat`` (no ``chat_stream`` --
+every fake in ``tests/test_planner.py`` and the eval runner's
+``ReplayOllamaClient``) falls back to one blocking ``chat`` call and yields
+no ``ReasoningDelta`` events at all; either way the reasoning text fed into
+the ``extract(FinalAnswer)`` call is identical, so ``run()``'s result never
+depends on which path was taken.
 """
 
 from __future__ import annotations
@@ -46,7 +63,7 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -71,7 +88,7 @@ from app.tools.appointments import get_appointments
 from app.tools.encounters import get_encounters
 from app.tools.labs import get_recent_labs
 from app.tools.medications import get_medications
-from app.tools.patient_summary import get_patient_summary
+from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
 from app.tools.problems import get_problems
 from app.tools.vitals import get_vitals
 
@@ -156,6 +173,53 @@ class PlannerResult:
     llm_calls: list[LlmCallStats] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ToolDispatched:
+    """A ``run_streaming`` event: one tool dispatch just completed (success,
+    API error, or binding-violation refusal), carrying its ``ToolCallTrace``.
+
+    Yielded immediately after the dispatch, so a streaming caller (P2.12,
+    ``app.chat._stream_chat``) can emit the ``tool_call`` SSE frame and
+    record the tool span AS each tool runs, instead of replaying the whole
+    trace after the loop finishes.
+    """
+
+    trace: ToolCallTrace
+
+
+@dataclass(frozen=True)
+class ReasoningDelta:
+    """A ``run_streaming`` event: one incremental piece of the model's
+    free-text reasoning from the two-call final-answer step (P2.9's
+    ``_finalize_answer_streaming``), as it streams off Ollama (P213).
+
+    This is UNVERIFIED, provisional text -- the model's in-progress
+    reasoning toward an answer, not the answer itself. It exists so a
+    streaming caller (``app.chat._stream_chat``) can render it into a
+    separate, clearly-labeled "thinking" surface as it arrives, distinct
+    from the authoritative ``answer`` frame that only ever carries the
+    VERIFIED ``FinalAnswer`` text the subsequent constrained ``extract``
+    call produces. Never fed back into a prompt, never persisted as the
+    answer, never logged -- purely a UI progress signal.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
+class PlannerCompleted:
+    """A ``run_streaming`` event: the loop is done. Carries the same
+    ``PlannerResult`` that ``run()`` returns directly -- always the LAST
+    event ``run_streaming`` yields, exactly once."""
+
+    result: PlannerResult
+
+
+# Tagged union of everything ``Planner.run_streaming`` can yield -- mirrors
+# ``app.rendering.AnswerSegment``'s plain-union-of-frozen-dataclasses style.
+PlannerEvent = ToolDispatched | ReasoningDelta | PlannerCompleted
+
+
 TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
     ToolName.GET_PATIENT_SUMMARY: ToolSpec(
         description=(
@@ -212,8 +276,11 @@ TOOL_REGISTRY: dict[ToolName, ToolSpec] = {
     ToolName.GET_ENCOUNTERS: ToolSpec(
         description=(
             "Past visit/encounter history (date, reason, provider, type). Use for "
-            "'what changed since I last saw her' and 'which visit was that from'. "
-            "Optional tool_args: start_date, end_date (YYYY-MM-DD), limit."
+            "'what changed since I last saw her', 'which visit was that from', and "
+            "open-ended status questions ('how is she doing', 'what's new with him') "
+            "that don't name a specific domain -- the most recent encounter grounds "
+            "the current picture. Optional tool_args: start_date, end_date "
+            "(YYYY-MM-DD), limit."
         ),
         input_schema=GetEncountersInput,
         func=get_encounters,
@@ -244,7 +311,10 @@ Q: "Does she have any allergies?"
 -> {"action": "call_tool", "tool": "get_allergies", "tool_args": null, "reason": "The allergy list answers this directly.", "final_answer": null}
 
 Q: "Which visit was that from?" (asked right after a tool result already named a visit date in this conversation)
--> {"action": "answer", "tool": null, "tool_args": null, "reason": "The visit date is already present in an earlier tool result.", "final_answer": "That result is from the visit on <date>."}\
+-> {"action": "answer", "tool": null, "tool_args": null, "reason": "The visit date is already present in an earlier tool result.", "final_answer": "That result is from the visit on <date>."}
+
+Q: "What's the latest with him overall?"
+-> {"action": "call_tool", "tool": "get_encounters", "tool_args": null, "reason": "An open-ended status question that names no specific domain -- recent encounter history grounds the current picture before checking a narrower list.", "final_answer": null}\
 """
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -271,6 +341,11 @@ named in a tool's description above (e.g. {{"limit": "3"}}). Omit it \
   - Answer only from tool results already returned in this conversation. \
 If they don't contain the answer yet, call another tool rather than \
 guessing.
+  - For an open-ended status question that doesn't name a specific domain \
+(medications, allergies, problems, labs, vitals, appointments), start with \
+get_encounters or get_patient_summary rather than a single narrow list -- a \
+domain-specific tool can come back empty even when the patient has other \
+record history, and skips the most recent visit context.
   - Every answer describes patient {patient_id} only. If the clinician \
 names or numbers a different patient, do not repeat that other name or \
 number anywhere in your answer, and do not state any fact as if it were \
@@ -384,7 +459,60 @@ class Planner:
         # openemr client, or token -- so it structurally cannot call a tool.
         self._summarizer = QuarantinedSummarizer(ollama_client=ollama_client)
 
+    def resolve_patient_name(self) -> str | None:
+        """Best-effort resolve this conversation's bound patient display name
+        (#224 name-binding), e.g. for ``app.extraction
+        .detect_foreign_patient_reference``'s named cross-patient signals.
+
+        ``None`` on any OpenEMR API error (patient not found, timeout, ...)
+        -- callers treat a missing name as "name-binding unavailable", which
+        that guard already handles by falling back to its pre-#224
+        numeric-only signal. An OPTIONAL capability, not part of
+        ``app.chat.PlannerProtocol`` -- callers duck-type it via ``getattr``
+        (same pattern as ``run_streaming``), so a test double that only
+        implements ``run()`` simply has no name to offer.
+        """
+        return get_patient_name(self._openemr, self._token, self._patient_id)
+
+    def resolve_patient_roster(self) -> list[str]:
+        """Every OTHER patient's own display name (#237 roster-based
+        cross-patient detection), for ``app.extraction
+        .detect_foreign_patient_reference``'s "switch to <Name>" signal.
+
+        ``[]`` on any OpenEMR API error (fail-safe -- see
+        ``app.tools.patient_summary.get_patient_roster``). An OPTIONAL
+        capability, not part of ``app.chat.PlannerProtocol`` -- callers
+        duck-type it via ``getattr`` (same pattern as ``resolve_patient_name``
+        / ``run_streaming``), and unlike ``resolve_patient_name`` (resolved
+        ONCE per conversation, at creation time), callers invoke this LAZILY
+        -- only when a candidate "switch to <Name>" construction has already
+        matched -- so a conversation that never mentions another patient by
+        name never pays this round trip.
+        """
+        return get_patient_roster(self._openemr, self._token, self._patient_id)
+
     def run(self, question: str) -> PlannerResult:
+        """Run the loop to completion and return the finished result.
+
+        Delegates to ``run_streaming`` and returns only its terminal event's
+        result, discarding the intermediate ``ToolDispatched`` events -- so
+        this stays byte-identical to the pre-P2.12 implementation from the
+        caller's perspective.
+        """
+        for event in self.run_streaming(question):
+            if isinstance(event, PlannerCompleted):
+                return event.result
+        raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
+
+    def run_streaming(self, question: str) -> Iterator[PlannerEvent]:
+        """Same single-tool-per-turn loop as ``run()``, but yields a
+        ``ToolDispatched`` event immediately after each tool dispatch
+        completes (success, API error, or binding-violation refusal) instead
+        of only returning the full trace once the loop finishes. Always
+        yields exactly one terminal ``PlannerCompleted`` event, last, whose
+        ``result`` is identical to what ``run()`` returns for the same
+        inputs (P2.12).
+        """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _build_system_prompt(self._patient_id, self._registry)},
             {"role": "user", "content": question},
@@ -397,8 +525,11 @@ class Planner:
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
-                final = self._finalize_answer(messages)
-                return PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
+                final = yield from self._finalize_answer_streaming(messages)
+                yield PlannerCompleted(
+                    PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
+                )
+                return
 
             messages.append({"role": "assistant", "content": decision.model_dump_json()})
 
@@ -413,17 +544,17 @@ class Planner:
             try:
                 enforce_patient_binding(bound_patient_id=self._patient_id, tool_args=decision.tool_args)
             except PatientBindingViolation:
-                trace.append(
-                    ToolCallTrace(
-                        tool=decision.tool,
-                        args={},
-                        result=None,
-                        error="patient_binding_violation",
-                        start_ts=binding_check_ts,
-                        end_ts=time.time(),
-                    )
+                call_trace = ToolCallTrace(
+                    tool=decision.tool,
+                    args={},
+                    result=None,
+                    error="patient_binding_violation",
+                    start_ts=binding_check_ts,
+                    end_ts=time.time(),
                 )
+                trace.append(call_trace)
                 raw_results.append(None)
+                yield ToolDispatched(call_trace)
                 _logger.warning("tool_call refused: patient_binding_violation", extra={"tool": decision.tool.value})
                 messages.append(
                     {
@@ -442,17 +573,17 @@ class Planner:
             try:
                 output = spec.func(self._openemr, self._token, self._patient_id, **call_kwargs)
             except OpenEmrApiError as exc:
-                trace.append(
-                    ToolCallTrace(
-                        tool=decision.tool,
-                        args=call_kwargs,
-                        result=None,
-                        error=exc.category.value,
-                        start_ts=tool_start_ts,
-                        end_ts=time.time(),
-                    )
+                call_trace = ToolCallTrace(
+                    tool=decision.tool,
+                    args=call_kwargs,
+                    result=None,
+                    error=exc.category.value,
+                    start_ts=tool_start_ts,
+                    end_ts=time.time(),
                 )
+                trace.append(call_trace)
                 raw_results.append(None)
+                yield ToolDispatched(call_trace)
                 _logger.warning(
                     "tool_call failed", extra={"tool": decision.tool.value, "error": exc.category.value}
                 )
@@ -465,16 +596,21 @@ class Planner:
             # client-facing trace still only ever see the quarantined summary.
             raw_results.append(output.model_dump(mode="json"))
             summary = quarantine_tool_result(self._summarizer, decision.tool, output)
-            trace.append(
-                ToolCallTrace(
-                    tool=decision.tool, args=call_kwargs, result=summary, error=None, start_ts=tool_start_ts, end_ts=tool_end_ts
-                )
+            call_trace = ToolCallTrace(
+                tool=decision.tool, args=call_kwargs, result=summary, error=None, start_ts=tool_start_ts, end_ts=tool_end_ts
             )
+            trace.append(call_trace)
+            yield ToolDispatched(call_trace)
             _logger.info("tool_call dispatched", extra={"tool": decision.tool.value})
             messages.append({"role": "user", "content": f"[tool result] {decision.tool.value}: {json.dumps(summary)}"})
 
-        return PlannerResult(
-            answer=_best_effort_answer(trace, self._max_turns), trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls()
+        yield PlannerCompleted(
+            PlannerResult(
+                answer=_best_effort_answer(trace, self._max_turns),
+                trace=trace,
+                raw_results=raw_results,
+                llm_calls=self._collect_llm_calls(),
+            )
         )
 
     def _collect_llm_calls(self) -> list[LlmCallStats]:
@@ -485,16 +621,39 @@ class Planner:
         ``AttributeError``."""
         return list(getattr(self._ollama, "call_stats", []))
 
-    def _finalize_answer(self, messages: list[dict[str, str]]) -> FinalAnswer:
-        """Produce the final answer via the two-call pattern (P2.9).
+    def _finalize_answer_streaming(
+        self, messages: list[dict[str, str]]
+    ) -> Generator[ReasoningDelta, None, FinalAnswer]:
+        """Produce the final answer via the two-call pattern (P2.9), streaming
+        the free-text reasoning half as ``ReasoningDelta`` events (P213).
 
-        First a free-text reasoning ``chat`` call (unconstrained, so reasoning
-        quality is not taxed by the grammar), then a constrained ``extract``
-        call that pins the answer to ``FinalAnswer``. The reasoning is fed
-        into the extraction call so the extractor only has to transcribe, not
+        First a free-text reasoning call (unconstrained, so reasoning quality
+        is not taxed by the grammar), then a constrained ``extract`` call
+        that pins the answer to ``FinalAnswer``. The reasoning is fed into
+        the extraction call so the extractor only has to transcribe, not
         re-derive.
+
+        When ``self._ollama`` exposes ``chat_stream`` (the real
+        ``OllamaClient``), the reasoning call streams: each delta is yielded
+        as a ``ReasoningDelta`` event as it arrives, and the reasoning text
+        fed to the extraction call is assembled from exactly those deltas --
+        byte-identical to what a plain ``chat`` call would have returned
+        (see ``OllamaClient.chat_stream``'s docstring). Falls back to one
+        blocking ``chat`` call with no ``ReasoningDelta`` events for a
+        double that only implements ``chat`` (every fake in
+        ``tests/test_planner.py`` and the eval runner) -- this is what keeps
+        those 18 direct-``run()`` tests and the eval replay suite green.
         """
-        reasoning = self._ollama.chat(messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}])
+        reason_messages = messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}]
+        chat_stream = getattr(self._ollama, "chat_stream", None)
+        if chat_stream is not None:
+            reasoning_parts: list[str] = []
+            for delta in chat_stream(reason_messages):
+                reasoning_parts.append(delta)
+                yield ReasoningDelta(delta)
+            reasoning = "".join(reasoning_parts)
+        else:
+            reasoning = self._ollama.chat(reason_messages)
         extract_messages = messages + [
             {"role": "assistant", "content": reasoning},
             {"role": "user", "content": _FINAL_EXTRACT_PROMPT},

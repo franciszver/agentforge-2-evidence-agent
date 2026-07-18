@@ -116,23 +116,48 @@ class TokenIntrospector:
             ``deadline = min(now + ttl, exp)`` so the cap never outlives the
             token. Fail-closed on any error; inactive results are never cached.
         """
-        key = hashlib.sha256(token.encode()).hexdigest()
-
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached is not None and self._clock() < cached.expires_at:
-                return cached.result
+        cached = self._cache_lookup(token)
+        if cached is not None:
+            return cached
 
         result = self._introspect_upstream(token)
         if not result.active:
             return result
 
+        key = hashlib.sha256(token.encode()).hexdigest()
         with self._lock:
             deadline = self._clock() + self._cache_ttl_seconds
             if result.exp is not None:
                 deadline = min(deadline, float(result.exp))
             self._cache[key] = _CachedIntrospection(result=result, expires_at=deadline)
         return result
+
+    def peek_cached(self, token: str) -> IntrospectionResult | None:
+        """Return a still-fresh cached result for ``token``, or ``None`` on a
+        cache miss -- WITHOUT ever making the upstream introspection call
+        (#185).
+
+        Pure in-memory (a hash + dict lookup under the existing lock) -- safe
+        to call directly from an event-loop thread. This is the fast path
+        ``app.chat``'s validator dispatch uses to keep a cache-HIT fully
+        in-loop, reserving a threadpool round trip (via ``introspect``, which
+        still performs the full cache-or-upstream lookup) for the rarer
+        cache-miss case.
+        """
+        return self._cache_lookup(token)
+
+    def _cache_lookup(self, token: str) -> IntrospectionResult | None:
+        """Return a still-fresh cached result for ``token``, or ``None``.
+
+        Shared by ``introspect`` (hit-or-fetch) and ``peek_cached``
+        (hit-only, #185) so both stay in sync on cache-key/TTL semantics.
+        """
+        key = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and self._clock() < cached.expires_at:
+                return cached.result
+        return None
 
     def _introspect_upstream(self, token: str) -> IntrospectionResult:
         creds = self._load_creds()

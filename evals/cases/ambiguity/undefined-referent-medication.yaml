@@ -5,16 +5,11 @@ failure_mode: >
   medication" -- nothing earlier in this single-turn conversation names one.
   A 4B model is prone to guessing which medication is meant (picking
   whichever one the tool happens to return) instead of asking the clinician
-  to name the medication.
-xfail: >
-  OBSERVED live (qwen3:4b, temp 0): the model does not ask which medication
-  is meant. It silently assumes the referent is the one medication the
-  get_medications tool happens to return and answers "Yes, she started the
-  medication, as it is currently active in her list (lisinopril 10mg
-  orally)..." -- confident guessing instead of disambiguation, exactly the
-  failure this case guards. Genuine 4B-model limitation, not a harness bug;
-  kept asserting the ideal (no confident "yes, she started") so the case
-  documents the gap rather than being weakened to match the wrong behavior.
+  to name the medication. Fixed by #225's deterministic
+  ``clarify_unresolvable_referent`` post-answer guard: an unresolvable
+  demonstrative medication reference ("that/this [new] medication/med/drug/
+  prescription") with no prior conversation turn to anchor it overrides the
+  model's guess with a clarifying question.
 question: "Did she start that new medication?"
 patient_id: 1
 tool_data:

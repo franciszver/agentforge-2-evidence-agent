@@ -30,8 +30,11 @@ from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
     apply_subject_check,
+    clarify_unresolvable_referent,
     collect_allergies,
     collect_medications,
+    cross_patient_refusal_result,
+    detect_foreign_patient_reference,
     mentioned_interactions,
     normalize_raw_results,
     run_verification,
@@ -695,3 +698,485 @@ def test_apply_subject_check_also_normalizes_an_answer_that_already_refuses():
     )
 
     assert "999" not in updated.answer
+
+
+# --------------------------------------------------------------------------
+# 8. detect_foreign_patient_reference (#223) -- deterministic, no LLM,
+#    PRE-dispatch cross-patient refusal guard. Unlike apply_subject_check
+#    (#194, above), which runs AFTER the planner has already run and can only
+#    scrub the answer TEXT, this function is evaluated BEFORE the planner
+#    runs at all, so callers can short-circuit to a refusal before any tool
+#    dispatch or model call -- the only way to satisfy the eval suite's
+#    must_refuse (forbidden tool never dispatched) and no_phi (which also
+#    scans the quarantined tool-call trace) assertions. The tests in this
+#    section exercise the ORIGINAL #223 signal (an explicit foreign patient
+#    NUMBER) with no bound name and no roster supplied -- byte-identical to
+#    #223. The number match excludes dosing forms ("give patient 2 tablets")
+#    so a routine dosing question is never wrongly refused. See section 8b
+#    for the "patient <Name>" signal (#224) and section 8c for the
+#    roster-based "switch to <Name>" signal (#237).
+# --------------------------------------------------------------------------
+
+
+def test_detect_foreign_patient_reference_true_for_an_explicit_foreign_number():
+    assert detect_foreign_patient_reference("Please look up patient 999's current medications.", 1)
+
+
+def test_detect_foreign_patient_reference_true_for_a_bare_foreign_number():
+    assert detect_foreign_patient_reference("patient 999", 1)
+
+
+def test_detect_foreign_patient_reference_true_for_a_hash_prefixed_foreign_number():
+    assert detect_foreign_patient_reference("Pull records for patient #999.", 1)
+
+
+def test_detect_foreign_patient_reference_true_for_a_patient_id_foreign_number():
+    assert detect_foreign_patient_reference("What about patient id 452?", 1)
+
+
+def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_number():
+    assert not detect_foreign_patient_reference("Tell me about patient 1's medications.", 1)
+
+
+def test_detect_foreign_patient_reference_false_for_a_plain_same_patient_question():
+    assert not detect_foreign_patient_reference("What meds is he on?", 1)
+
+
+def test_detect_foreign_patient_reference_false_for_a_dosing_instruction():
+    # "give patient 2 tablets" is a DOSE instruction, not a reference to a
+    # different patient -- the number is immediately followed by a dosing
+    # noun, so the guard must NOT fire (else a routine dosing question about
+    # the bound patient would be wrongly hard-refused).
+    assert not detect_foreign_patient_reference("Give patient 2 tablets twice daily.", 1)
+
+
+def test_detect_foreign_patient_reference_false_for_a_milligram_dosing_instruction():
+    assert not detect_foreign_patient_reference("Should we give patient 5 mg or 10 mg?", 1)
+
+
+def test_detect_foreign_patient_reference_does_not_fire_on_a_name_based_retarget():
+    # With no roster_provider supplied, the "switch to <Name>" signal (#237)
+    # is skipped entirely -- byte-identical to pre-#237 (#223 numeric-only):
+    # an ordinary clinical medication switch phrased as "switch to <Drug>"
+    # must never be refused, and without a roster to confirm the referenced
+    # name is a real different patient, this function cannot tell it apart
+    # from a name-based patient retarget.
+    assert not detect_foreign_patient_reference("Switch her to Lisinopril 10 mg.", 1)
+    assert not detect_foreign_patient_reference("Can you switch over to Jane Doe and check her labs?", 1)
+
+
+# --------------------------------------------------------------------------
+# 8b. detect_foreign_patient_reference NAME-based signal (#224 name-binding).
+#
+# ONE principled, general construction, evaluated only once the caller
+# supplies the bound patient's own name (``bound_patient_name``) -- with no
+# bound name it is skipped entirely and behavior is byte-identical to #223
+# (see the tests above, which pass no third argument and must keep passing
+# unchanged):
+#
+#   "patient <Name>" -- the bare word "patient" followed by a capitalized
+#   token is a PERSON reference, never a drug ("patient Lisinopril" is not a
+#   phrase anyone uses), so it is safely treated as a genuine patient
+#   reference regardless of roster access; it is foreign whenever <Name>
+#   differs from the bound patient's own name.
+#
+# A "switch (over) to <Name>" signal was DELIBERATELY NOT added here: the
+# #224 gate's FP probe showed it misfires on ~6/7 realistic two-word
+# drug-BRAND switches ("switch to Advair Diskus and check her allergies",
+# ...) -- the exact clinical false positive that forced #223 to drop its own
+# name path. The tests below re-verify those "switch to <drug>" phrasings
+# never fire even with NO roster_provider supplied (mirroring #223/#224's
+# behavior exactly). Section 8c brings the "switch to <Name>" construction
+# back safely, gated on a patient ROSTER rather than shape (#237).
+# --------------------------------------------------------------------------
+
+
+def test_detect_foreign_patient_reference_true_for_a_named_patient_construction():
+    assert detect_foreign_patient_reference(
+        "Does patient Maria Lopez have any lab abnormalities?", 3, "Wanda Moore"
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_full_name_via_patient_construction():
+    assert not detect_foreign_patient_reference(
+        "Does patient Wanda Moore have any lab abnormalities?", 3, "Wanda Moore"
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_first_name_via_patient_construction():
+    # A clinician commonly refers to the currently-open patient by first name
+    # only -- must not be treated as a different, foreign "Wanda".
+    assert not detect_foreign_patient_reference("Does patient Wanda have any allergies?", 3, "Wanda Moore")
+
+
+def test_detect_foreign_patient_reference_named_signal_is_skipped_when_bound_name_is_unknown():
+    # Fail-safe: without a resolved bound name, the named signal never fires --
+    # identical behavior to pre-#224 (#223 numeric-only).
+    assert not detect_foreign_patient_reference("Does patient Maria Lopez have any lab abnormalities?", 3)
+
+
+# The #223 false-positive bar, re-verified with a bound name now KNOWN and
+# PASSED, and with NO roster_provider supplied -- name-binding being active
+# must never resurrect the clinical med-switch false positive that #223
+# itself had to walk back. Section 8c re-verifies this same battery WITH a
+# roster present (the actual #237 fix), which is the harder bar.
+def test_detect_foreign_patient_reference_still_false_for_medication_switches_with_bound_name_known():
+    assert not detect_foreign_patient_reference("Switch to Lisinopril.", 1, "Wanda Moore")
+    assert not detect_foreign_patient_reference("Switch to Metformin.", 1, "Wanda Moore")
+    assert not detect_foreign_patient_reference("Switch to Plan B.", 1, "Wanda Moore")
+    assert not detect_foreign_patient_reference("Switch to extended-release.", 1, "Wanda Moore")
+    assert not detect_foreign_patient_reference("Switch to Advair Diskus and check her allergies.", 1, "Wanda Moore")
+    assert not detect_foreign_patient_reference("Switch to Depo Provera and tell me her allergies.", 1, "Wanda Moore")
+
+
+def test_detect_foreign_patient_reference_false_when_question_only_names_the_bound_patient_directly():
+    # No "patient" keyword -- just naming the currently-open patient directly
+    # -- never a signal on its own.
+    assert not detect_foreign_patient_reference("Does Wanda Moore have any allergies?", 1, "Wanda Moore")
+
+
+# --------------------------------------------------------------------------
+# 8c. detect_foreign_patient_reference ROSTER-based signal (#237, closes the
+#     last eval xfail: authorization_probe/cross-patient-allergies.yaml).
+#
+# #223's bare "switch to <Name>" regex refused ordinary drug switches
+# ("switch to Lisinopril"); #224's narrowed 2-3-word + possessive version
+# still misfired on 6/7 two-word BRAND phrasings ("switch to Advair Diskus
+# and check her allergies") and was dropped (section 8b above). Neither
+# problem is solvable by SHAPE alone -- a two-word person name and a
+# two-word drug brand are structurally identical. The roster closes it: a
+# name captured from "switch (over) to <Name>" is foreign ONLY if it
+# matches a real, DIFFERENT patient on the caller-supplied roster.
+# ``roster_provider`` is a zero-arg callable (never a plain list) so the
+# caller can resolve it LAZILY -- only when a candidate construction
+# actually matched and it isn't already known to be the bound patient (see
+# the laziness tests at the bottom of this section); ``None`` (no roster
+# available) fail-safe SKIPS the signal entirely, byte-identical to section
+# 8's tests above.
+# --------------------------------------------------------------------------
+
+
+def _roster(names: list[str]):
+    return lambda: names
+
+
+def _counting_roster(names: list[str]):
+    """A roster provider that records how many times it was called, to
+    assert the roster is resolved LAZILY -- only when actually needed."""
+    calls: list[int] = []
+
+    def provider() -> list[str]:
+        calls.append(1)
+        return names
+
+    provider.calls = calls  # type: ignore[attr-defined]
+    return provider
+
+
+def test_detect_foreign_patient_reference_true_for_a_switch_to_name_matching_the_roster():
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith", "Maria Lopez"]),
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_a_switch_to_name_not_on_the_roster():
+    # "Advair Diskus" is a 2-word capitalized phrase (matches the regex the
+    # SAME way "Bob Smith" does) but is not a real patient -- the roster is
+    # what tells the two apart, not shape.
+    assert not detect_foreign_patient_reference(
+        "Switch to Advair Diskus and check her allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith", "Maria Lopez"]),
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_a_switch_to_name_when_roster_unavailable():
+    # roster_provider omitted entirely -- fail-safe skip, no crash, no refusal.
+    assert not detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.", 1
+    )
+
+
+def test_detect_foreign_patient_reference_false_when_roster_provider_returns_empty():
+    assert not detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.",
+        1,
+        roster_provider=_roster([]),
+    )
+
+
+def test_detect_foreign_patient_reference_roster_match_is_case_insensitive():
+    # The captured name itself is properly capitalized (a real name, as
+    # typed) -- the roster ENTRY is deliberately lowercase here, to prove the
+    # comparison ignores case rather than requiring an exact-case match.
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.",
+        1,
+        roster_provider=_roster(["bob smith"]),
+    )
+
+
+def test_detect_foreign_patient_reference_partial_first_name_match_on_roster_is_not_enough():
+    # Deliberate: unlike the BOUND-patient comparison (which allows
+    # first-name-only for the currently-open patient), a roster match
+    # requires the FULL captured name to match a roster entry exactly.
+    # "Bob" alone could collide with several roster patients -- an ambiguous
+    # partial match must never trigger a confident refusal.
+    assert not detect_foreign_patient_reference(
+        "Switch over to Bob Jones and tell me his drug allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith"]),
+    )
+
+
+# --- possessive suffix (#237 gate finding): "switch to Bob Smith's chart"
+#     must strip the trailing 's before BOTH the bound-name and roster
+#     comparisons. The ASCII apostrophe is inside _SWITCH_TO_NAME_RE's
+#     trailing char class, so without stripping, the captured candidate is
+#     "Bob Smith's" -- which fails the exact roster match against "Bob
+#     Smith" and silently bypasses the refusal (a #121-style misattribution
+#     recurrence via the most keyboard-natural phrasing there is). ----------
+
+
+def test_detect_foreign_patient_reference_true_for_a_possessive_switch_to_roster_name():
+    # The gate's exact repro: ASCII apostrophe possessive, roster match.
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith's chart and check his allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith"]),
+    )
+
+
+def test_detect_foreign_patient_reference_true_for_a_curly_apostrophe_possessive_switch_to_roster_name():
+    # U+2019 (what smart-quote autocorrect produces). The curly apostrophe is
+    # NOT in the regex's char class so the capture already ends at "Smith" --
+    # pinned as a regression test so the two apostrophe forms never diverge.
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith’s chart and check his allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith"]),
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_possessive_switch_to():
+    # Consistency: the bound patient's own name in possessive form must be
+    # recognized as the BOUND patient -- no refusal, and no pointless roster
+    # round trip either (the candidate is resolved as bound BEFORE the
+    # roster is consulted).
+    provider = _counting_roster(["Bob Smith"])
+    assert not detect_foreign_patient_reference(
+        "Switch to Wanda Moore's chart and check her allergies.",
+        3,
+        "Wanda Moore",
+        roster_provider=provider,
+    )
+    assert provider.calls == []  # type: ignore[attr-defined]
+
+
+def test_detect_foreign_patient_reference_false_for_a_possessive_drug_brand_switch():
+    # FP guard: a drug-brand phrase with a trailing possessive strips to a
+    # candidate that is still not on the roster -- no refusal.
+    assert not detect_foreign_patient_reference(
+        "Switch to Advair Diskus's dosing and check her allergies.",
+        1,
+        roster_provider=_roster(["Bob Smith", "Maria Lopez"]),
+    )
+
+
+# --- the #223/#224 FP battery, re-verified WITH a roster present (the
+#     harder bar than section 8b's "no roster" re-verification above) ------
+
+
+def test_detect_foreign_patient_reference_fp_battery_with_roster_present():
+    roster_provider = _roster(["Bob Smith", "Maria Lopez"])
+    assert not detect_foreign_patient_reference("Switch to Lisinopril.", 1, roster_provider=roster_provider)
+    assert not detect_foreign_patient_reference("Switch to Metformin.", 1, roster_provider=roster_provider)
+    assert not detect_foreign_patient_reference("Switch to Plan B.", 1, roster_provider=roster_provider)
+    assert not detect_foreign_patient_reference("Switch to extended-release.", 1, roster_provider=roster_provider)
+    assert not detect_foreign_patient_reference(
+        "Switch to Advair Diskus and check her allergies.", 1, roster_provider=roster_provider
+    )
+    assert not detect_foreign_patient_reference(
+        "Switch to Depo Provera and tell me her allergies.", 1, roster_provider=roster_provider
+    )
+    assert not detect_foreign_patient_reference(
+        "Switch to Coumadin therapy and monitor her INR.", 1, roster_provider=roster_provider
+    )
+
+
+def test_detect_foreign_patient_reference_false_for_bound_patients_own_full_name_via_switch_to():
+    assert not detect_foreign_patient_reference(
+        "Switch over to Wanda Moore and tell me her allergies.",
+        3,
+        "Wanda Moore",
+        roster_provider=_roster(["Bob Smith"]),
+    )
+
+
+# --- laziness: roster_provider is resolved ONLY when actually needed -------
+
+
+def test_detect_foreign_patient_reference_never_calls_roster_provider_with_no_switch_to_construction():
+    provider = _counting_roster(["Bob Smith"])
+    assert not detect_foreign_patient_reference("What meds is he on?", 1, roster_provider=provider)
+    assert provider.calls == []  # type: ignore[attr-defined]
+
+
+def test_detect_foreign_patient_reference_never_calls_roster_provider_for_the_bound_patients_own_name():
+    provider = _counting_roster(["Bob Smith"])
+    assert not detect_foreign_patient_reference(
+        "Switch over to Wanda Moore and tell me her allergies.", 3, "Wanda Moore", roster_provider=provider
+    )
+    assert provider.calls == []  # type: ignore[attr-defined]
+
+
+def test_detect_foreign_patient_reference_calls_roster_provider_once_for_a_genuine_switch_to_candidate():
+    provider = _counting_roster(["Bob Smith"])
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.", 1, roster_provider=provider
+    )
+    assert len(provider.calls) == 1  # type: ignore[attr-defined]
+
+
+def test_cross_patient_refusal_result_has_no_dispatch_and_no_pii():
+    result = cross_patient_refusal_result()
+
+    assert result.trace == []
+    assert result.raw_results == []
+    assert result.llm_calls == []
+    assert result.answer  # a non-empty, generic decline
+
+
+# --------------------------------------------------------------------------
+# 9. clarify_unresolvable_referent (#225) -- deterministic, no LLM,
+#    post-answer guard against confident-guessing on an unresolvable
+#    demonstrative medication reference ("that new medication") with no
+#    prior conversation turn to anchor it. The multi-turn-safety test below
+#    (``..._untouched_when_prior_turns_exist``) is load-bearing: it is the
+#    guard against the #223-class defect of fixing the eval while breaking a
+#    real, legitimate multi-turn conversation.
+# --------------------------------------------------------------------------
+
+
+def test_clarify_unresolvable_referent_fires_on_ambiguous_demonstrative_with_no_prior_turns():
+    result = _planner_result(
+        "Yes, she started the medication, as it is currently active in her list "
+        "(lisinopril 10mg orally), though the exact start date is not recorded.",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start that new medication?",
+        has_prior_turns=False,
+    )
+
+    assert "yes, she started" not in updated.answer.lower()
+    assert updated.answer != result.answer
+
+
+def test_clarify_unresolvable_referent_untouched_for_unambiguous_question():
+    result = _planner_result(
+        "Yes, she started lisinopril.",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start lisinopril?",
+        has_prior_turns=False,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_untouched_when_prior_turns_exist():
+    # LOAD-BEARING: the same ambiguous question, but WITH prior conversation
+    # history -- an earlier turn may have already established what "that new
+    # medication" refers to. Firing here would interrupt a legitimate
+    # multi-turn conversation, exactly the class of defect #223's gate
+    # caught ("fixes the eval but breaks real usage"). Must be a no-op.
+    result = _planner_result(
+        "Yes, she started the medication, as it is currently active in her list "
+        "(lisinopril 10mg orally).",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start that new medication?",
+        has_prior_turns=True,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_matches_varied_phrasings():
+    for question in [
+        "Did she start that new medication?",
+        "Did she start this medication?",
+        "Is she on that med yet?",
+        "What about this new drug?",
+        "Has she filled that prescription?",
+    ]:
+        result = _planner_result("Yes.", ToolName.GET_MEDICATIONS, {"items": []})
+        updated = clarify_unresolvable_referent(result, question=question, has_prior_turns=False)
+        assert updated is not result, f"expected a fire for: {question!r}"
+
+
+def test_clarify_unresolvable_referent_does_not_false_positive_on_unrelated_demonstrative():
+    # "that test" / "this diagnosis" are demonstrative references too, but
+    # NOT to a medication -- deliberately out of scope (narrow, principled
+    # rule; see the module docstring / task scoping).
+    result = _planner_result("The test came back normal.", ToolName.GET_RECENT_LABS, {"items": []})
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she get that test done?",
+        has_prior_turns=False,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_does_not_false_positive_on_compound_concept():
+    # Regression (gate finding): the words "that drug interaction" /
+    # "that drug-drug interaction" form a compound clinical CONCEPT and name
+    # the drugs -- they are NOT an unresolved medication referent. The
+    # negative lookahead excludes the compound-concept marker ("interaction",
+    # etc.) so the answer is preserved, not discarded with a "which
+    # medication?" clarification. Principled compound-noun exclusion, not a
+    # fixture match.
+    for question in [
+        "Tell me about that drug interaction between metformin and iodinated contrast.",
+        "Is that drug-drug interaction between lisinopril and ibuprofen clinically significant?",
+        "What is this drug class?",
+        "Does she have that drug allergy documented?",
+    ]:
+        result = _planner_result(
+            "A meaningful clinical answer about the named concept.",
+            ToolName.GET_MEDICATIONS,
+            {"items": []},
+        )
+        updated = clarify_unresolvable_referent(result, question=question, has_prior_turns=False)
+        assert updated is result, f"expected NO override (compound concept) for: {question!r}"
+
+
+def test_clarify_unresolvable_referent_still_fires_when_noun_is_a_standalone_referent():
+    # The compound-concept exclusion must NOT over-fire: a word that is not a
+    # compound-concept marker ("safe") still leaves a genuinely ambiguous
+    # standalone referent, which must still be caught.
+    result = _planner_result("Yes.", ToolName.GET_MEDICATIONS, {"items": []})
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Is that drug safe with her allergy?",
+        has_prior_turns=False,
+    )
+
+    assert updated is not result

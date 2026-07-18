@@ -36,6 +36,9 @@ namespace OpenEMR\Modules\ClinicalCopilot\Controller;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Handler\CurlMultiHandler;
+use GuzzleHttp\HandlerStack;
 use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Http\RawRequestBodyReader;
 use OpenEMR\Common\Session\PatientSessionUtil;
@@ -43,6 +46,8 @@ use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\ClinicalCopilot\Chat\ChatProxyRequest;
 use OpenEMR\Modules\ClinicalCopilot\Chat\ChatProxyRequestException;
+use OpenEMR\Modules\ClinicalCopilot\Http\FlushingOutputStream;
+use Psr\Http\Message\ResponseInterface;
 
 final class ChatProxyController
 {
@@ -69,14 +74,11 @@ final class ChatProxyController
      * app/chat.py's SSE frame contract). Observed real-model latencies
      * (single-question: ~9-29s) stay well under that ceiling; a keep-alive
      * ping mechanism would close the gap for pathological multi-turn
-     * questions but is not implemented here (no raw curl_* -- see
-     * ForbiddenCurlFunctionsRule -- and Guzzle's streaming body read() does
-     * not offer a low-level per-chunk callback to interleave one).
+     * questions but is not implemented here -- FlushingOutputStream::write()
+     * (#211) now fires per upstream chunk, which is where a ping would hook
+     * in, but no such hook exists yet (separate follow-up).
      */
     private const UPSTREAM_TIMEOUT_SECONDS = 300;
-
-    /** Bytes read per iteration while relaying the upstream SSE body. */
-    private const STREAM_READ_CHUNK_BYTES = 8192;
 
     public function __construct(
         private readonly RawRequestBodyReader $bodyReader = new RawRequestBodyReader()
@@ -146,10 +148,22 @@ final class ChatProxyController
         ob_implicit_flush(true);
         set_time_limit(0);
 
-        $client = new Client();
+        // PHP's `http://` stream wrapper (what Guzzle's default StreamHandler,
+        // and raw fopen(), are both built on) buffers the ENTIRE upstream
+        // response before exposing any of it via read() -- proven live for
+        // issue #211 (see scratchpad u211-stream-timing.txt). CurlMultiHandler
+        // drives curl_multi_exec() directly, so libcurl's CURLOPT_WRITEFUNCTION
+        // calls the sink's write() incrementally as each chunk arrives -- the
+        // only Guzzle-native path that streams (no raw curl_*; see
+        // ForbiddenCurlFunctionsRule).
+        $client = new Client([
+            'handler' => HandlerStack::create(new CurlMultiHandler()),
+        ]);
+
+        $sink = new FlushingOutputStream();
 
         try {
-            $response = $client->post(rtrim($this->agentUrl(), '/') . '/chat', [
+            $promise = $client->postAsync(rtrim($this->agentUrl(), '/') . '/chat', [
                 'json' => [
                     'message' => $chatRequest->message,
                     'patient_id' => $pid,
@@ -159,26 +173,53 @@ final class ChatProxyController
                     'Authorization' => 'Bearer ' . $chatRequest->token,
                 ],
                 'stream' => true,
+                'sink' => $sink,
                 'timeout' => self::UPSTREAM_TIMEOUT_SECONDS,
-                'http_errors' => false,
+                // Inspect the upstream status as soon as headers arrive --
+                // BEFORE any body bytes reach the sink (and thus the
+                // browser). A non-200 upstream response is a JSON error
+                // body, not an SSE frame; throwing here aborts the transfer
+                // so it never gets relayed, matching the prior (blocking)
+                // post()-then-check behavior.
+                'on_headers' => function (ResponseInterface $response): void {
+                    if ($response->getStatusCode() !== 200) {
+                        throw new \RuntimeException('non-200 upstream status');
+                    }
+                },
             ]);
-        } catch (GuzzleException) {
-            $this->emitErrorFrame(0);
+
+            $promise->wait();
+        } catch (GuzzleException $e) {
+            $this->emitErrorFrame($this->upstreamErrorStatus($e));
             return;
         }
+    }
 
-        if ($response->getStatusCode() !== 200) {
-            // A non-200 upstream response is a JSON error body, not an SSE
-            // frame -- emit a clean `error` frame instead of relaying it.
-            $this->emitErrorFrame($response->getStatusCode());
-            return;
+    /**
+     * Map a caught upstream failure to the status code carried in the SSE
+     * `error` frame.
+     *
+     * The `on_headers` callback throws only for a non-200 upstream status, so
+     * the response attached to a caught RequestException disambiguates the two
+     * failure modes:
+     *   - a non-200 response is that `on_headers` rejection -> report its real
+     *     status (404, 500, ...);
+     *   - a 200 response means headers already parsed 200 and the body
+     *     transfer dropped mid-stream -> report the 0 transfer-error sentinel,
+     *     never a self-contradictory `status: 200` inside an `error` frame.
+     * Any exception with no response (agent down / DNS / refused connection,
+     * e.g. ConnectException) is likewise a transport failure -> sentinel 0.
+     */
+    private function upstreamErrorStatus(GuzzleException $e): int
+    {
+        if ($e instanceof RequestException) {
+            $response = $e->getResponse();
+            if ($response !== null && $response->getStatusCode() !== 200) {
+                return $response->getStatusCode();
+            }
         }
 
-        $body = $response->getBody();
-        while (!$body->eof()) {
-            echo $body->read(self::STREAM_READ_CHUNK_BYTES);
-            flush();
-        }
+        return 0;
     }
 
     private function emitErrorFrame(int $upstreamStatus): void
