@@ -324,6 +324,7 @@ class OllamaClient:
         schema: type[ModelT],
         *,
         options: dict[str, Any] | None = None,
+        images: list[str] | None = None,
     ) -> ModelT:
         """Extract ``schema`` from the model's response via constrained decoding.
 
@@ -334,11 +335,21 @@ class OllamaClient:
         attempts before raising ``OllamaError``. Network/HTTP failures (a
         non-2xx status, a timeout, a connection error) are NOT retried here —
         they propagate immediately as ``OllamaError``.
+
+        ``images`` (P3.1, document ingestion): a list of base64-encoded page
+        images, attached to the LAST message's ``images`` key -- the shape
+        Ollama's vision API expects alongside a user message's ``content``.
+        Attached on a shallow copy of the messages (each message dict
+        copied), never mutating the caller's original list/dicts. ``None``
+        (the default) leaves every existing text-only caller byte-identical.
         """
         _logger.info("ollama extract call", extra={"model": self._model, "schema": schema.__name__})
         messages = self._normalize_messages(prompt_or_messages)
+        request_messages: list[dict[str, Any]] = [dict(message) for message in messages]
+        if images is not None:
+            request_messages[-1]["images"] = images
         body = self._build_body(
-            messages,
+            request_messages,
             stream=False,
             format=schema.model_json_schema(),
             options=options,
