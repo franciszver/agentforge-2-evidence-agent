@@ -19,10 +19,12 @@ plain-Python cosine (the corpus is a few dozen chunks -- no ``numpy``, no
 one: (a) pass a pre-computed ``query_vector`` (what tests use, sourced from
 the committed ``app/data/retrieval_embeddings.json`` recording -- see
 ``scripts/build_retrieval_embeddings.py``), or (b) construct with a live
-``Embedder`` (``OllamaEmbedder``, production/manual-smoke use). No test in
-this repo should ever require a live Ollama call to pass -- exactly the
-record/replay discipline `docs/W2_ARCHITECTURE.md` "Testing Strategy"
-already establishes for VLM/reranker calls, extended here to embeddings.
+``Embedder`` -- ``OllamaClient.embed`` already satisfies that Protocol
+structurally, so a production/manual-smoke caller passes the client
+directly, no wrapper needed. No test in this repo should ever require a
+live Ollama call to pass -- exactly the record/replay discipline
+`docs/W2_ARCHITECTURE.md` "Testing Strategy" already establishes for
+VLM/reranker calls, extended here to embeddings.
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+import yaml
 
 from app.schemas.retrieval import RetrievalMode, RetrievedChunk
 
@@ -65,20 +69,10 @@ class Chunk:
 
 
 class Embedder(Protocol):
-    """Anything that can turn text into a dense vector -- ``OllamaEmbedder``
-    in production, a recorded/fake double in tests."""
+    """Anything that can turn text into a dense vector -- ``OllamaClient``
+    (its ``embed`` method) in production, a recorded/fake double in tests."""
 
     def embed(self, text: str) -> list[float]: ...
-
-
-class OllamaEmbedder:
-    """``Embedder`` backed by ``OllamaClient.embed`` (``nomic-embed-text``)."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def embed(self, text: str) -> list[float]:
-        return self._client.embed(text)
 
 
 def _slugify(heading: str) -> str:
@@ -88,31 +82,20 @@ def _slugify(heading: str) -> str:
     return _SLUG_RE.sub("-", heading.strip().lower()).strip("-")
 
 
-def _parse_front_matter(lines: list[str]) -> tuple[dict[str, str | list[str]], int]:
-    """Parse the ``---``-delimited front-matter block starting at
-    ``lines[0]``. Returns ``(metadata, index_of_first_body_line)``. Values
-    wrapped in ``[...]`` parse as a comma-separated list (``uc_mapping``);
-    everything else is a plain string."""
+def _parse_front_matter(lines: list[str]) -> tuple[dict[str, Any], int]:
+    """Parse the ``---``-delimited YAML front-matter block starting at
+    ``lines[0]`` via ``yaml.safe_load``. Returns ``(metadata,
+    index_of_first_body_line)``."""
     if not lines or lines[0].strip() != "---":
         raise ValueError("Corpus document is missing its front-matter block")
-    metadata: dict[str, str | list[str]] = {}
     idx = 1
     while idx < len(lines) and lines[idx].strip() != "---":
-        line = lines[idx]
         idx += 1
-        if not line.strip():
-            continue
-        key, sep, value = line.partition(":")
-        if not sep:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            metadata[key] = [item.strip() for item in value[1:-1].split(",") if item.strip()]
-        else:
-            metadata[key] = value
     if idx >= len(lines):
         raise ValueError("Corpus document front-matter block is never closed")
+    metadata = yaml.safe_load("\n".join(lines[1:idx])) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("Corpus document front-matter block did not parse to a mapping")
     return metadata, idx + 1
 
 
@@ -195,8 +178,8 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 class SparseIndex:
     """BM25 sparse search over the corpus via SQLite FTS5."""
 
-    def __init__(self, chunks: Sequence[Chunk], *, db_path: str = ":memory:") -> None:
-        self._conn = sqlite3.connect(db_path)
+    def __init__(self, chunks: Sequence[Chunk]) -> None:
+        self._conn = sqlite3.connect(":memory:")
         self._conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5"
             "(chunk_id UNINDEXED, title, section, text)"
@@ -254,10 +237,9 @@ class HybridRetriever:
         dense_embeddings: dict[str, list[float]],
         *,
         embedder: Embedder | None = None,
-        db_path: str = ":memory:",
     ) -> None:
         self._chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
-        self._sparse = SparseIndex(chunks, db_path=db_path)
+        self._sparse = SparseIndex(chunks)
         self._dense = DenseIndex(list(self._chunks_by_id), dense_embeddings)
         self._embedder = embedder
 
@@ -384,12 +366,12 @@ def build_retriever_from_corpus(
     embeddings_path: Path = EMBEDDINGS_PATH,
     *,
     embedder: Embedder | None = None,
-    db_path: str = ":memory:",
 ) -> HybridRetriever:
     """Build a ``HybridRetriever`` over the committed corpus, using the
-    committed recorded chunk embeddings. ``db_path`` is the SQLite FTS5
-    index location -- ``":memory:"`` (the default) is fine for tests and for
-    this corpus's tiny size; pass a real file path to persist it."""
+    committed recorded chunk embeddings. The sparse index is always
+    in-memory (``SparseIndex`` hardcodes ``":memory:"``) -- fine for tests
+    and for this corpus's tiny size; persistence returns when a real caller
+    needs it."""
     chunks = parse_corpus(corpus_dir)
     chunk_vectors = load_recorded_embeddings(embeddings_path).get("chunks", {})
-    return HybridRetriever(chunks, chunk_vectors, embedder=embedder, db_path=db_path)
+    return HybridRetriever(chunks, chunk_vectors, embedder=embedder)
