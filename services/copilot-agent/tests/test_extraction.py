@@ -30,6 +30,7 @@ from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
     apply_subject_check,
+    clarify_unresolvable_referent,
     collect_allergies,
     collect_medications,
     cross_patient_refusal_result,
@@ -769,3 +770,136 @@ def test_cross_patient_refusal_result_has_no_dispatch_and_no_pii():
     assert result.raw_results == []
     assert result.llm_calls == []
     assert result.answer  # a non-empty, generic decline
+
+
+# --------------------------------------------------------------------------
+# 9. clarify_unresolvable_referent (#225) -- deterministic, no LLM,
+#    post-answer guard against confident-guessing on an unresolvable
+#    demonstrative medication reference ("that new medication") with no
+#    prior conversation turn to anchor it. The multi-turn-safety test below
+#    (``..._untouched_when_prior_turns_exist``) is load-bearing: it is the
+#    guard against the #223-class defect of fixing the eval while breaking a
+#    real, legitimate multi-turn conversation.
+# --------------------------------------------------------------------------
+
+
+def test_clarify_unresolvable_referent_fires_on_ambiguous_demonstrative_with_no_prior_turns():
+    result = _planner_result(
+        "Yes, she started the medication, as it is currently active in her list "
+        "(lisinopril 10mg orally), though the exact start date is not recorded.",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start that new medication?",
+        has_prior_turns=False,
+    )
+
+    assert "yes, she started" not in updated.answer.lower()
+    assert updated.answer != result.answer
+
+
+def test_clarify_unresolvable_referent_untouched_for_unambiguous_question():
+    result = _planner_result(
+        "Yes, she started lisinopril.",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start lisinopril?",
+        has_prior_turns=False,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_untouched_when_prior_turns_exist():
+    # LOAD-BEARING: the same ambiguous question, but WITH prior conversation
+    # history -- an earlier turn may have already established what "that new
+    # medication" refers to. Firing here would interrupt a legitimate
+    # multi-turn conversation, exactly the class of defect #223's gate
+    # caught ("fixes the eval but breaks real usage"). Must be a no-op.
+    result = _planner_result(
+        "Yes, she started the medication, as it is currently active in her list "
+        "(lisinopril 10mg orally).",
+        ToolName.GET_MEDICATIONS,
+        {"items": []},
+    )
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she start that new medication?",
+        has_prior_turns=True,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_matches_varied_phrasings():
+    for question in [
+        "Did she start that new medication?",
+        "Did she start this medication?",
+        "Is she on that med yet?",
+        "What about this new drug?",
+        "Has she filled that prescription?",
+    ]:
+        result = _planner_result("Yes.", ToolName.GET_MEDICATIONS, {"items": []})
+        updated = clarify_unresolvable_referent(result, question=question, has_prior_turns=False)
+        assert updated is not result, f"expected a fire for: {question!r}"
+
+
+def test_clarify_unresolvable_referent_does_not_false_positive_on_unrelated_demonstrative():
+    # "that test" / "this diagnosis" are demonstrative references too, but
+    # NOT to a medication -- deliberately out of scope (narrow, principled
+    # rule; see the module docstring / task scoping).
+    result = _planner_result("The test came back normal.", ToolName.GET_RECENT_LABS, {"items": []})
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Did she get that test done?",
+        has_prior_turns=False,
+    )
+
+    assert updated is result
+
+
+def test_clarify_unresolvable_referent_does_not_false_positive_on_compound_concept():
+    # Regression (gate finding): the words "that drug interaction" /
+    # "that drug-drug interaction" form a compound clinical CONCEPT and name
+    # the drugs -- they are NOT an unresolved medication referent. The
+    # negative lookahead excludes the compound-concept marker ("interaction",
+    # etc.) so the answer is preserved, not discarded with a "which
+    # medication?" clarification. Principled compound-noun exclusion, not a
+    # fixture match.
+    for question in [
+        "Tell me about that drug interaction between metformin and iodinated contrast.",
+        "Is that drug-drug interaction between lisinopril and ibuprofen clinically significant?",
+        "What is this drug class?",
+        "Does she have that drug allergy documented?",
+    ]:
+        result = _planner_result(
+            "A meaningful clinical answer about the named concept.",
+            ToolName.GET_MEDICATIONS,
+            {"items": []},
+        )
+        updated = clarify_unresolvable_referent(result, question=question, has_prior_turns=False)
+        assert updated is result, f"expected NO override (compound concept) for: {question!r}"
+
+
+def test_clarify_unresolvable_referent_still_fires_when_noun_is_a_standalone_referent():
+    # The compound-concept exclusion must NOT over-fire: a word that is not a
+    # compound-concept marker ("safe") still leaves a genuinely ambiguous
+    # standalone referent, which must still be caught.
+    result = _planner_result("Yes.", ToolName.GET_MEDICATIONS, {"items": []})
+
+    updated = clarify_unresolvable_referent(
+        result,
+        question="Is that drug safe with her allergy?",
+        has_prior_turns=False,
+    )
+
+    assert updated is not result

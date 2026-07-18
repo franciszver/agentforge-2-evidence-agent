@@ -91,6 +91,7 @@ from app.extraction import (
     ClaimExtractorLike,
     apply_recency_notice,
     apply_subject_check,
+    clarify_unresolvable_referent,
     cross_patient_refusal_result,
     detect_foreign_patient_reference,
     run_verification,
@@ -682,7 +683,8 @@ def _stream_chat(
         # BEFORE any tool dispatch or model call -- the only way to
         # guarantee a forbidden tool never runs. See
         # app.extraction.detect_foreign_patient_reference.
-        if detect_foreign_patient_reference(message, conversation.patient_id):
+        cross_patient_reference_detected = detect_foreign_patient_reference(message, conversation.patient_id)
+        if cross_patient_reference_detected:
             result = cross_patient_refusal_result()
         elif run_streaming is not None:
             result = None
@@ -718,6 +720,23 @@ def _stream_chat(
         # answer never echoes the foreign patient it detected, so this never
         # finds anything to strip.
         result = apply_subject_check(result, question=message, patient_id=conversation.patient_id)
+        # Deterministic unresolvable-referent guard (#225): a demonstrative
+        # medication reference the question never names ("that new
+        # medication") with no prior turn in THIS conversation to anchor it
+        # -- a small model is prone to silently guessing the referent rather
+        # than asking. Skipped (not called unconditionally like
+        # apply_subject_check above) when the #223 guard already fired: a
+        # cross-patient refusal is a different, higher-priority question
+        # class, and overriding it here would silently discard that refusal
+        # even though its own answer text never happens to trip this guard.
+        # ``conversation.history`` reflects only PRIOR turns at this point --
+        # the current turn is appended further below, after this call -- so
+        # "no prior turns" here means genuinely the first message. See
+        # ``app.extraction.clarify_unresolvable_referent``.
+        if not cross_patient_reference_detected:
+            result = clarify_unresolvable_referent(
+                result, question=message, has_prior_turns=bool(conversation.history)
+            )
         # Deterministic recency notice (#153): append a caveat naming the
         # record's date for any stale record the planner returned this turn,
         # BEFORE the answer is emitted -- so a real user never sees years-old

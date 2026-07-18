@@ -652,3 +652,100 @@ def cross_patient_refusal_result() -> PlannerResult:
     ever dispatched and no model was ever called -- carrying a clean, generic
     decline that names neither the foreign patient nor the bound one."""
     return PlannerResult(answer=_CROSS_PATIENT_REFUSAL_ANSWER, trace=[], raw_results=[], llm_calls=[])
+
+
+# A demonstrative ("that"/"this") pointing at a medication CONCEPT, with no
+# named drug -- "that new medication", "this med", "that drug", "this
+# prescription". General on purpose: it matches the referring PATTERN, not
+# any particular fixture wording, so it fires on any real clinician phrasing
+# of the same ambiguity (see ``clarify_unresolvable_referent``). Deliberately
+# scoped to the medication domain only -- "that test"/"this diagnosis" are a
+# different ambiguity class, out of scope here. Case-insensitive.
+#
+# COMPOUND-CONCEPT EXCLUSION (negative lookahead): the medication noun must
+# NOT be immediately followed by a word that turns it into a compound clinical
+# CONCEPT rather than a standalone unresolved referent -- e.g. "that drug
+# interaction between metformin and iodinated contrast", "this drug class",
+# "that drug-drug interaction between X and Y", "that drug allergy". These
+# name drugs and mean a concept ("drug interaction", "drug allergy"); firing
+# on them and asking "which medication do you mean?" is a UX regression. The
+# ``(?:-\w+)?`` allows the hyphenated "drug-drug" compound before the concept
+# noun. "safe", "used", "still", "yet" etc. are deliberately NOT excluded, so
+# a genuinely ambiguous "is that drug safe with her allergy?" still fires.
+_UNRESOLVABLE_MEDICATION_REFERENT_RE = re.compile(
+    r"\b(?:that|this)\s+(?:new\s+)?(?:medication|med|drug|prescription)\b"
+    r"(?!(?:-\w+)?\s+(?:interactions?|class(?:es)?|allerg(?:y|ies)|levels?|"
+    r"combinations?|regimens?|reconciliation|between)\b)",
+    re.IGNORECASE,
+)
+
+_CLARIFY_UNRESOLVABLE_REFERENT_ANSWER = (
+    "Which medication do you mean? I don't see one referenced earlier in our "
+    "conversation -- please name it and I'll check."
+)
+
+
+def clarify_unresolvable_referent(
+    result: PlannerResult, *, question: str, has_prior_turns: bool
+) -> PlannerResult:
+    """Deterministic post-answer guard (#225) against confident-guessing on
+    an unresolvable demonstrative medication reference -- e.g. bound to a
+    patient, asked "Did she start that new medication?", nothing in the
+    conversation names a medication. A small model is prone to silently
+    picking whichever medication a tool happens to return and answering as
+    if the referent were resolved ("Yes, she started the medication...")
+    instead of asking the clinician which one is meant.
+
+    **The signal, both conditions required:**
+      1. ``question`` contains an unresolvable demonstrative medication
+         reference via ``_UNRESOLVABLE_MEDICATION_REFERENT_RE`` -- "that/this
+         [new] medication/med/drug/prescription". General pattern, not the
+         literal fixture phrase -- matches any equivalent real phrasing. Its
+         negative lookahead EXCLUDES compound clinical concepts where the
+         same words name a concept rather than an unresolved referent ("that
+         drug interaction between X and Y", "this drug class", "that drug
+         allergy") -- see the pattern's own comment.
+      2. ``has_prior_turns`` is ``False`` -- this is the FIRST turn of the
+         conversation, so no earlier turn could have already named the
+         medication the demonstrative now points back to.
+
+    **Why condition 2 is load-bearing (multi-turn safety).** A demonstrative
+    like "that medication" is only ambiguous in isolation. In an ongoing
+    conversation ("Her BP is well controlled on the new dose." / "Did she
+    start that new medication?"), an earlier turn may well have already
+    named it -- firing here would wrongly interrupt a legitimate,
+    already-disambiguated exchange with a clarifying question the clinician
+    already answered. This function does not attempt to resolve the
+    referent against prior turns (that would need real coreference
+    resolution, well beyond a deterministic regex guard); it stays
+    conservative and simply never fires once history exists, exactly the
+    same fail-closed-toward-not-interrupting posture #223's guard takes
+    toward not wrongly refusing ordinary dosing questions. The caller
+    passes ``has_prior_turns=False`` unconditionally for the eval harness
+    (single-turn by construction, so the condition always evaluates true)
+    and ``bool(conversation.history)`` for the live ``/chat`` endpoint.
+
+    On a hit the answer is replaced outright with a clean clarifying
+    question that carries no patient data, mirroring the fixed-notice
+    pattern of ``apply_subject_check``/``cross_patient_refusal_result``.
+
+    **Ordering vs the other deterministic guards.** Callers must NOT invoke
+    this when ``detect_foreign_patient_reference`` (#223) already
+    short-circuited to ``cross_patient_refusal_result()`` -- that is a
+    different question class (cross-patient authorization, not referent
+    ambiguity), and it takes priority: overriding an already-correct
+    cross-patient refusal with a medication-clarification question would
+    silently discard the more important refusal. Beyond that, this function
+    only ever inspects ``question`` (never ``result.answer``), so its
+    position relative to ``apply_subject_check`` doesn't affect correctness;
+    both wiring points place it right after ``apply_subject_check`` and
+    before ``apply_recency_notice``, keeping the post-answer guards grouped
+    together in one readable sequence. Independent of ``run_verification``/
+    claim extraction, same reasoning as ``apply_recency_notice``/
+    ``apply_subject_check``: a pure function, no LLM call. Returns
+    ``result`` unchanged (same object) when nothing fires."""
+    if has_prior_turns:
+        return result
+    if not _UNRESOLVABLE_MEDICATION_REFERENT_RE.search(question):
+        return result
+    return _with_answer(result, _CLARIFY_UNRESOLVABLE_REFERENT_ANSWER)

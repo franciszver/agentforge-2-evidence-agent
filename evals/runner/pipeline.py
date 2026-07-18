@@ -11,19 +11,24 @@ tool-selection case's recording therefore only has to carry the planner's own
 turns, not an unused claim-extraction call -- judgment call documented in
 ``runner.schema``'s module docstring.
 
-**Neither recency notices (#153) nor the cross-patient subject-check (#194)
-are lazy**, unlike verification above -- every case runs
-``app.extraction.apply_subject_check`` then ``app.extraction
+**None of recency notices (#153), the cross-patient subject-check (#194), or
+the unresolvable-referent guard (#225) are lazy**, unlike verification above
+-- every case runs ``app.extraction.apply_subject_check`` then
+``app.extraction.clarify_unresolvable_referent`` then ``app.extraction
 .apply_recency_notice`` unconditionally, right after the planner turn (see
 their docstrings / ``app.verification``'s "Recency notices" section for why
-neither must wait on the lazy, LLM-gated verification stage). The
-subject-check runs FIRST so it only ever scans the model's own prose, never
-text the recency notice appends afterward (a stale record's literal date
-could otherwise coincidentally collide with a foreign patient number).
-``_EVAL_FIXED_NOW`` is the suite's frozen reference instant, chosen close to
-the recordings' authored date (mid-2026) so every OTHER category's
-freshly-dated fixtures stay "fresh" while ``stale_data``'s 2014 fixtures are
-unambiguously stale.
+none must wait on the lazy, LLM-gated verification stage). The order is:
+subject-check, then the referent guard, then the recency notice -- the
+subject-check runs first so it only ever scans the model's own prose, never
+text a later step appends (a stale record's literal date, or the referent
+guard's own clarifying text, could otherwise coincidentally collide with a
+foreign patient number); the referent guard runs before the recency notice
+for the same reason (it only inspects ``question``, so its exact position
+relative to the recency notice doesn't affect correctness, but grouping the
+post-answer guards together keeps the sequence readable). ``_EVAL_FIXED_NOW``
+is the suite's frozen reference instant, chosen close to the recordings'
+authored date (mid-2026) so every OTHER category's freshly-dated fixtures
+stay "fresh" while ``stale_data``'s 2014 fixtures are unambiguously stale.
 
 **Even earlier than the subject-check: the PRE-dispatch cross-patient guard
 (#223).** ``app.extraction.detect_foreign_patient_reference`` is checked
@@ -47,6 +52,7 @@ from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
     apply_subject_check,
+    clarify_unresolvable_referent,
     cross_patient_refusal_result,
     detect_foreign_patient_reference,
     run_verification,
@@ -128,6 +134,14 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         # app.chat's wiring comment for why (it must only ever scan the
         # model's own prose, never text a later deterministic step appends).
         planner_result = apply_subject_check(planner_result, question=case.question, patient_id=case.patient_id)
+        # #225: clarify_unresolvable_referent, inside this same else branch
+        # (never reached when the #223 guard above fired) -- see its
+        # docstring for why it must not run on a cross-patient refusal. The
+        # eval harness's cases are single-turn by construction (module
+        # docstring), so ``has_prior_turns`` is always False here.
+        planner_result = clarify_unresolvable_referent(
+            planner_result, question=case.question, has_prior_turns=False
+        )
     planner_result = apply_recency_notice(planner_result, now=_EVAL_FIXED_NOW)
 
     if not needs_verification(case):
