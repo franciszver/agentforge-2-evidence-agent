@@ -4,16 +4,9 @@
 > chart — locally, with every claim re-checked against the record before it
 > reaches a clinician.
 
-<!-- TODO (owner, part of P5.6): record demo GIF, 60-90s of UC2 — a
-     physician asks "what meds is she on?", the answer streams in, then a
-     verified/partially_verified/blocked badge and tappable citation chips
-     appear, each chip revealing the record value it was checked against. -->
+![Clinical Co-Pilot demo — a physician asks "what meds is she on?", the answer streams in, then a verified/partially_verified/blocked badge and tappable citation chips appear, each chip revealing the record value it was checked against.](docs/demo/clinical-copilot-demo.gif)
 
-> 🎬 **Demo GIF: not yet recorded** — will show UC2 (medication safety) end
-> to end: a physician asks "what meds is she on?", the answer streams in,
-> then a `verified` / `partially_verified` / `blocked` badge and tappable
-> citation chips appear, each chip revealing the record value the claim was
-> checked against.
+*75-second demo — [MP4 version](docs/demo/clinical-copilot-demo.mp4)*
 
 📋 **[Project board (live plan)](https://github.com/users/franciszver/projects/2)**
 · 📐 [Architecture](docs/ARCHITECTURE.md)
