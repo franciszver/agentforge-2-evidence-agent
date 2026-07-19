@@ -564,8 +564,12 @@ EvidenceRetriever = Callable[[str], list[RerankedChunk]]
 
 
 def _no_op_evidence_retriever(query: str) -> list[RerankedChunk]:
-    """Flag-OFF default: no retrieval, no Ollama embedding round trip -- /chat
-    stays byte-identical to before P3.9's evidence-retrieval path existed."""
+    """Flag-OFF default: no retrieval, no Ollama embedding round trip, no
+    ``worker`` span -- evidence retrieval itself is fully flag-gated. (Per-turn
+    encounter logging, P3.8, is always-on regardless of this flag -- see
+    ``_log_encounter_record`` -- but it only ever logs non-PHI counts/timings,
+    never request content, so it carries no observable behavior change for a
+    caller of /chat.)"""
     return []
 
 
@@ -629,9 +633,10 @@ def get_evidence_retriever(
     already uses for ``LaunchPatientMismatchError``: catching here instead
     would also hide a raising TEST double's failure from that call site.
 
-    Flag OFF (default): ``_no_op_evidence_retriever`` -- no retrieval call,
-    no Ollama embedding round trip, byte-identical to before this dependency
-    existed.
+    Flag OFF (default): ``_no_op_evidence_retriever`` -- no retrieval call, no
+    Ollama embedding round trip, no worker span. Evidence retrieval itself is
+    flag-gated; per-turn encounter logging (P3.8, non-PHI counts only) is
+    always-on regardless of this flag -- see ``_log_encounter_record``.
     """
     if not get_settings().copilot_evidence_retrieval_enabled:
         return _no_op_evidence_retriever
