@@ -13,11 +13,38 @@ tool ``args`` never appears verbatim anywhere in the file.
 from __future__ import annotations
 
 import secrets
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from app.trace_store import FeedbackThumb, SpanStatus, SpanType, TraceStore, hash_args
+from app.trace_store import FeedbackThumb, Span, SpanStatus, SpanType, TraceStore, hash_args
+
+# The exact pre-P3.8 schema (committed on main before this branch added
+# span_id/parent_span_id/worker_name/sub_task_type) -- see
+# services/copilot-agent/app/trace_store.py at commit e3c8c1d.
+_PRE_P38_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
+    span_type TEXT NOT NULL,
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_name TEXT,
+    args_hash TEXT,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    verdict TEXT,
+    claim_count INTEGER,
+    stripped_count INTEGER,
+    feedback_thumb TEXT,
+    feedback_comment TEXT,
+    error_category TEXT
+)
+"""
 
 # Derived (not a hardcoded literal) so no secret-shaped string is committed;
 # stable within a run, so the store fixture and the hash-equality assertions
@@ -35,9 +62,94 @@ def store(db_path: str) -> TraceStore:
     return TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
 
 
+def test_span_constructs_without_the_p38_fields_defaulting_to_none() -> None:
+    """``evals/`` (a separate pytest root, run from the repo root as
+    ``pytest evals/ -m "not integration"``) constructs ``Span`` directly
+    with only the pre-P3.8 field set (see
+    ``evals/runner/tests/test_review_queue_generator.py``) -- it has no
+    reason to know about span_id/parent_span_id/worker_name/sub_task_type.
+    Those four must be defaulted (``None``), not required positional args,
+    or every such construction site breaks with ``TypeError: Span.__init__()
+    missing 4 required positional arguments``."""
+    span = Span(
+        id=1,
+        correlation_id="corr-1",
+        span_type=SpanType.TOOL,
+        start_ts=0.0,
+        end_ts=1.0,
+        duration_ms=1000.0,
+        status=SpanStatus.OK,
+        tool_name="get_medications",
+        args_hash=None,
+        model=None,
+        tokens_in=None,
+        tokens_out=None,
+        verdict=None,
+        claim_count=None,
+        stripped_count=None,
+        feedback_thumb=None,
+        feedback_comment=None,
+        error_category=None,
+    )
+    assert span.span_id is None
+    assert span.parent_span_id is None
+    assert span.worker_name is None
+    assert span.sub_task_type is None
+
+
 def test_schema_created_idempotently(db_path: str) -> None:
     # Constructing twice against the same path must not raise.
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+    TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+
+def test_migrates_a_pre_p38_db_so_new_columns_are_writable(db_path: str) -> None:
+    """An existing production ``traces.db`` predating this branch has the
+    pre-P3.8 column set (no span_id/parent_span_id/worker_name/
+    sub_task_type). ``CREATE TABLE IF NOT EXISTS`` alone is a no-op against
+    such a DB -- the columns never appear, and every write that names them
+    raises ``sqlite3.OperationalError``, which ``record_span_best_effort``
+    swallows: tracing silently stops entirely. Constructing a ``TraceStore``
+    against such a DB must migrate it (idempotently) so writes naming the
+    new columns succeed."""
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_PRE_P38_SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+    # Must not raise sqlite3.OperationalError: no column named span_id/...
+    store.record_worker_span(
+        correlation_id="corr-migrate",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        worker_name="evidence-retriever",
+        sub_task_type="RetrieveSubTask",
+        span_id="span-1",
+        parent_span_id="span-0",
+    )
+    store.record_tool_span(
+        correlation_id="corr-migrate",
+        start_ts=1.0,
+        end_ts=2.0,
+        ok=True,
+        tool_name="get_medications",
+        args={},
+        span_id="span-2",
+        parent_span_id="span-0",
+    )
+
+    spans = store.get_spans("corr-migrate")
+    worker_span = next(span for span in spans if span.span_type == SpanType.WORKER)
+    tool_span = next(span for span in spans if span.span_type == SpanType.TOOL)
+    assert worker_span.span_id == "span-1"
+    assert tool_span.span_id == "span-2"
+
+    # Re-constructing against the now-migrated DB must still not raise.
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
 
 
@@ -206,6 +318,8 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
     user-authored text about the response) is allowed to appear verbatim."""
     sentinel_drug_name = "Lisinopril-10mg-PATIENT-SPECIFIC"
     sentinel_note = "Patient reports chest pain since Tuesday"
+    sentinel_worker_name = "evidence-retriever"
+    sentinel_sub_task_type = "RetrieveSubTask"
 
     store.record_request_span(correlation_id="corr-phi", start_ts=0.0, end_ts=1.0, ok=True)
     store.record_tool_span(
@@ -229,11 +343,34 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
         feedback_thumb=FeedbackThumb.UP,
         feedback_comment="Great answer, matched the chart.",
     )
+    # P3.8: worker spans (app.supervisor handoffs) belong in "one of every
+    # span type" too -- exercises the WORKER span type plus its
+    # worker_name/sub_task_type/span_id/parent_span_id columns. These are
+    # closed-set/non-identifying by contract (never a sub-task field value --
+    # see app.supervisor's module docstring), so, unlike the tool ``args``
+    # above, they are EXPECTED to persist verbatim -- asserted via
+    # ``get_spans`` below, not added to the not-in-raw-bytes checks.
+    store.record_worker_span(
+        correlation_id="corr-phi",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        worker_name=sentinel_worker_name,
+        sub_task_type=sentinel_sub_task_type,
+        span_id="span-outer",
+        parent_span_id="span-root",
+    )
 
     raw_bytes = Path(db_path).read_bytes()
 
     assert sentinel_drug_name.encode() not in raw_bytes
     assert sentinel_note.encode() not in raw_bytes
+
+    worker_span = next(span for span in store.get_spans("corr-phi") if span.span_type == SpanType.WORKER)
+    assert worker_span.worker_name == sentinel_worker_name
+    assert worker_span.sub_task_type == sentinel_sub_task_type
+    assert worker_span.span_id == "span-outer"
+    assert worker_span.parent_span_id == "span-root"
 
 
 def test_hash_args_is_deterministic_and_order_independent() -> None:
