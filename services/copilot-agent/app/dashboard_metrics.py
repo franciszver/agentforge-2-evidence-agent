@@ -68,6 +68,12 @@ class DashboardMetrics:
     # future issue wires the data" posture already documented for
     # ``tool_call_count``/``retry_count`` above (see that field's docstring
     # in this module, and ``app.dashboard_alerts``'s module docstring).
+    # NOTE: these two are DTO fields, not ``evaluate_alerts()`` keyword
+    # arguments, for the same reason ``tool_call_count``/``retry_count`` are
+    # DTO fields despite ALSO having no live data today -- "no live source
+    # yet" does not mean "does not belong on this DTO"; it means the query
+    # that populates it (a ``spans`` COUNT/aggregate, same shape as every
+    # other field here) has nothing to count yet.
     extraction_failure_rate: float | None = None
     retrieval_p95_latency_ms: float | None = None
 
