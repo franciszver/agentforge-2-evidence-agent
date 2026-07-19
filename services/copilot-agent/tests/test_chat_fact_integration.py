@@ -29,9 +29,11 @@ from fastapi.testclient import TestClient
 
 from app.chat import (
     ChatEvent,
+    _no_op_support_judge_provider,
     get_claim_extractor,
     get_patient_fact_provider,
     get_planner_factory,
+    get_support_judge_provider,
     get_token_validator,
     get_trace_store,
 )
@@ -156,6 +158,7 @@ def test_real_chat_turn_cites_a_verified_lab_fact_document_citation(tmp_path):
     app.dependency_overrides[get_claim_extractor] = lambda: _make_fact_citing_extractor(ingestion.source_id)
     app.dependency_overrides[get_trace_store] = lambda: trace_store
     app.dependency_overrides[get_patient_fact_provider] = lambda: store.list_citations_for_patient
+    app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
 
     response = _chat("What is her A1c?", _PATIENT_A_ID)
 
@@ -204,6 +207,7 @@ def test_cross_patient_fact_is_never_surfaced_or_verifiable_from_the_other_patie
     app.dependency_overrides[get_claim_extractor] = lambda: _make_fact_citing_extractor(ingestion_a.source_id)
     app.dependency_overrides[get_trace_store] = lambda: trace_store
     app.dependency_overrides[get_patient_fact_provider] = lambda: store.list_citations_for_patient
+    app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
 
     response = _chat("What is her A1c?", _PATIENT_B_ID)
 
