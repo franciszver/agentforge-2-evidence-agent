@@ -79,7 +79,7 @@ from typing import Any, Protocol
 
 from app.allergy_check import check_allergy_conflicts
 from app.check_drug_interactions import check_drug_interactions
-from app.ollama_client import LlmCallStats, OllamaError
+from app.ollama_client import LLMEngineError, LlmCallStats
 from app.planner import PlannerResult
 from app.rendering import RenderedAnswer, render_answer
 from app.schemas.planner import ToolName
@@ -328,7 +328,7 @@ class ClaimExtractor:
         ]
         try:
             extracted = self._ollama.extract(messages, VerifiedAnswer)
-        except OllamaError:
+        except LLMEngineError:
             return []
         return list(extracted.claims)
 
