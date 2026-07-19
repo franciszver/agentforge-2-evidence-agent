@@ -553,23 +553,30 @@ class DocumentFactIndex:
 
     @classmethod
     def from_citations(cls, citations: Sequence[Citation]) -> DocumentFactIndex:
-        # Code-review finding: (source_id, field_or_chunk_id) is NOT
-        # guaranteed unique today -- e.g. the same test name repeated across
-        # two pages of one lab report collides on this key. A plain dict
-        # comprehension would silently last-wins (order-dependent,
-        # undetectable), mis-associating whichever citation happened to be
-        # built first with the wrong quote. Loud failure here instead:
-        # raise rather than silently overwrite. The proper fix (a truly
-        # unique id per extracted fact, e.g. page-qualified) is tracked as
-        # follow-up issue #40; this is the cheap interim guard.
+        # Issue #40 fix (same guard shape as CorpusChunkIndex.from_chunks
+        # below): (source_id, field_or_chunk_id) is now unique BY
+        # CONSTRUCTION -- app.ingestion's row/page assembly
+        # (_to_lab_result_fact / _to_intake_form_facts) qualifies
+        # field_or_chunk_id with the page (and, for lab rows, the row index
+        # within the page) it was actually extracted from, so the same test
+        # repeated across two dated pages of one lab report no longer
+        # collides. This should therefore never actually trigger from a real
+        # ingestion-produced Citation -- but a plain dict comprehension would
+        # otherwise silently last-wins (order-dependent, undetectable) if
+        # some other caller (a test double, a future non-ingestion source)
+        # ever does produce a colliding key, mis-associating whichever
+        # citation happened to be built first with the wrong quote. Kept as
+        # a defensive, loud failure instead: raise rather than silently
+        # overwrite.
         quotes_by_key: dict[tuple[str, str], str] = {}
         for citation in citations:
             key = (citation.source_id, citation.field_or_chunk_id)
             if key in quotes_by_key:
                 raise ValueError(
                     f"DocumentFactIndex: duplicate (source_id, field_or_chunk_id) key {key!r} -- "
-                    "two extracted facts collide on the same citation key. See issue #40 for the "
-                    "proper unique-id fix; refusing to silently pick one over the other."
+                    "two extracted facts collide on the same citation key. This should not happen "
+                    "for ingestion-produced citations (see app.ingestion's page/row-qualified "
+                    "field_or_chunk_id, issue #40); refusing to silently pick one over the other."
                 )
             quotes_by_key[key] = citation.quote_or_value
         return cls(quotes_by_key)
