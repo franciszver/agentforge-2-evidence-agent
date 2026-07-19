@@ -44,16 +44,142 @@ services:
       timeout: 5s
       retries: 3
 
+  # P3.10a (epic #52 step 1): local llama.cpp llama-server, serving ONLY the
+  # text-generation LLM roles (planner chat/answer, claim extraction,
+  # LLM-as-reranker) -- see agent's COPILOT_LLM_ENGINE below. Embeddings and
+  # vision document-ingestion extraction stay on `ollama` above; this
+  # service does not replace it.
+  #
+  # Both services below are gated behind the `llama` compose profile, so a
+  # plain `docker compose -f docker-compose.yml -f docker-compose.copilot.yml
+  # up` (default engine: ollama) starts NEITHER of them -- no egress
+  # container, no GPU wait, no change to today's startup time. Opt in with
+  # `--profile llama`.
+  #
+  # Image pin: ghcr.io/ggml-org/llama.cpp's `server-cuda-b10068` tag (CUDA 12
+  # build), matching this repo's ollama pin convention (explicit tag +
+  # digest). Verified via `docker buildx imagetools inspect` against the live
+  # registry at pin time.
+  #
+  # GGUF pin: `gguf-init` downloads a specific Hugging Face revision (a
+  # commit SHA, not `main`) into the `llamacppmodels` named volume before
+  # `llama-server` starts, so the model file is reproducible without baking
+  # an 18GB+ layer into the image or committing it to git:
+  #   repo:     bartowski/Qwen_Qwen3-8B-GGUF
+  #   revision: 0b69f75b7472688e6808490aa2b85efdb81b5ce7
+  #   file:     Qwen_Qwen3-8B-Q5_K_M.gguf (~5.85GB)
+  # Settled rung (docs/MODEL_AND_HARDWARE_SELECTION.md, other branch): 16k
+  # context, q8_0 KV cache (needs --flash-attn on), fully GPU-resident.
+  #
+  # Egress note: `gguf-init` is the only place in this overlay that needs to
+  # reach the public internet (Hugging Face), so it stays on the compose
+  # `default` network (egress-capable) instead of `copilot_internal`.
+  # `llama-server` itself only reads the already-downloaded GGUF from the
+  # shared volume, so it stays internal-only like `ollama` and `agent`.
+  #
+  # One-time setup + switching engines:
+  #   1. docker compose -f docker-compose.yml -f docker-compose.copilot.yml \
+  #        --profile llama up gguf-init
+  #      (pulls the pinned GGUF into the `llamacppmodels` volume; skips the
+  #      download if it's already present)
+  #   2. docker compose -f docker-compose.yml -f docker-compose.copilot.yml \
+  #        --profile llama up -d llama-server
+  #      then wait for it to report healthy (`docker compose ps`)
+  #   3. Set `agent`'s COPILOT_LLM_ENGINE to `llama_server` (env override or
+  #      edit below) and restart `agent`.
+  gguf-init:
+    image: python:3.12-slim
+    profiles: ["llama"]
+    volumes:
+      - llamacppmodels:/models
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        GGUF_FILE=qwen3-8b-q5_k_m.gguf
+        if [ -f "/models/$${GGUF_FILE}" ]; then
+          echo "GGUF already present, skipping download"; exit 0
+        fi
+        pip install --no-cache-dir --quiet "huggingface_hub[cli]"
+        hf download bartowski/Qwen_Qwen3-8B-GGUF \
+          --revision 0b69f75b7472688e6808490aa2b85efdb81b5ce7 \
+          --include "Qwen_Qwen3-8B-Q5_K_M.gguf" \
+          --local-dir /tmp/gguf-download
+        mv "/tmp/gguf-download/Qwen_Qwen3-8B-Q5_K_M.gguf" "/models/$${GGUF_FILE}"
+    networks:
+      - default
+
+  llama-server:
+    restart: always
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10068@sha256:b8791d2ab8c51570e75067f626db7a271caa3e99396056f2721fac432e03c852
+    profiles: ["llama"]
+    volumes:
+      - llamacppmodels:/models
+    command:
+      - "--model"
+      - "/models/qwen3-8b-q5_k_m.gguf"
+      - "--ctx-size"
+      - "16384"
+      - "--parallel"
+      - "1"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--n-gpu-layers"
+      - "999"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--reasoning"
+      - "off"
+    depends_on:
+      gguf-init:
+        condition: service_completed_successfully
+    networks:
+      - copilot_internal
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health || exit 1"]
+      start_period: 60s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   agent:
     build:
       context: ../../services/copilot-agent
     environment:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
+      # P3.10a: default "ollama" -- flip to "llama_server" to route the
+      # answer/extract/reranker roles through llama-server below. Embeddings
+      # always use OLLAMA_BASE_URL above regardless of this flag.
+      COPILOT_LLM_ENGINE: ollama
+      LLAMA_SERVER_BASE_URL: http://llama-server:8080
     networks:
       - copilot_internal
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+      # `llama-server` is intentionally NOT a depends_on here: it lives
+      # behind the `llama` profile (see comment block above it), and a
+      # depends_on into a service that isn't started under the default
+      # profile set would be fragile/inactive anyway. When switching
+      # COPILOT_LLM_ENGINE to llama_server, bring `llama-server` up and wait
+      # for it to report healthy (`docker compose ps`) before routing
+      # traffic to it -- LlamaServerClient surfaces a clear connection error
+      # if it isn't ready yet.
 
 networks:
   copilot_internal:
@@ -61,3 +187,4 @@ networks:
 
 volumes:
   ollamamodels: {}
+  llamacppmodels: {}
