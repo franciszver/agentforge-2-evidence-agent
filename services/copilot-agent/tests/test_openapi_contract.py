@@ -42,7 +42,7 @@ with warnings.catch_warnings():
 from app.chat import get_token_validator, get_trace_store
 from app.config import Settings, get_settings
 from app.main import app
-from app.readiness import get_ollama_client, get_openemr_client
+from app.readiness import get_llama_server_client, get_ollama_client, get_openemr_client
 from app.trace_store import TraceStore
 
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "openapi" / "openapi.json"
@@ -130,6 +130,7 @@ def test_ready_response_conforms_to_spec_when_ready(tmp_path) -> None:
 
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(trace_db_path=str(tmp_path / "traces.db"))
 
     response = client.get("/ready")
@@ -143,6 +144,7 @@ def test_ready_response_conforms_to_spec_when_not_ready(tmp_path) -> None:
 
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_down_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(trace_db_path=str(tmp_path / "traces.db"))
 
     response = client.get("/ready")
