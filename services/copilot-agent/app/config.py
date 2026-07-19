@@ -136,6 +136,26 @@ class Settings(BaseSettings):
     # (P3.7) reads stored source PDFs from here for the citation overlay.
     copilot_ingestion_base_dir: str = "/data/ingestion"
 
+    # P3.10a (epic #52 step 1): which engine serves the text-generation LLM
+    # roles -- planner chat/extract, claim extraction, and the LLM-as-reranker
+    # relevance score (see app/chat.py's get_text_llm_client). Literal
+    # "ollama" or "llama_server". Embeddings (ollama_embedding_model) and
+    # vision-based document-ingestion extraction (app/supervisor.py's
+    # IntakeExtractorWorker) ALWAYS use Ollama regardless of this flag --
+    # see app/chat.py's _build_evidence_workers. Default "ollama": flipping
+    # this is the whole point of the flag (an instant rollback path), so
+    # changing the default is out of scope for this migration.
+    copilot_llm_engine: str = "ollama"
+    # Connection info for the llama-server instance serving the engine above
+    # when copilot_llm_engine == "llama_server" (app/llama_server_client.py).
+    llama_server_base_url: str = "http://llama-server:8080"
+    # Label sent in the request body only -- llama-server ignores it for
+    # routing (a single --model file is loaded), but the OpenAI-compatible
+    # endpoint still requires the field to be present.
+    llama_server_model: str = "qwen3-8b"
+    llama_server_api_timeout_seconds: float = 60.0
+    llama_server_extract_max_retries: int = 2
+
     # P3.9: when true, POST /chat additionally routes each turn's question
     # through the P3.5 supervisor's evidence-retriever worker (hybrid
     # retrieve + rerank over the PUBLIC guideline corpus, app.retrieval /
