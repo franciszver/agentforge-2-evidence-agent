@@ -18,43 +18,51 @@ from app.ollama_client import OllamaClient
 from app.planner import Planner
 
 
-def test_get_text_llm_client_defaults_to_ollama():
+def test_get_text_llm_client_defaults_to_llama_server():
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-
-    client = get_text_llm_client(settings)
-
-    assert isinstance(client, OllamaClient)
-
-
-def test_get_text_llm_client_selects_llama_server_when_flagged():
-    settings = Settings(_env_file=None, copilot_llm_engine="llama_server")  # type: ignore[call-arg]
 
     client = get_text_llm_client(settings)
 
     assert isinstance(client, LlamaServerClient)
 
 
-def test_planner_factory_uses_llama_server_when_flagged(monkeypatch):
-    monkeypatch.setenv("COPILOT_LLM_ENGINE", "llama_server")
+def test_get_text_llm_client_selects_ollama_when_flagged():
+    settings = Settings(_env_file=None, copilot_llm_engine="ollama")  # type: ignore[call-arg]
+
+    client = get_text_llm_client(settings)
+
+    assert isinstance(client, OllamaClient)
+
+
+def test_planner_factory_uses_ollama_when_flagged(monkeypatch):
+    monkeypatch.setenv("COPILOT_LLM_ENGINE", "ollama")
 
     factory = _default_planner_factory("some-token")
     planner = factory(1)
 
     assert isinstance(planner, Planner)
-    assert isinstance(planner._ollama, LlamaServerClient)
+    assert isinstance(planner._ollama, OllamaClient)
 
 
-def test_planner_factory_uses_ollama_by_default(monkeypatch):
+def test_planner_factory_uses_llama_server_by_default(monkeypatch):
     monkeypatch.delenv("COPILOT_LLM_ENGINE", raising=False)
 
     factory = _default_planner_factory("some-token")
     planner = factory(1)
 
-    assert isinstance(planner._ollama, OllamaClient)
+    assert isinstance(planner._ollama, LlamaServerClient)
 
 
-def test_claim_extractor_uses_llama_server_when_flagged(monkeypatch):
-    monkeypatch.setenv("COPILOT_LLM_ENGINE", "llama_server")
+def test_claim_extractor_uses_ollama_when_flagged(monkeypatch):
+    monkeypatch.setenv("COPILOT_LLM_ENGINE", "ollama")
+
+    extractor = get_claim_extractor()
+
+    assert isinstance(extractor._ollama, OllamaClient)
+
+
+def test_claim_extractor_uses_llama_server_by_default(monkeypatch):
+    monkeypatch.delenv("COPILOT_LLM_ENGINE", raising=False)
 
     extractor = get_claim_extractor()
 
@@ -78,8 +86,20 @@ def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when
     assert isinstance(evidence_worker._reranker._scorer._client, LlamaServerClient)
 
 
-def test_evidence_workers_use_ollama_reranker_by_default(tmp_path):
+def test_evidence_workers_use_llama_server_reranker_by_default(tmp_path):
     settings = Settings(_env_file=None, copilot_ingestion_base_dir=str(tmp_path))  # type: ignore[call-arg]
+
+    intake_worker, evidence_worker = _build_evidence_workers(settings)
+
+    assert isinstance(intake_worker._ollama_client, OllamaClient)
+    assert isinstance(evidence_worker._retriever._embedder, OllamaClient)
+    assert isinstance(evidence_worker._reranker._scorer._client, LlamaServerClient)
+
+
+def test_evidence_workers_use_ollama_reranker_when_flagged(tmp_path):
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, copilot_llm_engine="ollama", copilot_ingestion_base_dir=str(tmp_path)
+    )
 
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 

@@ -50,11 +50,19 @@ services:
   # vision document-ingestion extraction stay on `ollama` above; this
   # service does not replace it.
   #
-  # Both services below are gated behind the `llama` compose profile, so a
-  # plain `docker compose -f docker-compose.yml -f docker-compose.copilot.yml
-  # up` (default engine: ollama) starts NEITHER of them -- no egress
-  # container, no GPU wait, no change to today's startup time. Opt in with
-  # `--profile llama`.
+  # P3.10e (issue #73, owner decision 2026-07-19): both services below used
+  # to be gated behind the `llama` compose profile so a plain `docker
+  # compose ... up` defaulted to ollama with no extra startup cost. That
+  # profile gate is now REMOVED -- 8B-Q5 is the intended default answer
+  # model (the 6/12 verified-citation flagship capability must be live out
+  # of the box), so a plain `docker compose -f docker-compose.yml -f
+  # docker-compose.copilot.yml up` now provisions and serves it
+  # unconditionally. Deliberate tradeoff accepted: default startup gains a
+  # one-time GGUF provisioning-egress step (`gguf-init`, skipped once the
+  # volume is populated) and ~60s of model load before `llama-server`
+  # reports healthy. Security posture is unchanged from #56: `llama-server`
+  # itself stays `copilot_internal`-only (no egress); only `gguf-init`
+  # reaches the public internet, and only for the one-time pinned pull.
   #
   # Image pin: ghcr.io/ggml-org/llama.cpp's `server-cuda-b10068` tag (CUDA 12
   # build), matching this repo's ollama pin convention (explicit tag +
@@ -77,19 +85,16 @@ services:
   # `llama-server` itself only reads the already-downloaded GGUF from the
   # shared volume, so it stays internal-only like `ollama` and `agent`.
   #
-  # One-time setup + switching engines:
-  #   1. docker compose -f docker-compose.yml -f docker-compose.copilot.yml \
-  #        --profile llama up gguf-init
-  #      (pulls the pinned GGUF into the `llamacppmodels` volume; skips the
-  #      download if it's already present)
-  #   2. docker compose -f docker-compose.yml -f docker-compose.copilot.yml \
-  #        --profile llama up -d llama-server
-  #      then wait for it to report healthy (`docker compose ps`)
-  #   3. Set `agent`'s COPILOT_LLM_ENGINE to `llama_server` (env override or
-  #      edit below) and restart `agent`.
+  # Both services now start by default on a plain `docker compose -f
+  # docker-compose.yml -f docker-compose.copilot.yml up`: `gguf-init` pulls
+  # the pinned GGUF into the `llamacppmodels` volume (skipping the download
+  # if it's already present), then `llama-server` waits on it and starts.
+  # To roll back to Ollama-only for the answer/extract/reranker roles,
+  # override `agent`'s COPILOT_LLM_ENGINE to `ollama` (the containers below
+  # still start, but the agent stops routing text-generation traffic to
+  # `llama-server`).
   gguf-init:
     image: python:3.12-slim
-    profiles: ["llama"]
     volumes:
       - llamacppmodels:/models
     command:
@@ -113,7 +118,6 @@ services:
   llama-server:
     restart: always
     image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10068@sha256:b8791d2ab8c51570e75067f626db7a271caa3e99396056f2721fac432e03c852
-    profiles: ["llama"]
     volumes:
       - llamacppmodels:/models
     command:
@@ -162,24 +166,21 @@ services:
     environment:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
-      # P3.10a: default "ollama" -- flip to "llama_server" to route the
-      # answer/extract/reranker roles through llama-server below. Embeddings
+      # P3.10e (issue #73): default "llama_server" -- flip to "ollama" for
+      # instant rollback of the answer/extract/reranker roles. Embeddings
       # always use OLLAMA_BASE_URL above regardless of this flag.
-      COPILOT_LLM_ENGINE: ollama
+      COPILOT_LLM_ENGINE: llama_server
       LLAMA_SERVER_BASE_URL: http://llama-server:8080
     networks:
       - copilot_internal
     depends_on:
       ollama:
         condition: service_started
-      # `llama-server` is intentionally NOT a depends_on here: it lives
-      # behind the `llama` profile (see comment block above it), and a
-      # depends_on into a service that isn't started under the default
-      # profile set would be fragile/inactive anyway. When switching
-      # COPILOT_LLM_ENGINE to llama_server, bring `llama-server` up and wait
-      # for it to report healthy (`docker compose ps`) before routing
-      # traffic to it -- LlamaServerClient surfaces a clear connection error
-      # if it isn't ready yet.
+      # llama-server is now default-on (no longer profile-gated), so the
+      # agent waits for it to report healthy before starting, same as any
+      # other core dependency.
+      llama-server:
+        condition: service_healthy
 
 networks:
   copilot_internal:

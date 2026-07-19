@@ -142,10 +142,11 @@ class Settings(BaseSettings):
     # "ollama" or "llama_server". Embeddings (ollama_embedding_model) and
     # vision-based document-ingestion extraction (app/supervisor.py's
     # IntakeExtractorWorker) ALWAYS use Ollama regardless of this flag --
-    # see app/chat.py's _build_evidence_workers. Default "ollama": flipping
-    # this is the whole point of the flag (an instant rollback path), so
-    # changing the default is out of scope for this migration.
-    copilot_llm_engine: str = "ollama"
+    # see app/chat.py's _build_evidence_workers. Default "llama_server"
+    # (P3.10e, issue #73, owner decision 2026-07-19): Qwen3-8B-Q5 is the
+    # intended default answer model so the verified-citation capability is
+    # live out of the box. Set to "ollama" for instant rollback.
+    copilot_llm_engine: str = "llama_server"
     # Connection info for the llama-server instance serving the engine above
     # when copilot_llm_engine == "llama_server" (app/llama_server_client.py).
     llama_server_base_url: str = "http://llama-server:8080"

@@ -42,6 +42,7 @@ def test_health_still_returns_200_ok():
 def test_ready_returns_200_when_all_dependencies_healthy(tmp_path):
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(
         trace_db_path=str(tmp_path / "traces.db")
     )
@@ -53,12 +54,14 @@ def test_ready_returns_200_when_all_dependencies_healthy(tmp_path):
     assert body["status"] == "ready"
     assert body["checks"]["openemr"]["ok"] is True
     assert body["checks"]["ollama"]["ok"] is True
+    assert body["checks"]["llama_server"]["ok"] is True
     assert body["checks"]["trace_store"]["ok"] is True
 
 
 def test_ready_returns_503_when_openemr_down(tmp_path):
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_down_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(
         trace_db_path=str(tmp_path / "traces.db")
     )
@@ -70,12 +73,14 @@ def test_ready_returns_503_when_openemr_down(tmp_path):
     assert body["status"] == "not_ready"
     assert body["checks"]["openemr"]["ok"] is False
     assert body["checks"]["ollama"]["ok"] is True
+    assert body["checks"]["llama_server"]["ok"] is True
     assert body["checks"]["trace_store"]["ok"] is True
 
 
 def test_ready_returns_503_when_ollama_down(tmp_path):
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_down_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(
         trace_db_path=str(tmp_path / "traces.db")
     )
@@ -88,20 +93,22 @@ def test_ready_returns_503_when_ollama_down(tmp_path):
     assert body["checks"]["ollama"]["ok"] is False
 
 
-def test_ready_omits_llama_server_check_when_engine_is_ollama(tmp_path):
-    # Default engine ("ollama"): embeddings + vision extraction always use
-    # Ollama, and chat/extract also route through Ollama, so llama-server is
-    # never in the request path and must not appear in the report.
+def test_ready_checks_llama_server_unconditionally_even_when_engine_is_ollama(tmp_path):
+    # llama-server is a core dependency now (default engine), so it is
+    # checked regardless of copilot_llm_engine -- even when the flag is set
+    # back to "ollama" for rollback, the container is still expected to be
+    # up and /ready must still probe it.
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(
-        trace_db_path=str(tmp_path / "traces.db")
+        copilot_llm_engine="ollama", trace_db_path=str(tmp_path / "traces.db")
     )
 
     response = client.get("/ready")
 
     assert response.status_code == 200
-    assert "llama_server" not in response.json()["checks"]
+    assert response.json()["checks"]["llama_server"]["ok"] is True
 
 
 def test_ready_returns_200_when_llama_server_engine_and_all_healthy(tmp_path):
@@ -143,6 +150,7 @@ def test_ready_returns_503_when_trace_store_not_writable(tmp_path):
 
     app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(trace_db_path=str(bad_db_path))
 
     response = client.get("/ready")
