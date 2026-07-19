@@ -10,7 +10,10 @@
   at v1.0 — this document extends it, does not replace it),
   `planning/PLAN.md` (frozen Phase 2 plan), `docs/USERS.md` (persona and
   UC1–UC5 use cases every capability below traces to), `docs/TEST_PLAN.md`
-  (eval methodology, PR Definition of Done).
+  (eval methodology, PR Definition of Done),
+  `docs/MODEL_AND_HARDWARE_SELECTION.md` (how the llama.cpp answer model and
+  its serving config were chosen), `docs/W2_AUDIT.md` (hardening pass over
+  the Week-2 surface, including the llama-server `/ready` check).
 
 ## Summary
 
@@ -39,13 +42,16 @@ guideline-grounded questions ("is this within reference range for her age?")
 without ever calling out to a cloud model or a cloud search API.
 
 Both capabilities run fully local, on the same zero-egress Docker network
-Phase 1 established — the VLM, embedding model, and reranker are additional
-Ollama-served (or in-process) models on the same box, not a new trust
-boundary. The two are wired together, and to the existing single-tool-planner
-core, by a small in-house **supervisor** that hands work to two workers
-(intake-extractor, evidence-retriever) with explicit, logged handoffs —
-extending Phase 1's correlation-id tracing rather than introducing a new
-orchestration framework.
+Phase 1 established. Inference is now split across two local engines rather
+than the single Ollama instance Phase 1 used — see
+§"Inference Engines: the Final Partial-Consolidation Architecture" for the
+full picture and why it landed this way. Neither engine is a new trust
+boundary: both run on the same internal, no-egress Docker network Phase 1
+established. The two capabilities are wired together, and to the existing
+single-tool-planner core, by a small in-house **supervisor** that hands work
+to two workers (intake-extractor, evidence-retriever) with explicit, logged
+handoffs — extending Phase 1's correlation-id tracing rather than
+introducing a new orchestration framework.
 
 ## Architecture Diagram
 
@@ -67,10 +73,9 @@ flowchart TB
             ingest["Ingestion tool: attach_and_extract()"]
         end
 
-        vlm["Ollama — VLM (7B-class, e.g. qwen2.5vl)"]
-        llm["Ollama — Qwen3-4B (Phase 1, planner/extraction)"]
-        embed["Embedding model (CPU, e.g. nomic-embed-text)"]
-        rerank["Local reranker (CPU cross-encoder)"]
+        vlm["Ollama — document-ingestion VISION ONLY<br/>(qwen2.5vl:7b)"]
+        llm["llama-server — answer / extract / rerank LLM<br/>(Qwen3-8B-Q5, default answer engine)"]
+        embed["llama-server (2nd instance, --embedding)<br/>nomic-embed-text-v1.5, GPU"]
         idx["Hybrid index: BM25 + vector store (guideline corpus)"]
         trace["Trace store (SQLite, no PHI) — extended with worker spans"]
     end
@@ -78,12 +83,12 @@ flowchart TB
     sup -->|handoff, logged| intake
     sup -->|handoff, logged| retr
     intake --> ingest
-    ingest -->|VLM call, sequential swap w/ llm on min-spec| vlm
+    ingest -->|VLM call, Ollama-only, sequential swap w/ llm on min-spec| vlm
     ingest --> docstore
     ingest -->|FHIR resource write| api
     retr --> idx
     idx --> embed
-    idx --> rerank
+    idx -->|LLM-as-judge rerank| llm
     sup --> llm
     sup --> verify
     verify --> trace
@@ -94,6 +99,11 @@ flowchart TB
 This extends, not replaces, the Phase 1 diagram in `docs/ARCHITECTURE.md`
 (agent internals, Ollama boundary, network egress posture, dev token bridge)
 — those trust boundaries are unchanged by Phase 2 and are not repeated here.
+The engine split shown here (llama.cpp for text + embeddings, Ollama for
+vision only) is the **final** architecture — see
+§"Inference Engines: the Final Partial-Consolidation Architecture" for how
+it got here and why full consolidation onto a single engine (the original
+epic #52 goal) stopped short of vision.
 
 ## Week-1 Baseline vs Week-2 New
 
@@ -106,7 +116,7 @@ This extends, not replaces, the Phase 1 diagram in `docs/ARCHITECTURE.md`
 | Verification | Deterministic re-check against raw structured tool results | + Extended to re-check document-sourced claims against extracted facts; same fail-closed "not found" discipline for unreadable/absent fields |
 | Eval gate | 31-case suite, category pass/fail, 0.8065 pass rate | + 50-case golden set, boolean rubrics (`schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`), PR-blocking CI gate |
 | Observability | Correlation IDs, request/verdict-level trace store | + Per-encounter cost/latency breakdown (tool sequence, per-step latency, token usage, retrieval hits, extraction confidence), worker spans as children of the supervisor span |
-| Models served | Qwen3-4B (planner, quarantine, extraction) | + 7B-class VLM (document extraction), embedding model, reranker — all local |
+| Models served | Qwen3-4B (planner, quarantine, extraction), on Ollama | Qwen3-8B-Q5 (answer/extract/rerank) + nomic-embed on **llama.cpp** (`llama-server`, two instances); + 7B-class VLM (document-ingestion vision) remains on **Ollama** — all local. See §"Inference Engines: the Final Partial-Consolidation Architecture" |
 | Access control | Per-user OAuth2/PKCE/SMART built, proven live, flag-gated OFF | Unchanged — same flag, same posture (see §"Data Model, Lineage, and Access Control") |
 
 ## Phase 1 Debt Disposition
@@ -251,9 +261,10 @@ measurement, which is P3G.4 (#24)'s job:
   To be validated in P3G.4 perf baselines.** Justification: Phase 1's P5.1
   capacity run measured a single-request Qwen3-4B chat turn at 10.3s on
   this exact hardware (RTX 5060 Laptop, 8GB VRAM). A document-ingestion
-  request additionally requires (a) an Ollama model swap from the resident
-  LLM to the VLM — sequential load/unload on an 8GB card, not concurrent
-  residency, per the minimum-spec operating mode in §"Reference Hardware & Model Tiers" — which is the
+  request additionally requires (a) a cross-engine swap — freeing the
+  llama-server-resident answer LLM and loading Ollama's VLM — sequential
+  load/unload on an 8GB card, not concurrent residency, per the
+  minimum-spec operating mode in §"Reference Hardware & Model Tiers" — which is the
   dominant new cost and is budgeted generously at 10-20s given no measured
   swap time yet exists for this hardware/model pair; (b) VLM decode over a
   7B-class model, budgeted at roughly 2x a 4B call's latency for a
@@ -347,8 +358,8 @@ projected ones:
 |---|---|---|
 | GPU | RTX 5060 Laptop, 8GB VRAM | Single 24-48GB+ card |
 | RAM | 32GB | (not constraining at this tier) |
-| Model residency | **Sequential VLM⇄LLM swap** — the VLM and Qwen3-4B are not resident simultaneously; embeddings and the reranker run on CPU to leave the full 8GB for whichever inference model is currently loaded | **All models resident simultaneously** — VLM, planner/extraction LLM, embeddings, and reranker all on-GPU, no swap latency |
-| VLM tier | 7B-class (e.g. `qwen2.5vl:7b`) | Larger VLM (model swapped in as a config value, not a code change) |
+| Model residency | **Sequential VLM⇄LLM swap** — the Ollama-served VLM and the llama.cpp-served answer LLM (Qwen3-8B-Q5) are not resident simultaneously on the 8GB card; the llama.cpp embedding instance (nomic-embed, ~274MB) is small enough to stay GPU-resident alongside whichever of the two is currently loaded | **All models resident simultaneously** — VLM, answer/extract/rerank LLM, and embeddings all on-GPU, no swap latency |
+| VLM tier | 7B-class (e.g. `qwen2.5vl:7b`, Ollama) | Larger VLM (model swapped in as a config value, not a code change) — see §"Inference Engines" for why a bigger card, not just a bigger model, is the actual unlock |
 | Numbers | Measured, on this exact hardware (Phase 1's P5.1 run; Phase 2's own ingestion numbers per §"SLOs", pending P3G.4 (#24)) | Projections only — no recommended-tier hardware exists in this project; stated as directional, never presented as measured |
 
 **Model tiering is a config value, not a code fork.** The same extraction
@@ -359,6 +370,86 @@ latency, not the safety invariant the verification layer depends on. This
 mirrors Phase 1's own local-inference philosophy: the trust story lives in
 the deterministic verification layer, not in betting on a particular
 model's reliability.
+
+## Inference Engines: the Final Partial-Consolidation Architecture
+
+Epic #52 set out to retire Ollama entirely and run every model role on a
+single local engine, llama.cpp (`llama-server`) — one fewer inference
+engine in the supply-chain/attack surface for a hospital security review.
+That consolidation happened for **text and embeddings**, but stopped short
+of **vision**. This section states where it landed and why, closing out
+epic #52 as a deliberate partial consolidation rather than the original
+full-retirement goal.
+
+### What runs where today
+
+| Role | Engine | Model | Why |
+|---|---|---|---|
+| Answer / extraction / claim-extraction LLM | **llama.cpp** (`llama-server`) | Qwen3-8B-Q5_K_M, q8_0 KV, flash-attn | Default answer engine (owner decision, P3.10e / #73); best verified-citation config that fits the 8GB minimum spec — see `docs/MODEL_AND_HARDWARE_SELECTION.md` |
+| Reranker (LLM-as-judge) | **llama.cpp** (same `llama-server` instance as above) | Qwen3-8B-Q5_K_M | Reuses the answer-LLM client rather than standing up a third model — no separate reranker model to serve |
+| Embeddings (dense retrieval) | **llama.cpp** (a second, dedicated `llama-server` instance, `--embedding` mode) | nomic-embed-text-v1.5 (f16 GGUF) | Migrated off Ollama per P3.10b (#76); small enough (~274MB) to stay GPU-resident alongside whichever LLM is currently loaded |
+| Document-ingestion **vision** (VLM) | **Ollama** | qwen2.5vl:7b | **Stays on Ollama** — see "Why vision stays on Ollama" below |
+
+Both engines run on the same internal, no-egress Docker network Phase 1
+established (`docker-compose.copilot.yml`); the appliance/no-egress security
+thesis holds identically for both — this is a *partial engine
+consolidation*, not a partial trust-boundary one. On the 8GB minimum-spec
+card, the answer LLM and the VLM are not GPU-resident simultaneously (the
+VLM is loaded only for the duration of a document-ingestion call, per
+§"Reference Hardware & Model Tiers"); the small embedding instance fits
+alongside either.
+
+### Why vision stays on Ollama
+
+The P3.10c spike (issue #77) tested moving the VLM onto llama.cpp's `mtmd`
+multimodal stack, the last step needed for full consolidation. The verdict
+was **not viable**, for a reason that overrides the supply-chain-surface
+argument for consolidating in the first place:
+
+- **Qwen2.5-VL-7B Q4_K_M on llama.cpp (build b10068, `mtmd`) reproducibly
+  fabricated** on the ingestion no-fabrication contract's own test case — a
+  redacted/obscured lab field (`collection_date` on a deliberately
+  unreadable page-2 fixture) came back as an invented date
+  (`2026-06-01`) instead of the correct `null`. This reproduced across
+  three serving configurations, including `--mmproj-offload
+  --image-min-tokens 1024`, ruling out a quick flag fix.
+- **The same model on Ollama returns the correct `null` on that same
+  fixture, every time.** The fabrication is specific to the llama.cpp
+  `mtmd` code path at this quantization, not to the model weights
+  themselves.
+- **Q8_0 (8.1GB) does not fit the 8GB minimum-spec card**, so the spike
+  could not test whether a higher-precision quantization closes the
+  grounding gap — that question is open, not answered "no."
+- Latency was ruled out as the blocker (fixable to ~8.3s/page via
+  `--mmproj-offload`); the disqualifying finding is purely the
+  no-fabrication violation.
+
+The no-fabrication contract (`app/ingestion.py`'s "not found" over
+guessing, verified end-to-end in `docs/W2_AUDIT.md` item 2) is
+**non-negotiable** — it is the same fail-closed discipline the citation
+verifier applies to structured claims (§"Citation Contract"), extended to
+vision extraction. A VLM path that invents values on an unreadable field is
+disqualified regardless of any consolidation benefit, so vision remains on
+Ollama and epic #52 closes as a documented partial consolidation rather
+than forcing the last step through.
+
+### Recommended-tier revisit
+
+This is stated as an evidence-backed limitation of the current
+minimum-spec hardware and llama.cpp build, not a permanent architectural
+ceiling. Two paths could reopen the question at the recommended tier
+(§"Reference Hardware & Model Tiers"):
+
+- A larger GPU with enough VRAM to hold Qwen2.5-VL at **Q8_0 or f16**
+  fully resident, to test whether higher-precision weights close the
+  grounding gap the 8GB card couldn't test.
+- A different VLM better suited to llama.cpp's `mtmd` stack, evaluated
+  against the same no-fabrication fixture before any migration is
+  attempted.
+
+Either revisit is future recommended-tier work, not scheduled Phase 2/3
+work — consistent with this document's discipline of never presenting a
+recommended-tier projection as a committed roadmap item.
 
 ## Orchestration
 
@@ -471,18 +562,22 @@ appliance, not a multi-region service:
   choreography would need.
 - **What gets backed up:** the OpenEMR MySQL volume (patient records, FHIR
   resources, uploaded source documents), the Ollama models volume
-  (`ollamamodels` — LLM, VLM, embedding model weights, so a restore doesn't
-  require re-downloading gigabytes of model weights), and the guideline
-  corpus's hybrid index (small, non-PHI, but backed up for continuity
-  rather than requiring a rebuild).
+  (`ollamamodels` — vision-only VLM weights, per
+  §"Inference Engines: the Final Partial-Consolidation Architecture"), the
+  llama.cpp models volume (`llamacppmodels` — the pinned answer-LLM and
+  embedding GGUFs), and the guideline corpus's hybrid index (small, non-PHI,
+  but backed up for continuity rather than requiring a rebuild) — so a
+  restore doesn't require re-downloading gigabytes of model weights for
+  either engine.
 - **Degraded modes.** Extends Phase 1's existing `/health` vs `/ready`
   distinction (`docs/ARCHITECTURE.md` §"Architecture Diagram"): `/health` reports the FastAPI process is up; `/ready` reports
   whether the process can actually serve a request end-to-end. Phase 2
-  extends `/ready`'s checks to the new models — if Ollama is unreachable,
-  or the configured VLM/embedding/reranker model isn't loaded, `/ready`
+  extends `/ready`'s checks to both engines — if Ollama (vision) is
+  unreachable, or either `llama-server` instance (answer/extract/rerank,
+  embeddings) is unreachable or hasn't finished loading its GGUF, `/ready`
   reports not-ready for the affected capability (document ingestion,
-  retrieval) while structured-data chat (Phase 1's core capability) can
-  continue to report ready independently, so a VLM outage degrades
+  retrieval, or answering) while the other capabilities can continue to
+  report ready independently, so an outage on one engine degrades
   gracefully rather than taking down the whole agent.
 
 ## TCO
