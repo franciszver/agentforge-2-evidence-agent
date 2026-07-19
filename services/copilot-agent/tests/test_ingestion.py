@@ -159,6 +159,78 @@ def test_attach_and_extract_calls_vlm_once_per_page_with_that_pages_image(fake_v
         assert len(images) == 1  # one image (this page) per call
 
 
+# ---------------------------------------------------------------------------
+# 2a. Issue #40: a repeat lab panel (same test extracted twice, e.g. across
+# two dated draws on different pages) must produce two INDEPENDENTLY citable
+# facts, not a collision on (source_id, field_or_chunk_id). Before the fix,
+# ``field_or_chunk_id`` was the test name alone, so this scenario either
+# silently last-won or (post-P3.6 interim guard) made
+# ``DocumentFactIndex.from_citations`` raise -- both wrong: two distinct,
+# real facts must each be checkable on their own terms.
+# ---------------------------------------------------------------------------
+
+
+def test_repeat_test_across_pages_gets_distinct_field_or_chunk_ids(store):
+    """Same test ("Glucose"), two different pages/dates/values -- the
+    ingestion-assembled citations must not collide on
+    (source_id, field_or_chunk_id)."""
+    page_1_rows = [
+        ExtractedLabRow(
+            test="Glucose", value="105", unit="mg/dL", reference_range="70-99",
+            collection_date="2026-01-01", abnormal_flag="H",
+        ),
+    ]
+    page_2_rows = [
+        ExtractedLabRow(
+            test="Glucose", value="250", unit="mg/dL", reference_range="70-99",
+            collection_date="2026-06-01", abnormal_flag="H",
+        ),
+    ]
+    vlm = _FakeVlmOllama([LabPageExtraction(rows=page_1_rows), LabPageExtraction(rows=page_2_rows)])
+
+    result = attach_and_extract(1, _FIXTURE_PATH, "lab_pdf", ollama_client=vlm, document_store=store, fact_store=store)
+
+    assert len(result.facts) == 2
+    first, second = result.facts
+    assert first.citation.source_id == second.citation.source_id  # same document
+    assert first.citation.field_or_chunk_id != second.citation.field_or_chunk_id
+
+    # Desired end state (P3.6a): both occurrences are independently indexable
+    # and citable -- building the RAW fact index from these two real
+    # citations must NOT raise (no key collision), and each citation must
+    # verify against ITS OWN occurrence's quote, fail-closed against the
+    # other's.
+    from app.schemas.ingestion import DocumentCitation
+    from app.verification import CitationStatus, CorpusChunkIndex, DocumentFactIndex, check_document_citation
+
+    fact_index = DocumentFactIndex.from_citations([first.citation, second.citation])
+    corpus_index = CorpusChunkIndex.from_chunks([])
+
+    correct_first = DocumentCitation(
+        source_type="lab_pdf",
+        source_id=first.citation.source_id,
+        page_or_section=first.citation.page_or_section,
+        field_or_chunk_id=first.citation.field_or_chunk_id,
+        quote_or_value=first.citation.quote_or_value,
+    )
+    assert check_document_citation(correct_first, fact_index, corpus_index).status is CitationStatus.VALID
+
+    # Fail-closed check: citing the FIRST occurrence's key but asserting the
+    # SECOND occurrence's quote must still mismatch -- uniqueness must not
+    # weaken the existing wrong-quote detection.
+    wrong_quote_for_first_key = DocumentCitation(
+        source_type="lab_pdf",
+        source_id=first.citation.source_id,
+        page_or_section=first.citation.page_or_section,
+        field_or_chunk_id=first.citation.field_or_chunk_id,
+        quote_or_value=second.citation.quote_or_value,
+    )
+    assert (
+        check_document_citation(wrong_quote_for_first_key, fact_index, corpus_index).status
+        is CitationStatus.VALUE_MISMATCH
+    )
+
+
 # P3.2 note: this test previously exercised "intake_form" as the unsupported
 # doc_type -- P3.2 implements that slice (see section 9 below), so it is now
 # a *supported* value and no longer proves anything about rejection. Updated
