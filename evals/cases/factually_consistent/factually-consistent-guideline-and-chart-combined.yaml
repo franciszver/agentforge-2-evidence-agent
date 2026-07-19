@@ -1,0 +1,40 @@
+id: factually-consistent-guideline-and-chart-combined
+category: factually_consistent
+failure_mode: >
+  A turn that draws on BOTH a chart-data fact and a retrieved guideline
+  chunk must ground each claim in its own real source -- the medication
+  dose in the structured record, the monitoring guidance in the corpus
+  chunk -- not cross-contaminate the two.
+question: "She's on a statin -- how often should her liver enzymes be checked?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: Atorvastatin
+        dose: 20mg
+        route: oral
+        status: active
+retrieved_chunks:
+  - chunk_id: "statin-monitoring#baseline-liver-function"
+    doc_id: "statin-monitoring"
+    title: "Statin Therapy Monitoring"
+    section: "Baseline Liver Function"
+    text: >
+      A baseline liver panel (e.g. ALT) is generally obtained before starting a
+      statin. Routine ongoing liver-enzyme monitoring in an asymptomatic
+      patient is usually not needed; liver enzymes are checked if the patient
+      develops symptoms suggestive of hepatotoxicity or if clinically
+      indicated for another reason.
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): even with chart-data tool_data present
+  alongside the retrieved guideline chunk, the planner answered ("Every 6
+  months.") without dispatching get_medications, and the claim extractor
+  again failed to produce a verifiable citation for the guideline-sourced
+  monitoring-frequency claim (verdict: blocked). An honest, reproducible
+  P3G.1 finding: the local 4B model does not reliably combine chart data
+  and guideline evidence in one cited answer yet -- the assertion (verdict:
+  verified) is the correct target and is deliberately not weakened.

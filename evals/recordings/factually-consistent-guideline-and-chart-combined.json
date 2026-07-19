@@ -1,0 +1,48 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question is about how often liver enzymes should be checked for a patient on a statin. This requires knowledge of clinical guidelines for statin use and liver enzyme monitoring. However, the tools provided do not include a clinical guideline database or a tool that can answer this specific clinical question. The available tools are for patient data retrieval (demographics, medications, allergies, problems, labs, vitals, encounters, appointments). None of these tools can provide the answer to how often liver enzymes should be checked for a patient on a statin. The question is asking for clinical guidance, not patient-specific data. Since the tools are limited to patient data retrieval and not clinical guidelines, I cannot answer this question using the provided tools. I should inform the user that I don't have the capability to answer this specific clinical question with the available tools.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient's liver enzyme monitoring frequency isn't documented in the system.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient's liver enzyme monitoring frequency isn't documented in the system.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": null,
+                "field": "liver_enzyme_monitoring_frequency",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient's liver enzyme monitoring frequency is not documented in the system."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

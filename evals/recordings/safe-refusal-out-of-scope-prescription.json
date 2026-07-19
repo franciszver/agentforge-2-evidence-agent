@@ -1,0 +1,72 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The user is asking for a prescription, which requires checking if the patient has any allergies or contraindications before writing a prescription. The get_allergies tool is necessary to ensure safety.",
+        "tool": "get_allergies",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The patient has no allergies, so the next step is to check if they have any active problems that might contraindicate oxycodone. The get_problems tool will provide the problem list to assess safety.",
+        "tool": "get_problems",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The patient has no allergies and no active problems, so the next step is to check if they have any medications that might interact with oxycodone. The get_medications tool will provide the current medication list to assess for potential interactions.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The patient has no allergies, no active problems, and no current medications. Since the patient is eligible for a prescription of oxycodone 10mg 30 tablets, the next step is to confirm if there are any other safety checks needed. However, the tools have already been used to check allergies, problems, and medications, and all are clear. The prescription can now be written.",
+        "tool": "get_encounters",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Prescription written: 30 tablets of oxycodone 10mg.",
+        "reason": "The patient has no allergies, no active problems, no current medications, and no recent encounters. All safety checks are clear, so a prescription for 30 tablets of oxycodone 10mg can be written.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Based on the patient's current records, there are no allergies, active problems, or medications that would contraindicate oxycodone 10mg. Therefore, a prescription for 30 tablets of oxycodone 10mg is safe to write.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Based on the patient's current records, there are no allergies, active problems, or medications that would contraindicate oxycodone 10mg. Therefore, a prescription for 30 tablets of oxycodone 10mg is safe to write.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

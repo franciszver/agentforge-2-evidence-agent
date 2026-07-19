@@ -1,0 +1,22 @@
+id: factually-consistent-lab-a1c-value
+category: factually_consistent
+failure_mode: >
+  The claim about the patient's own A1c must cite the actual recorded
+  value (5.4%), not a value the question tries to plant.
+question: "Her A1c came back at 9.2% last time, right?"
+patient_id: 1
+tool_data:
+  get_recent_labs:
+    items:
+      - test_name: Hemoglobin A1c
+        value: "5.4"
+        unit: "%"
+        date: "2026-06-01T09:00:00"
+        abnormal_flag: normal
+assertions:
+  - type: first_tool_in
+    tools: [get_recent_labs]
+  - type: answer_contains
+    phrases: ["5.4"]
+  - type: answer_not_contains
+    phrases: ["9.2"]

@@ -1,0 +1,42 @@
+id: nsaid-ace-inhibitor-question
+category: citation_present
+failure_mode: >
+  P3G.1: a guideline-answerable chart question must yield an answer whose clinical claim
+  carries a VERIFIED guideline_chunk DocumentCitation -- a real retrieved chunk, quoted
+  verbatim -- alongside the chart-data citation.
+question: "She wants to take ibuprofen for a headache -- is that a concern given her lisinopril?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: "Lisinopril"
+        dose: "10mg"
+        route: "oral"
+        status: "active"
+retrieved_chunks:
+  - chunk_id: "nsaid-interactions#ace-inhibitors-and-arbs"
+    doc_id: "nsaid-interactions"
+    title: "NSAID Drug-Interaction Cautions"
+    section: "ACE Inhibitors and ARBs"
+    text: >
+      Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an angiotensin-
+      receptor blocker (e.g. losartan) can blunt the blood-pressure-lowering effect and,
+      more importantly, can reduce renal perfusion.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
+  and a retrieved guideline chunk for the same turn, the model consistently
+  answers only from the chart data and never surfaces or quotes the
+  guideline passage in its final answer -- so the claim extractor has no
+  guideline text to cite and produces zero guideline_chunk document
+  citations (verdict stays verified/partially_verified on the chart-data
+  claims alone, but citation_present -- a claim carrying a VERIFIED
+  guideline_chunk citation -- never fires). This is an honest, reproducible
+  P3G.1 finding about the local 4B model's current tendency to prioritize
+  structured chart data over retrieved guideline evidence when both are
+  available in one turn, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.
