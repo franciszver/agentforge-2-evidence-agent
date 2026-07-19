@@ -11,8 +11,10 @@ so ``get_spans(correlation_id)`` (and the P4.5 dashboard / P4.9 review queue
 built on it) can join them. No separate foreign key or lookup is needed.
 
 Persistence posture -- HARD FAIL, not best-effort. This is the one place in
-the trace-store seam that deliberately differs from ``app.chat``'s
-``_record_span_best_effort``: request/verification spans are passive
+the trace-store seam that deliberately differs from
+``app.trace_store.record_span_best_effort`` (used by ``app.chat``'s
+tool/llm/request/verification spans and ``app.supervisor``'s worker spans):
+request/verification spans are passive
 telemetry the clinician never asked for, so a write failure there is logged
 and swallowed rather than breaking the chat response. Feedback is the
 opposite -- a clinician deliberately clicked thumbs up/down (P4.4's UI). If

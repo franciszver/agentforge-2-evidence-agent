@@ -57,6 +57,7 @@ from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
 from app.schemas.reranking import RerankedChunk
+from app.trace_store import TraceStore, record_span_best_effort
 
 _logger = logging.getLogger(__name__)
 
@@ -186,11 +187,23 @@ class Supervisor:
     """Routes one sub-task to the worker that owns its capability, tracing
     and logging the handoff both ways (see module docstring)."""
 
-    def __init__(self, *, intake_worker: Worker, evidence_worker: Worker) -> None:
+    def __init__(
+        self,
+        *,
+        intake_worker: Worker,
+        evidence_worker: Worker,
+        trace_store: TraceStore | None = None,
+    ) -> None:
         self._workers: dict[type, Worker] = {
             IngestSubTask: intake_worker,
             RetrieveSubTask: evidence_worker,
         }
+        # P3.8: optional -- when supplied, every handoff also gets a durable
+        # ``worker`` span (app.trace_store.TraceStore.record_worker_span),
+        # feeding app.encounter_observability's per-encounter record. ``None``
+        # (the default) keeps every existing caller/test -- which construct a
+        # ``Supervisor`` with no trace store at all -- byte-identical.
+        self._trace_store = trace_store
 
     def handle(self, sub_task: SubTask) -> SupervisorResult:
         """Route ``sub_task`` to its owning worker and return its result.
@@ -223,9 +236,54 @@ class Supervisor:
                 error_type = type(exc).__name__
                 raise
             finally:
-                duration_ms = (time.time() - start_ts) * 1000
+                end_ts = time.time()
+                duration_ms = (end_ts - start_ts) * 1000
                 if error_type is None:
                     _log_handoff("handoff_result", log_context, duration_ms=duration_ms)
                 else:
                     _log_handoff("handoff_failed", log_context, duration_ms=duration_ms, error_type=error_type)
+                self._record_worker_span(
+                    worker=worker,
+                    worker_span=worker_span,
+                    sub_task=sub_task,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    error_type=error_type,
+                )
             return payload
+
+    def _record_worker_span(
+        self,
+        *,
+        worker: Worker,
+        worker_span: SpanContext,
+        sub_task: SubTask,
+        start_ts: float,
+        end_ts: float,
+        error_type: str | None,
+    ) -> None:
+        """Persist the just-completed handoff as a durable ``worker`` span,
+        best-effort (P3.8) -- a trace-store write failure must never break a
+        handoff that otherwise succeeded. Shares ``app.trace_store``'s
+        ``record_span_best_effort`` with ``app.chat``'s tool/llm spans
+        rather than reimplementing the same try/except-log-continue
+        discipline here. No-op when no ``trace_store`` was injected (the
+        default)."""
+        if self._trace_store is None:
+            return
+        trace_store = self._trace_store
+
+        def _write_worker_span() -> int:
+            return trace_store.record_worker_span(
+                correlation_id=worker_span.correlation_id,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                ok=error_type is None,
+                worker_name=worker.name,
+                sub_task_type=type(sub_task).__name__,
+                span_id=worker_span.span_id,
+                parent_span_id=worker_span.parent_span_id,
+                error_category=error_type,
+            )
+
+        record_span_best_effort(_logger, "worker_span", _write_worker_span)
