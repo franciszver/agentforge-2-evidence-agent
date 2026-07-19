@@ -141,8 +141,10 @@ class Settings(BaseSettings):
     # retrieve + rerank over the PUBLIC guideline corpus, app.retrieval /
     # app.reranking) and offers the retrieved chunks to the claim extractor
     # as citable evidence -- see app/chat.py's get_evidence_retriever.
-    # Default OFF -- flag off keeps /chat byte-identical to before this
-    # existed (no retrieval call, no extra Ollama embedding round trip).
+    # Default OFF -- evidence retrieval itself is flag-gated (no retrieval
+    # call, no extra Ollama embedding round trip when off). Per-turn encounter
+    # logging (P3.8, non-PHI counts/timings only) is always-on regardless of
+    # this flag -- see app/chat.py's _log_encounter_record.
     copilot_evidence_retrieval_enabled: bool = False
 
 

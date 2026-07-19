@@ -13,6 +13,7 @@ script never drift apart.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 
 import pytest
@@ -109,6 +110,45 @@ def test_sparse_index_handles_punctuation_in_query_without_raising():
     hits = index.search("Can I give ibuprofen with lisinopril?", k=5)
 
     assert isinstance(hits, list)
+
+
+def test_sparse_index_search_from_a_different_thread_than_construction_does_not_raise():
+    """Regression guard: a process-wide singleton ``HybridRetriever`` (e.g.
+    ``app.chat``'s cached evidence-retrieval workers, P3.9) is built once on
+    whatever thread happens to run first, but ``POST /chat`` handles each
+    request on a Starlette/anyio THREADPOOL worker thread -- a different
+    thread than the one that built the singleton. ``sqlite3.connect(...)``
+    defaults to ``check_same_thread=True``, so reusing that connection from
+    another thread raises ``sqlite3.ProgrammingError`` -- caught by
+    ``app.chat``'s fail-soft catch, silently returning ``[]`` on essentially
+    every flag-on request in production (masked entirely in a
+    single-threaded ``TestClient`` test, which is why this gap shipped).
+
+    Builds the index on the main (test) thread, then calls ``search`` from a
+    genuinely different ``threading.Thread`` -- must return real hits, not
+    raise."""
+    chunks = [
+        Chunk(chunk_id="doc-a#one", doc_id="doc-a", title="Doc A", section="One", text="ibuprofen and lisinopril caution"),
+        Chunk(chunk_id="doc-b#one", doc_id="doc-b", title="Doc B", section="One", text="unrelated content about diet"),
+    ]
+    index = SparseIndex(chunks)
+
+    result: dict[str, object] = {}
+
+    def _search_from_worker_thread() -> None:
+        try:
+            result["hits"] = index.search("ibuprofen lisinopril", k=5)
+        except BaseException as exc:  # noqa: BLE001 -- captured for the assertion below
+            result["error"] = exc
+
+    worker = threading.Thread(target=_search_from_worker_thread)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert "error" not in result, f"cross-thread search raised: {result.get('error')!r}"
+    hits = result.get("hits")
+    assert hits, "expected real hits from the cross-thread search, got none"
+    assert hits[0][0] == "doc-a#one"  # type: ignore[index]
 
 
 # --- DenseIndex (cosine similarity + embedding-drift detection) -------------

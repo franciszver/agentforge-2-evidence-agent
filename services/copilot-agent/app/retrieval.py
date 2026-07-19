@@ -54,6 +54,7 @@ import json
 import math
 import re
 import sqlite3
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -228,35 +229,67 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 class SparseIndex:
-    """BM25 sparse search over the corpus via SQLite FTS5."""
+    """BM25 sparse search over the corpus via SQLite FTS5.
+
+    **Thread-safety (P3.9 security-review finding).** A caller may hold one
+    ``SparseIndex`` (via ``HybridRetriever``) as a process-wide singleton
+    reused across requests -- e.g. ``app.chat``'s cached evidence-retrieval
+    workers, built once but invoked from whatever Starlette/anyio
+    THREADPOOL worker thread happens to handle a given ``/chat`` request.
+    ``sqlite3.connect(...)`` defaults to ``check_same_thread=True``, which
+    raises ``sqlite3.ProgrammingError`` the moment the connection is used
+    from any thread other than the one that created it -- exactly the
+    "works in a single-threaded test, silently returns nothing in
+    production" shape this class was shipped with. Fixed here with
+    ``check_same_thread=False`` plus a ``threading.Lock`` around every
+    statement: SQLite's in-memory FTS5 connection is not safe for
+    genuinely concurrent access from multiple threads, so the lock (not
+    just disabling the same-thread check) is required, not optional.
+    ``app.trace_store`` avoids this entire class of bug by opening a fresh
+    connection per call instead of caching one across threads/requests --
+    see that module's own docstring; a fresh in-memory FTS5 index over this
+    corpus's ~40 chunks is cheap enough to rebuild per request too (see
+    ``app.chat``'s ``_get_evidence_workers``), but the immutable HEAVY parts
+    (parsed corpus, hash-verified dense embeddings, the Ollama embedder/
+    reranker clients) still only pay their cost once, process-wide.
+    """
 
     def __init__(self, chunks: Sequence[Chunk]) -> None:
-        self._conn = sqlite3.connect(":memory:")
-        self._conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5"
-            "(chunk_id UNINDEXED, title, section, text)"
-        )
-        self._conn.executemany(
-            "INSERT INTO chunks_fts (chunk_id, title, section, text) VALUES (?, ?, ?, ?)",
-            [(chunk.chunk_id, chunk.title, chunk.section, chunk.text) for chunk in chunks],
-        )
-        self._conn.commit()
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        with self._lock:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5"
+                "(chunk_id UNINDEXED, title, section, text)"
+            )
+            self._conn.executemany(
+                "INSERT INTO chunks_fts (chunk_id, title, section, text) VALUES (?, ?, ?, ?)",
+                [(chunk.chunk_id, chunk.title, chunk.section, chunk.text) for chunk in chunks],
+            )
+            self._conn.commit()
 
     def search(self, query: str, k: int) -> list[tuple[str, float]]:
         """Return up to ``k`` ``(chunk_id, score)`` pairs, best first.
         ``score`` is the negated FTS5 ``bm25()`` value -- FTS5's ``bm25()``
         is *lower-is-better* (it is a cost, not a relevance score); negating
         it gives the higher-is-better convention this module uses
-        everywhere else (dense cosine similarity, fused RRF scores)."""
-        cursor = self._conn.execute(
-            "SELECT chunk_id, bm25(chunks_fts) AS rank FROM chunks_fts "
-            "WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
-            (_fts_query(query), k),
-        )
-        return [(chunk_id, -rank) for chunk_id, rank in cursor.fetchall()]
+        everywhere else (dense cosine similarity, fused RRF scores).
+
+        Locked (see class docstring): safe to call from any thread,
+        including a different one than constructed this instance, but not
+        safe to call CONCURRENTLY from two threads at once -- the lock
+        serializes those calls rather than allowing a data race."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT chunk_id, bm25(chunks_fts) AS rank FROM chunks_fts "
+                "WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
+                (_fts_query(query), k),
+            )
+            return [(chunk_id, -rank) for chunk_id, rank in cursor.fetchall()]
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 class DenseIndex:
