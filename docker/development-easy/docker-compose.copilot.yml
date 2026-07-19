@@ -160,6 +160,103 @@ services:
       timeout: 5s
       retries: 3
 
+  # P3.10b (epic #52 step 2): a SECOND llama-server instance, running in
+  # `--embedding` mode, serving `nomic-embed-text-v1.5` -- migrates dense-
+  # vector embeddings for hybrid guideline-corpus retrieval off `ollama`.
+  # Distinct container/GGUF from `llama-server` above (that one serves
+  # chat/extract/rerank, plain decoding, no `--embedding`); nomic-embed is
+  # tiny (~274MB, same size class as Ollama's own nomic-embed-text tag) so
+  # it stays GPU-resident alongside the 8B-Q5 chat model with room to spare.
+  #
+  # `--pooling mean` matches nomic-embed's expected pooling strategy (mean
+  # over token embeddings); llama.cpp errors out at load time if a
+  # nomic-bert-architecture GGUF is loaded without an explicit pooling type.
+  # Un-normalized output is fine: `app.retrieval`'s cosine similarity is
+  # scale-invariant per vector, so an engine-side normalization difference
+  # from Ollama's never changes retrieval ranking (see
+  # app/llama_server_embed_client.py's module docstring).
+  #
+  # Image pin: same `server-cuda-b10068` tag/digest as `llama-server` above
+  # (one llama.cpp build serves both roles).
+  #
+  # GGUF pin: `gguf-init-embed` downloads a specific Hugging Face revision
+  # (a commit SHA, not `main`) into the `llamacppembedmodels` named volume
+  # before `llama-server-embed` starts, same reproducibility discipline as
+  # `gguf-init` above:
+  #   repo:     nomic-ai/nomic-embed-text-v1.5-GGUF
+  #   revision: 0188c9bf409793f810680a5a431e7b899c46104c
+  #   file:     nomic-embed-text-v1.5.f16.gguf (~274MB, full fp16 precision
+  #             -- chosen over a quantized variant to minimize embedding
+  #             drift from Ollama's own nomic-embed-text weights, since this
+  #             is the tiny embedding model, not the 8B chat model where
+  #             quantization is a real memory/speed tradeoff)
+  #
+  # Egress note: same pattern as `gguf-init` -- `gguf-init-embed` is the only
+  # place in this service pair that reaches the public internet (Hugging
+  # Face), on the compose `default` network. `llama-server-embed` itself
+  # only reads the already-downloaded GGUF from the shared volume, so it
+  # stays `copilot_internal`-only (no egress), same as every other inference
+  # service in this overlay.
+  gguf-init-embed:
+    image: python:3.12-slim
+    volumes:
+      - llamacppembedmodels:/models
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        GGUF_FILE=nomic-embed-text-v1.5.f16.gguf
+        if [ -f "/models/$${GGUF_FILE}" ]; then
+          echo "GGUF already present, skipping download"; exit 0
+        fi
+        pip install --no-cache-dir --quiet "huggingface_hub[cli]"
+        hf download nomic-ai/nomic-embed-text-v1.5-GGUF \
+          --revision 0188c9bf409793f810680a5a431e7b899c46104c \
+          --include "nomic-embed-text-v1.5.f16.gguf" \
+          --local-dir /tmp/gguf-download
+        mv "/tmp/gguf-download/nomic-embed-text-v1.5.f16.gguf" "/models/$${GGUF_FILE}"
+    networks:
+      - default
+
+  llama-server-embed:
+    restart: always
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10068@sha256:b8791d2ab8c51570e75067f626db7a271caa3e99396056f2721fac432e03c852
+    volumes:
+      - llamacppembedmodels:/models
+    command:
+      - "--model"
+      - "/models/nomic-embed-text-v1.5.f16.gguf"
+      - "--embedding"
+      - "--pooling"
+      - "mean"
+      - "--ctx-size"
+      - "2048"
+      - "--n-gpu-layers"
+      - "999"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+    depends_on:
+      gguf-init-embed:
+        condition: service_completed_successfully
+    networks:
+      - copilot_internal
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health || exit 1"]
+      start_period: 60s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   agent:
     build:
       context: ../../services/copilot-agent
@@ -167,19 +264,25 @@ services:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
       # P3.10e (issue #73): default "llama_server" -- flip to "ollama" for
-      # instant rollback of the answer/extract/reranker roles. Embeddings
-      # always use OLLAMA_BASE_URL above regardless of this flag.
+      # instant rollback of the answer/extract/reranker roles.
       COPILOT_LLM_ENGINE: llama_server
       LLAMA_SERVER_BASE_URL: http://llama-server:8080
+      # P3.10b (issue #75): default "llama_server" -- flip to "ollama" for
+      # instant rollback of dense-vector embeddings specifically (this flag
+      # is independent of COPILOT_LLM_ENGINE above).
+      COPILOT_EMBED_ENGINE: llama_server
+      LLAMA_SERVER_EMBED_BASE_URL: http://llama-server-embed:8080
     networks:
       - copilot_internal
     depends_on:
       ollama:
         condition: service_started
-      # llama-server is now default-on (no longer profile-gated), so the
-      # agent waits for it to report healthy before starting, same as any
-      # other core dependency.
+      # llama-server and llama-server-embed are both default-on (no longer
+      # profile-gated), so the agent waits for each to report healthy
+      # before starting, same as any other core dependency.
       llama-server:
+        condition: service_healthy
+      llama-server-embed:
         condition: service_healthy
 
 networks:
@@ -189,3 +292,4 @@ networks:
 volumes:
   ollamamodels: {}
   llamacppmodels: {}
+  llamacppembedmodels: {}
