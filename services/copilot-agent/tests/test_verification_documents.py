@@ -247,6 +247,120 @@ def test_guideline_chunk_citation_with_hallucinated_paraphrase_fails():
 
 
 # ---------------------------------------------------------------------------
+# (c2) P3G.1b whitespace-normalized substring check: a faithful quote that
+# only differs from the raw chunk in whitespace (e.g. a line-folded hyphen)
+# now verifies; a quote with an actual different/added/changed WORD still
+# fails -- the no-fabrication guarantee is unaffected by normalization.
+# ---------------------------------------------------------------------------
+
+_LINE_FOLDED_CHUNK_TEXT = (
+    "LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL; borderline-"
+    " high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or above."
+)
+_LINE_FOLDED_CHUNK_ID = "lipid-panel-reference#general-reference-categories"
+
+
+def test_guideline_chunk_citation_with_line_folded_whitespace_now_verifies():
+    # The chunk stores a line-folded hyphen ("borderline-" + " high" -- an
+    # extra internal space from the source's line wrap). A model that
+    # faithfully quotes the same words but collapses that internal space
+    # (emits "borderline-high") must now VERIFY -- this is the exact
+    # lipid-panel-ldl-question near-miss this fix targets.
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+    citation = _chunk_citation(
+        source_id="lipid-panel-reference",
+        field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+        quote_or_value="borderline-high 130-159 mg/dL",
+    )
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.VALID
+    assert result.passed is True
+
+
+def test_guideline_chunk_citation_with_extra_internal_whitespace_still_verifies():
+    # The inverse direction: the quote reproduces the chunk's own extra
+    # internal space verbatim -- must still verify (this already passed
+    # before the fix; regression guard that normalization doesn't break it).
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+    citation = _chunk_citation(
+        source_id="lipid-panel-reference",
+        field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+        quote_or_value="borderline- high 130-159 mg/dL",
+    )
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.VALID
+    assert result.passed is True
+
+
+def test_guideline_chunk_citation_with_changed_word_still_fails_no_fabrication():
+    # No-fabrication guard, proven post-fix: a quote differing by an actual
+    # WORD (not whitespace) -- "borderline-high" vs the chunk's "near-optimal"
+    # range wording -- must still fail. Whitespace normalization must never
+    # let a substantively different quote through.
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+    citation = _chunk_citation(
+        source_id="lipid-panel-reference",
+        field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+        quote_or_value="borderline-high 100-129 mg/dL",  # wrong range -- not in the chunk
+    )
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.QUOTE_NOT_FOUND
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_with_added_word_still_fails_no_fabrication():
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+    citation = _chunk_citation(
+        source_id="lipid-panel-reference",
+        field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+        quote_or_value="borderline-high and rising 130-159 mg/dL",  # words inserted mid-quote
+    )
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.QUOTE_NOT_FOUND
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_empty_quote_still_fails_after_normalization():
+    # Empty/whitespace-only guard runs BEFORE normalization -- unaffected.
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+
+    result = check_document_citation(
+        _bypassed_chunk_citation("   \n\t  "), _fact_index(), corpus_index
+    )
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+def test_guideline_chunk_citation_short_quote_still_fails_after_normalization():
+    # Length-floor guard runs BEFORE normalization -- unaffected: a short
+    # quote with only whitespace variation is still too short to be a
+    # meaningful citation.
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+
+    result = check_document_citation(
+        _chunk_citation(
+            source_id="lipid-panel-reference",
+            field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+            quote_or_value="a  b",
+        ),
+        _fact_index(),
+        corpus_index,
+    )
+
+    assert result.status is CitationStatus.EMPTY_QUOTE
+    assert result.passed is False
+
+
+# ---------------------------------------------------------------------------
 # (d) a citation with a nonexistent source_id/chunk_id fails (no fabrication)
 # ---------------------------------------------------------------------------
 
