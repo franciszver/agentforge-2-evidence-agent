@@ -717,3 +717,24 @@ def test_list_citations_for_patient_never_returns_a_different_patients_citations
 
 def test_list_citations_for_patient_with_no_ingested_documents_returns_empty(store):
     assert store.list_citations_for_patient(999) == []
+
+
+def test_list_citations_for_patient_requires_a_type_strict_int_match(tmp_path: Path):
+    """Defense-in-depth: a sidecar whose stored ``patient_id`` is a float
+    (e.g. ``101.0`` from some future ingestion path) must NOT match the int
+    ``101`` via Python numeric equality -- the compare is type-strict, so a
+    non-int stored id can never coincide with a different patient's id."""
+    store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
+    facts_dir = tmp_path / "ingestion" / "facts"
+    citation = {
+        "source_type": "lab_pdf",
+        "source_id": "deadbeef" * 4,
+        "page_or_section": "page 1",
+        "field_or_chunk_id": "Hemoglobin A1c#page1-row0",
+        "quote_or_value": "Hemoglobin A1c: 5.4",
+    }
+    (facts_dir / "float_pid.json").write_text(
+        json.dumps({"patient_id": 101.0, "source_id": "deadbeef" * 4, "facts": [{"citation": citation}]})
+    )
+
+    assert store.list_citations_for_patient(101) == []

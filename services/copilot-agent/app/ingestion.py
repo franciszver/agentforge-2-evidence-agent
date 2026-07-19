@@ -635,14 +635,21 @@ class LocalIngestionStore:
         caller's request) equals ``patient_id`` -- a document saved under a
         different patient never contributes a citation here, regardless of
         which document happens to be read first or how many other patients'
-        facts are stored alongside it. Fails closed (skips, never raises) on
-        a malformed/unreadable sidecar, the same discipline as
-        ``read_source_patient_id``.
+        facts are stored alongside it. The stored value must be an ``int``
+        that equals ``patient_id`` (the same ``isinstance(..., int)``
+        discipline as ``read_source_patient_id``) -- a type-strict compare so
+        a non-int stored ``patient_id`` (e.g. a float ``101.0`` from some
+        future ingestion path) can never numerically coincide with a
+        different patient's id. Fails closed (skips, never raises) on a
+        malformed/unreadable sidecar.
         """
         citations: list[Citation] = []
         for fact_path in (self._base_dir / "facts").glob("*.json"):
             payload = self._read_json_sidecar(fact_path)
-            if payload is None or payload.get("patient_id") != patient_id:
+            if payload is None:
+                continue
+            stored_patient_id = payload.get("patient_id")
+            if not isinstance(stored_patient_id, int) or stored_patient_id != patient_id:
                 continue
             facts = payload.get("facts")
             if not isinstance(facts, list):
