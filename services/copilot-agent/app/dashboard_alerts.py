@@ -66,6 +66,7 @@ difference or a value a clinician would notice.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
@@ -200,12 +201,12 @@ _EVAL_REGRESSION_EXPLANATION = (
 def _eval_regression(eval_history: Sequence[EvalRunPoint]) -> float | None:
     """Pass-rate drop between the two most recent recorded eval runs, or
     ``None`` when there are fewer than two points to compare (nothing yet to
-    regress against). Sorted by timestamp -- callers are not required to
-    pass ``eval_history`` pre-sorted."""
+    regress against). Picks the two most recent by timestamp -- callers are
+    not required to pass ``eval_history`` pre-sorted -- without sorting the
+    whole history just to find them."""
     if len(eval_history) < 2:
         return None
-    ordered = sorted(eval_history, key=lambda point: point.timestamp)
-    previous, current = ordered[-2], ordered[-1]
+    current, previous = heapq.nlargest(2, eval_history, key=lambda point: point.timestamp)
     return previous.pass_rate - current.pass_rate
 
 
