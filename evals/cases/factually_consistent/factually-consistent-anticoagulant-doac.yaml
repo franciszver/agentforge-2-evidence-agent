@@ -11,31 +11,20 @@ retrieved_chunks:
     doc_id: "anticoagulant-interactions"
     title: "Anticoagulant and Antiplatelet Interaction Cautions"
     section: "Direct Oral Anticoagulants (DOACs)"
-    text: >
+    text: |-
       DOACs (e.g. apixaban, rivaroxaban, dabigatran) have fewer dietary
-      interactions than warfarin but still carry bleeding-risk interactions
-      with NSAIDs, antiplatelet agents, and strong inhibitors of the
-      metabolic/transport pathways involved in their clearance (e.g. certain
-      antifungals, some antiretrovirals) -- these can raise DOAC levels and
-      bleeding risk.
+      interactions than warfarin but still carry bleeding-risk interactions with
+      NSAIDs, antiplatelet agents, and strong inhibitors of the metabolic/
+      transport pathways involved in their clearance (e.g. certain antifungals,
+      some antiretrovirals) — these can raise DOAC levels and bleeding risk.
 assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): despite no chart-data tool_data being
-  provided for this patient (the question is guideline-only), the planner
-  still calls get_medications, finds an empty medication list, and answers
-  by declaring the question moot for this patient ("not currently taking
-  any anticoagulants ... no dietary interactions to evaluate") -- never
-  engaging with the retrieved DOAC-vs-warfarin guideline chunk at all. The
-  one citation the extractor produces is a real, correctly-grounded
-  SourceRef against that empty medication list, not a fabrication -- but
-  because the guideline chunk is never quoted or cited, the claim fails
-  citation re-validation (verdict: blocked) even though a real,
-  verbatim-quotable guideline chunk was available. This is an honest,
-  reproducible P3G.1 finding about the local 4B model's tendency to deflect
-  a general guideline question onto irrelevant patient-specific data
-  instead of answering from the retrieved evidence, not a harness bug --
-  the assertion (verdict: verified) is the correct target and is
-  deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b): get_medications returns an empty items
+  list. The extracted claims never cite the retrieved guideline chunk
+  (zero document_citations); each carries a SourceRef citing record_id '0'
+  on that empty list, which has no record at that index, so
+  ``check_source_ref`` returns UNKNOWN_RECORD for every claim. verdict:
+  blocked; guideline_citation_present never fires.

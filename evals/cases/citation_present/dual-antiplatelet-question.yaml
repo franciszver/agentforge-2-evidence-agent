@@ -22,10 +22,12 @@ retrieved_chunks:
     doc_id: "anticoagulant-interactions"
     title: "Anticoagulant and Antiplatelet Interaction Cautions"
     section: "Dual Antiplatelet Therapy"
-    text: >
+    text: |-
       Combining aspirin with a second antiplatelet agent (e.g. clopidogrel) is a
-      deliberate, time-limited therapy in specific clinical situations (e.g. after a
-      coronary stent).
+      deliberate, time-limited therapy in specific clinical situations (e.g. after
+      a coronary stent) — it is not an incidental combination, and its bleeding
+      risk is generally accepted as a tradeoff during that defined window, with
+      duration reassessed at follow-up.
     rerank_score: 0.9
 assertions:
   - type: verdict

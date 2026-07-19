@@ -18,25 +18,27 @@ retrieved_chunks:
     doc_id: "statin-monitoring"
     title: "Statin Therapy Monitoring"
     section: "Baseline Liver Function"
-    text: >
-      Routine ongoing liver-enzyme monitoring in an asymptomatic patient is usually not
-      needed; liver enzymes are checked if the patient develops symptoms suggestive of
-      hepatotoxicity.
+    text: |-
+      A baseline liver panel (e.g. ALT) is generally obtained before starting a
+      statin. Routine ongoing liver-enzyme monitoring in an asymptomatic patient
+      is usually not needed; liver enzymes are checked if the patient develops
+      symptoms suggestive of hepatotoxicity (e.g. unexplained fatigue, jaundice,
+      right-upper-quadrant pain) or if clinically indicated for another reason.
     rerank_score: 0.9
 assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b): the claim extractor emits two
+  document_citations entries for the liver-function-monitoring chunk. Both
+  give "field_or_chunk_id" as the bare section slug
+  ("baseline-liver-function") instead of the fully-qualified chunk id
+  ("statin-monitoring#baseline-liver-function"), so
+  ``check_document_citation`` returns UNKNOWN_CHUNK. Separately, the quoted
+  text ends "...suggestive of hepatotoxicity." where the real chunk
+  continues "(e.g. unexplained fatigue, jaundice, right-upper-quadrant
+  pain) or if clinically indicated for another reason." -- so the quote is
+  not a verbatim substring of the real chunk text even under a correct
+  chunk id. verdict stays partially_verified; guideline_citation_present
+  never fires.

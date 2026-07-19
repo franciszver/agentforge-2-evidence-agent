@@ -18,25 +18,37 @@ retrieved_chunks:
     doc_id: "anticoagulant-interactions"
     title: "Anticoagulant and Antiplatelet Interaction Cautions"
     section: "Warfarin-Specific Cautions"
-    text: >
-      Common interaction cautions include certain antibiotics (e.g. some fluoroquinolones,
-      metronidazole, trimethoprim-sulfamethoxazole) which can potentiate warfarin's
-      effect.
+    text: |-
+      Warfarin's effect is sensitive to many interacting drugs and to vitamin K
+      intake. Common interaction cautions include: NSAIDs and other antiplatelet
+      agents (see `nsaid-interactions`), certain antibiotics (e.g. some
+      fluoroquinolones, metronidazole, trimethoprim-sulfamethoxazole) which can
+      potentiate warfarin's effect, and amiodarone, which can meaningfully raise
+      INR. Any new interacting medication started alongside warfarin generally
+      warrants closer INR monitoring for a period after the change.
     rerank_score: 0.9
 assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+# Eval-integrity fix (see git history): this case was previously marked as a
+# genuine PASS on the strength of a DOCTORED retrieved_chunks fixture -- its
+# `text` was a paraphrase/compression of the real corpus section
+# (services/copilot-agent/corpus/anticoagulant-interactions.md
+# #warfarin-specific-cautions) that dropped the "Warfarin's effect is
+# sensitive to many interacting drugs and to vitamin K intake." lead-in and
+# the "...and amiodarone, which can meaningfully raise INR." clause. The
+# fixture above is now the REAL, complete corpus section text; see the
+# xfail reason below for the honest result against it.
 xfail: >
-  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b) against the real, complete guideline chunk:
+  the model surfaces a guideline_chunk DocumentCitation for this turn, but
+  its extracted quote is a paraphrase/compression of the real corpus
+  section (it drops the "NSAIDs and other antiplatelet agents" clause and
+  the leading/trailing sentences), so it is not a verbatim substring of the
+  real chunk text and fails QUOTE_NOT_FOUND -- verdict stays
+  partially_verified and guideline_citation_present never fires. An honest,
+  reproducible P3G.1 finding about the local 4B model's tendency to
+  compress a retrieved guideline passage rather than quote it verbatim, not
+  a harness bug -- the assertions are the correct target and are
+  deliberately not weakened.

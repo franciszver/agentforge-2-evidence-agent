@@ -18,10 +18,14 @@ retrieved_chunks:
     doc_id: "renal-function-monitoring"
     title: "Renal Function Monitoring on Nephrotoxic-Risk Medications"
     section: "ACE Inhibitors and ARBs"
-    text: >
-      A baseline creatinine/eGFR and potassium is typically checked before starting an ACE
-      inhibitor or ARB, with a recheck at roughly 1-2 weeks after starting or up-
-      titrating.
+    text: |-
+      A baseline creatinine/eGFR and potassium is typically checked before
+      starting an ACE inhibitor or ARB, with a recheck at roughly 1-2 weeks after
+      starting or up-titrating. A rise in creatinine up to about 30% from baseline
+      is commonly considered an expected, acceptable hemodynamic effect rather
+      than a reason to stop; a larger rise, or a significant potassium increase,
+      generally prompts reassessment of the regimen. See `nsaid-interactions` for
+      the added risk when an NSAID is also present.
     rerank_score: 0.9
 assertions:
   - type: verdict
