@@ -83,6 +83,7 @@ from app.ollama_client import LlmCallStats, OllamaError
 from app.planner import PlannerResult
 from app.rendering import RenderedAnswer, render_answer
 from app.schemas.planner import ToolName
+from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
     AllergiesOutput,
     AllergyItem,
@@ -93,7 +94,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.verdict import VerdictResult, compute_verdict
-from app.verification import CacheIndex, check_claims, recency_notices
+from app.verification import CacheIndex, CorpusChunkIndex, check_claims, recency_notices
 
 _logger = logging.getLogger(__name__)
 
@@ -115,10 +116,23 @@ class _Extractor(Protocol):
 
 class ClaimExtractorLike(Protocol):
     """What ``run_verification`` needs from an extractor. ``ClaimExtractor``
-    satisfies this; hermetic tests inject a scripted double."""
+    satisfies this; hermetic tests inject a scripted double.
+
+    ``retrieved_chunks`` (P3.9) is an ADDITIVE, optional capability -- the
+    P3.5 evidence-retriever worker's reranked guideline-corpus chunks for
+    this turn's question, offered as extra citable evidence alongside the
+    tool-result catalog. Defaulting to ``()`` means ``run_verification``
+    only ever passes it explicitly when non-empty (see that function), so
+    every pre-existing test double that implements this Protocol without the
+    parameter keeps working unmodified."""
 
     def extract_claims(
-        self, *, answer: str, tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None]
+        self,
+        *,
+        answer: str,
+        tools: Sequence[ToolName],
+        raw_results: Sequence[dict[str, Any] | None],
+        retrieved_chunks: Sequence[RerankedChunk] = (),
     ) -> list[Claim]: ...
 
 
@@ -156,6 +170,31 @@ and its dose), cite each fact's field separately in source_refs.
 
 Catalog:
 {catalog}
+"""
+
+# P3.9: appended (not merged into) _EXTRACT_INSTRUCTIONS ONLY when the turn
+# retrieved >=1 guideline chunk -- see _build_guideline_catalog and
+# ClaimExtractor.extract_claims. Mirrors _EXTRACT_INSTRUCTIONS' shape
+# (document_citations' fields), but for the "guideline_chunk" source type
+# app.schemas.ingestion.DocumentCitation also allows, re-validated by
+# app.verification.check_document_citation against a CorpusChunkIndex built
+# from these SAME retrieved chunks (never a paraphrase).
+_GUIDELINE_INSTRUCTIONS = """
+You may ALSO cite clinical-guideline passages retrieved for this question, \
+listed below, via "document_citations" (in addition to, or instead of, \
+"source_refs"). Each such citation has:
+  - "source_type": exactly "guideline_chunk".
+  - "source_id": EXACTLY one of the guideline doc ids below.
+  - "field_or_chunk_id": EXACTLY one of the chunk ids below, for that doc id.
+  - "page_or_section": the section title shown for that chunk below.
+  - "quote_or_value": a short phrase copied VERBATIM, character-for-character, \
+from that chunk's text below -- never paraphrased, summarized, or invented. \
+Only quote text that is actually present below.
+
+Only cite a doc id / chunk id that is actually listed below -- never invent one.
+
+Guideline passages:
+{guideline_catalog}
 """
 
 
@@ -223,17 +262,31 @@ class ClaimExtractor:
         answer: str,
         tools: Sequence[ToolName],
         raw_results: Sequence[dict[str, Any] | None],
+        retrieved_chunks: Sequence[RerankedChunk] = (),
     ) -> list[Claim]:
         """Return the cited claims decomposed from ``answer``.
 
         ``raw_results`` must already be normalized (see
         ``normalize_raw_results``). Fails soft: an answer with nothing citable
-        short-circuits to ``[]`` with no model call, and a malformed/failed
-        extraction returns ``[]`` (downstream this yields a fail-closed
-        ``blocked`` verdict per P3.7)."""
+        (no tool-result catalog AND no ``retrieved_chunks``) short-circuits to
+        ``[]`` with no model call, and a malformed/failed extraction returns
+        ``[]`` (downstream this yields a fail-closed ``blocked`` verdict per
+        P3.7).
+
+        ``retrieved_chunks`` (P3.9, additive): the P3.5 evidence-retriever
+        worker's reranked guideline-corpus chunks for this turn's question,
+        offered as EXTRA citable evidence via ``_GUIDELINE_INSTRUCTIONS`` --
+        never required; an answer with only a tool-result catalog (or only
+        guideline chunks, e.g. a guideline-only question with no chart-data
+        tool call this turn) still works exactly as before."""
         catalog = _build_catalog(tools, raw_results)
-        if not catalog:
+        guideline_catalog = _build_guideline_catalog(retrieved_chunks)
+        if not catalog and not guideline_catalog:
             return []
+
+        instructions = _EXTRACT_INSTRUCTIONS.format(catalog=catalog or "(none)")
+        if guideline_catalog:
+            instructions += "\n" + _GUIDELINE_INSTRUCTIONS.format(guideline_catalog=guideline_catalog)
 
         # Message layout matches the structure spike #140 measured at 100%
         # citation-validity for wide-format tools: the tool-result DATA first,
@@ -247,7 +300,7 @@ class ClaimExtractor:
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
             *_build_tool_result_messages(tools, raw_results),
             {"role": "assistant", "content": answer},
-            {"role": "user", "content": _EXTRACT_INSTRUCTIONS.format(catalog=catalog)},
+            {"role": "user", "content": instructions},
         ]
         try:
             extracted = self._ollama.extract(messages, VerifiedAnswer)
@@ -281,6 +334,22 @@ def _build_catalog(
         for j, record in enumerate(records):
             fields = [k for k in record.keys() if k != _PROVENANCE_FIELD]
             lines.append(f"  record {j}: fields = {', '.join(fields)}")
+    return "\n".join(lines)
+
+
+def _build_guideline_catalog(chunks: Sequence[RerankedChunk]) -> str:
+    """Catalog of every retrieved guideline chunk's citable identity (doc id,
+    chunk id, section title) PLUS its full raw text -- unlike
+    ``_build_catalog`` (values deliberately omitted, since the model already
+    has the tool-result values from ``_build_tool_result_messages``), the
+    guideline text itself is only ever available here, so it must be
+    included for the model to quote it verbatim. Empty string when
+    ``chunks`` is empty. The corpus is public, non-PHI content -- including
+    its full text here carries no exposure risk."""
+    lines: list[str] = []
+    for chunk in chunks:
+        lines.append(f'{chunk.chunk_id} (source_id="{chunk.doc_id}"): "{chunk.title}" / {chunk.section}')
+        lines.append(f"  text: {chunk.text}")
     return "\n".join(lines)
 
 
@@ -338,20 +407,39 @@ def mentioned_interactions(medications: Sequence[MedicationItem]) -> list[DrugIn
 
 
 def run_verification(
-    extractor: ClaimExtractorLike, result: PlannerResult
+    extractor: ClaimExtractorLike,
+    result: PlannerResult,
+    retrieved_chunks: Sequence[RerankedChunk] = (),
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
     Normalizes EAV outputs, extracts claims, re-validates them against the RAW
     records, strips the unverifiable ones, and folds the allergy / interaction
     checks into the whole-answer verdict. Fail-closed throughout: no
-    surviving claim yields a ``blocked`` verdict (P3.7)."""
+    surviving claim yields a ``blocked`` verdict (P3.7).
+
+    ``retrieved_chunks`` (P3.9, additive): the P3.5 evidence-retriever
+    worker's reranked guideline-corpus chunks for this turn, if any. Passed
+    to the extractor ONLY when non-empty -- so a caller/extractor double that
+    predates this parameter (every existing test fake) keeps working
+    unmodified -- and used to build the ``CorpusChunkIndex`` any resulting
+    ``guideline_chunk`` document citations are re-validated against (see
+    ``app.verification.check_document_citation``): built directly from these
+    SAME retrieved chunks' raw text, never a paraphrase, so a claim that
+    quotes something the retrieved passage never actually says fails exactly
+    like a hallucinated structured-data citation fails ``check_source_ref``."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
 
-    claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized)
+    if retrieved_chunks:
+        claims = extractor.extract_claims(
+            answer=result.answer, tools=tools, raw_results=normalized, retrieved_chunks=retrieved_chunks
+        )
+    else:
+        claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized)
     index = CacheIndex.from_raw_results(normalized)
-    claim_results = check_claims(claims, index)
+    corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
+    claim_results = check_claims(claims, index, corpus_index=corpus_index)
     rendered = render_answer(claim_results)
 
     medications = collect_medications(tools, result.raw_results)

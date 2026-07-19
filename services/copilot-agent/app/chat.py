@@ -73,7 +73,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -97,6 +97,8 @@ from app.extraction import (
     detect_foreign_patient_reference,
     run_verification,
 )
+from app.encounter_observability import build_encounter_record
+from app.ingestion import LocalIngestionStore
 from app.introspection import TokenIntrospector
 from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.ollama_client import LlmCallStats, OllamaClient
@@ -104,6 +106,10 @@ from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerCompleted, PlannerResult, ReasoningDelta, ToolCallTrace, ToolDispatched
 from app.rendering import RenderedAnswer, RenderedClaim
+from app.reranking import OllamaRerankScorer, Reranker
+from app.retrieval import build_retriever_from_corpus
+from app.schemas.reranking import RerankedChunk
+from app.supervisor import EvidenceRetrieverWorker, IntakeExtractorWorker, RetrieveSubTask, Supervisor
 from app.trace_store import TraceStore, record_span_best_effort
 from app.verdict import VerdictResult, to_trace_record
 
@@ -554,6 +560,128 @@ def get_trace_store() -> TraceStore:
     return _default_trace_store
 
 
+EvidenceRetriever = Callable[[str], list[RerankedChunk]]
+
+
+def _no_op_evidence_retriever(query: str) -> list[RerankedChunk]:
+    """Flag-OFF default: no retrieval, no Ollama embedding round trip, no
+    ``worker`` span -- evidence retrieval itself is fully flag-gated. (Per-turn
+    encounter logging, P3.8, is always-on regardless of this flag -- see
+    ``_log_encounter_record`` -- but it only ever logs non-PHI counts/timings,
+    never request content, so it carries no observable behavior change for a
+    caller of /chat.)"""
+    return []
+
+
+_evidence_workers: tuple[IntakeExtractorWorker, EvidenceRetrieverWorker] | None = None
+
+
+def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWorker]:
+    """The process-wide P3.5 workers backing /chat's evidence-retrieval path
+    (P3.9): built once and reused (mirrors ``get_token_introspector``'s own
+    lazy-singleton pattern) since ``build_retriever_from_corpus`` parses the
+    whole corpus and ``LocalIngestionStore`` is stateless config -- neither
+    needs rebuilding per request. The ``Supervisor`` wrapping these (see
+    ``get_evidence_retriever``) is instead built FRESH per request, so its
+    spans land in THIS request's ``trace_store`` (a per-test tmp_path DB in
+    tests) rather than a stale singleton's.
+
+    The intake-extractor worker is real (not a stub) -- it shares this same
+    ``LocalIngestionStore``/``OllamaClient`` wiring ``app.documents`` already
+    uses -- but P3.9 never dispatches an ``IngestSubTask`` from /chat: wiring
+    per-patient fact citations (``DocumentFactIndex``) into a *live* chat turn
+    needs a patient-scoped document lookup this PR does not add (see the
+    P3.9 PR description for why that is explicitly deferred to a follow-up
+    issue). Constructing a real worker anyway costs nothing (it is never
+    invoked) and keeps ``Supervisor`` construction uniform.
+    """
+    global _evidence_workers
+    if _evidence_workers is None:
+        settings = get_settings()
+        ollama_client = OllamaClient.from_settings(settings)
+        retriever = build_retriever_from_corpus(embedder=ollama_client)
+        reranker = Reranker(OllamaRerankScorer(ollama_client))
+        ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
+        _evidence_workers = (
+            IntakeExtractorWorker(ollama_client=ollama_client, document_store=ingestion_store, fact_store=ingestion_store),
+            EvidenceRetrieverWorker(retriever=retriever, reranker=reranker),
+        )
+    return _evidence_workers
+
+
+_EVIDENCE_RETRIEVAL_TOP_K = 3
+
+
+def get_evidence_retriever(
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> EvidenceRetriever:
+    """FastAPI dependency: the active evidence-retrieval callable for /chat's
+    P3.9 guideline-citation path. Override in tests.
+
+    Flag ON (``copilot_evidence_retrieval_enabled``): routes the turn's
+    question through the P3.5 supervisor's evidence-retriever worker (hybrid
+    retrieve + rerank over the PUBLIC guideline corpus), so its handoff is
+    traced (a ``worker`` span, parented under a fresh supervisor span) into
+    THIS request's ``trace_store`` -- the same one ``_stream_chat`` already
+    writes tool/llm/verification spans to, so ``app.encounter_observability
+    .build_encounter_record`` picks it up as one more step in the encounter.
+
+    Raises whatever the supervisor/worker raises (``RetrievalError``,
+    ``RerankError``, ...) -- NOT caught here. ``_stream_chat`` is the single
+    call site that catches it fail-soft (see its own comment), the same
+    "caller decides how to recover" discipline ``get_launch_binding_checker``
+    already uses for ``LaunchPatientMismatchError``: catching here instead
+    would also hide a raising TEST double's failure from that call site.
+
+    Flag OFF (default): ``_no_op_evidence_retriever`` -- no retrieval call, no
+    Ollama embedding round trip, no worker span. Evidence retrieval itself is
+    flag-gated; per-turn encounter logging (P3.8, non-PHI counts only) is
+    always-on regardless of this flag -- see ``_log_encounter_record``.
+    """
+    if not get_settings().copilot_evidence_retrieval_enabled:
+        return _no_op_evidence_retriever
+
+    intake_worker, evidence_worker = _get_evidence_workers()
+    supervisor = Supervisor(intake_worker=intake_worker, evidence_worker=evidence_worker, trace_store=trace_store)
+
+    def _retrieve(query: str) -> list[RerankedChunk]:
+        result = supervisor.handle(RetrieveSubTask(query=query, k=_EVIDENCE_RETRIEVAL_TOP_K))
+        chunks: list[RerankedChunk] = result.payload
+        return chunks
+
+    return _retrieve
+
+
+def _log_encounter_record(
+    trace_store: TraceStore, correlation_id: str, retrieved_chunks: Sequence[RerankedChunk]
+) -> None:
+    """Build and log the P3.8 per-encounter observability record for this
+    turn, best-effort -- a build failure must never break an otherwise-
+    successful turn. NO PHI: every logged field is a count/timing
+    (``app.encounter_observability``'s own structural NO-PHI guarantee --
+    see that module's docstring), never a query, answer, or record value.
+
+    ``retrieved_chunks or None``: an empty list (the flag-off default, or a
+    flag-on turn where retrieval found nothing / failed fail-soft) is treated
+    as "retrieval was not meaningfully attempted" for this summary, same as
+    every other caller of ``build_encounter_record`` that has no retrieval
+    step at all -- not a fabricated zero-hit count."""
+    try:
+        record = build_encounter_record(correlation_id, trace_store, retrieval_chunks=retrieved_chunks or None)
+    except Exception as exc:
+        _logger.warning("encounter record build failed", extra={"error_type": type(exc).__name__})
+        return
+    _logger.info(
+        "encounter record built",
+        extra={
+            "step_count": len(record.steps),
+            "total_tokens_in": record.total_tokens_in,
+            "total_tokens_out": record.total_tokens_out,
+            "retrieval_hit_count": record.retrieval_hit_count,
+        },
+    )
+
+
 _EMPTY_WARNINGS: dict[str, list[object]] = {
     "allergy_conflicts": [],
     "blocking_interactions": [],
@@ -723,6 +851,7 @@ def _stream_chat(
     message: str,
     user: str,
     clock: Clock,
+    evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -857,13 +986,30 @@ def _stream_chat(
 
         yield _sse(ChatEvent.ANSWER, {"answer": result.answer})
 
+        # P3.9: hybrid-retrieve + rerank guideline-corpus evidence for this
+        # turn's question (flag-gated -- see get_evidence_retriever), offered
+        # to the extraction pipeline below as extra citable evidence
+        # ALONGSIDE the tool-result catalog -- additive; a chart-data-only
+        # question that retrieves nothing verifies exactly as before.
+        #
+        # Fail-soft: a retrieval/rerank failure (RetrievalError, RerankError,
+        # or anything else) must never break an otherwise-working chat turn
+        # over chart data that has nothing to do with the guideline corpus.
+        # Logged by TYPE ONLY -- NEVER str(exc), which both error types embed
+        # the query text in (see this module's forward security constraint).
+        try:
+            retrieved_chunks = evidence_retriever(message)
+        except Exception as exc:
+            _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
+            retrieved_chunks = []
+
         # Run the answer->claims extraction pipeline and populate the verification
         # frame with the REAL verdict / citation chips / warnings for this answer.
         # ``run_verification`` re-validates every extracted claim against the RAW
         # records (deterministic, no LLM) and strips the unverifiable ones, so a
         # miscited or injection-steered claim never reaches the user as fact.
         verification_start_ts = time.time()
-        verdict_result, rendered = run_verification(extractor, result)
+        verdict_result, rendered = run_verification(extractor, result, retrieved_chunks=retrieved_chunks)
         verification_end_ts = time.time()
         _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
         verdict_trace_record = to_trace_record(verdict_result)
@@ -894,6 +1040,11 @@ def _stream_chat(
                 answer=result.answer,
             ),
         )
+
+        # P3.8: capture this turn's full pipeline (tool/llm/worker/verification
+        # spans, all already recorded above) as a per-encounter observability
+        # record, best-effort. See ``_log_encounter_record``'s NO-PHI note.
+        _log_encounter_record(trace_store, correlation_id, retrieved_chunks)
 
         yield _sse(ChatEvent.DONE, {})
     except BaseException:
@@ -961,6 +1112,7 @@ async def chat_endpoint(
     store: ConversationStore = Depends(get_conversation_store),
     trace_store: TraceStore = Depends(get_trace_store),
     clock: Clock = Depends(get_clock),
+    evidence_retriever: EvidenceRetriever = Depends(get_evidence_retriever),
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
@@ -1002,6 +1154,8 @@ async def chat_endpoint(
         conversation = store.create(request.patient_id, patient_name=patient_name)
 
     return StreamingResponse(
-        _stream_chat(planner, extractor, conversation, store, trace_store, request.message, user, clock),
+        _stream_chat(
+            planner, extractor, conversation, store, trace_store, request.message, user, clock, evidence_retriever
+        ),
         media_type="text/event-stream",
     )
