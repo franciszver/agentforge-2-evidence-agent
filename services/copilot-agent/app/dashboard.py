@@ -243,7 +243,7 @@ def render_dashboard_html(metrics: DashboardMetrics, eval_history: list[EvalRunP
     """Render the full dashboard page for ``metrics``/``eval_history``. Pure
     function of the two DTOs -- no I/O, so hermetically testable with any
     seeded/empty metrics and any seeded/empty eval-run history."""
-    alert_banners = _alert_banners_section(evaluate_alerts(metrics))
+    alert_banners = _alert_banners_section(evaluate_alerts(metrics, eval_history=eval_history))
     tiles = "".join(
         [
             _stat_tile("Requests", str(metrics.request_count)),

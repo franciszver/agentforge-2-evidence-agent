@@ -1,0 +1,16 @@
+meta {
+  name: Review Queue
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/review
+  body: none
+  auth: none
+}
+
+docs {
+  Clinician review queue: renders flagged/queued responses for human
+  review. HTML, no request body or auth.
+}

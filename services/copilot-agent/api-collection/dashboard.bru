@@ -1,0 +1,17 @@
+meta {
+  name: Dashboard
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/dashboard
+  body: none
+  auth: none
+}
+
+docs {
+  The P4.5/P4.6/P3G.4 observability dashboard: aggregate, non-PHI request
+  metrics, active alert banners (see `app.dashboard_alerts`), and the eval
+  pass-rate-over-time chart. HTML, not JSON -- no request body or auth.
+}

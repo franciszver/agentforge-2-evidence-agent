@@ -1,0 +1,17 @@
+meta {
+  name: Chat Shell (GET /chat)
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/chat
+  body: none
+  auth: none
+}
+
+docs {
+  Returns the standalone chat page's static HTML shell (the client-side JS
+  it loads calls `POST /chat` for the actual conversation). Not an API
+  response -- included for completeness against the full route table.
+}

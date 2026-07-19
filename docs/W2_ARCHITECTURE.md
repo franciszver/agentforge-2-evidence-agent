@@ -273,11 +273,70 @@ measurement, which is P3G.4 (#24)'s job:
   numbers rather than picking a number the corpus's actual size can't yet
   justify.
 
-Both numbers are targets to build toward and gate against in P3G.4, not
-measurements — consistent with how Phase 1 stated its own capacity
-expectations as "research-informed priors, to be measured in Phase 5"
-(`docs/ARCHITECTURE.md` §"Capacity reality") before that run actually
-happened.
+Both numbers remain unmeasured targets after P3G.4 (#24) — see
+§"Perf Baselines vs Phase 1 (P3G.4 / #24)" below for what P3G.4 measured
+instead and why these two specifically were left as documented gaps rather
+than requiring a new live measurement run. This is the same posture Phase 1
+took with its own capacity expectations: "research-informed priors, to be
+measured in Phase 5" (`docs/ARCHITECTURE.md` §"Capacity reality") before
+that run actually happened.
+
+## Perf Baselines vs Phase 1 (P3G.4 / #24)
+
+Same discipline as the rest of this document: a measured number is never
+blended with a projected one, and every number below states which it is.
+Reuses already-measured figures from `docs/ARCHITECTURE.md` §"Capacity
+reality" (Phase 1) and `docs/MODEL_AND_HARDWARE_SELECTION.md` (Phase 2's own
+answer-model selection) rather than standing up a new live measurement run —
+per this issue's own instruction not to block on live infra.
+
+**Measured now:**
+
+- **Single-request answer latency, Phase 1 vs Phase 2 (same hardware: RTX
+  5060 Laptop, 8 GB VRAM).** Phase 1's P5.1 capacity run measured `qwen3:4b`
+  at **10.3s p50** for one live `POST /chat` request. Phase 2's chosen answer
+  model — Qwen3-8B-Q5_K_M, 16k ctx, q8_0 KV, flash-attn — measures **~27s**
+  per query (`docs/MODEL_AND_HARDWARE_SELECTION.md` §"The committed
+  production baseline"). That is roughly **2.6× Phase 1's single-request
+  baseline**: the direct, expected latency cost of moving from a 4B to an
+  8B-class model on the same 8 GB card, traded for materially better
+  citation reliability (Phase 2's own measured ceiling on this hardware is
+  6/12 verified citations on the `citation_present` eval category — see that
+  doc's "Why 6/12 is the ceiling on this hardware"). Both figures are
+  measured-vs-measured, not measured-vs-projected.
+- **Eval-suite citation reliability.** The `citation_present` category's 6/12
+  committed production baseline (`evals/category_baseline.json`) is the one
+  Phase 2 metric with no Phase 1 equivalent to compare against (Phase 1 had
+  no fail-closed verbatim-citation verification layer). It is CI-guarded by
+  the P3G.2 (#22) regression gate (≤5% pass-rate drop per category) and, as
+  of this issue, also monitored live via the dashboard's new eval-regression
+  alert (see `app.dashboard_alerts`).
+
+**Gaps — not measured here, deliberately not blocked on:**
+
+- **Concurrency scaling for the Phase 2 answer model.** Phase 1's P5.1 run
+  measured `qwen3:4b` p50 latency scaling **10.3s → 34.0s → 59.3s** at
+  1/5/10 concurrent chats, saturating at ~0.15 req/s with VRAM flat at
+  ~3.2 GB (compute-bound, not memory-bound). Phase 2 has not re-run that same
+  `capacity_run.py` harness against Qwen3-8B-Q5_K_M — doing so needs a live
+  concurrent-load run against the dev stack, the kind of new heavy live run
+  this issue's instructions say not to require. Expect the same
+  compute-bound scaling shape (single-GPU inference throughput is still the
+  ceiling), proportionally worse given the 8B model's higher per-token cost.
+- **Document-ingestion p95 latency** (SLO above: ≤45s for a 2-page lab PDF).
+  Still the budgeted target stated in §"SLOs", not a measurement. Producing
+  a real number needs a live `attach_and_extract()` run against the resident
+  VLM on the dev stack — not done here for the same reason as the item
+  above.
+- **Retrieval hit-rate** (SLO above: ≥80% top-5 relevant-chunk recall). Still
+  a target, not a measurement. `evals/test_retrieved_chunks_faithful_to_corpus.py`
+  checks that each eval case's canned `retrieved_chunks` fixture is
+  verbatim-faithful to the real corpus — a data-integrity guard, not a
+  recall measurement — and no golden-query set with labeled
+  known-relevant-chunks exists yet in `evals/` to compute recall against.
+  Building that golden set is new eval-fixture work, out of this issue's
+  scope (documenting what's measurable now, not building new measurement
+  infrastructure).
 
 ## Reference Hardware & Model Tiers
 
@@ -479,12 +538,19 @@ Mirrors Phase 1's Path-to-Production structure (`docs/ARCHITECTURE.md`
    Backup/Recovery" is a manual/cron convention today; production hardening
    turns it into an automated, monitored, tested restore procedure rather
    than an assumed cron job.
-5. **Monitoring.** Extend the existing hand-rolled trace-store dashboard
-   (Phase 1) with the new Week-2 signals called out in `planning/PLAN.md`
-   Stage 3 item (3e) and Stage 3 gate: extraction-failure rate, retrieval
-   latency, and eval-regression alerting (>5% category regression), plus
-   BAA-covered hosting, VPC, and HA exactly as Phase 1's own Path-to-Production
-   item 4 describes for a real multi-node deployment.
+5. **Monitoring.** `planning/PLAN.md` Stage 3 item (3e) and Stage 3 gate
+   called for extending the existing hand-rolled trace-store dashboard
+   (Phase 1) with extraction-failure rate, retrieval latency, and
+   eval-regression alerting (>5% category regression) — P3G.4 (#24) added
+   all three alert rules to `app.dashboard_alerts`, tested, with
+   eval-regression wired to real committed data (`app.dashboard_eval_history`)
+   and the other two implemented-but-dormant pending a future issue that
+   records dedicated ingestion/retrieval trace-store spans (no such span
+   type exists yet — see that module's docstring for the precedent this
+   already follows for the P4.6 tool-failure-rate alert, dormant pending
+   #149). Still outstanding for a real multi-node production deployment:
+   BAA-covered hosting, VPC, and HA, exactly as Phase 1's own
+   Path-to-Production item 4 describes.
 
 ## Use-Case Traceability
 
