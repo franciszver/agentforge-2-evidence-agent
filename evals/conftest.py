@@ -65,4 +65,4 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     terminalreporter.section("P3G.2 category regression gate (#22)")
     for violation in violations:
         terminalreporter.write_line(f"REGRESSION: {violation}", red=True)
-    session.exitstatus = 1
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
