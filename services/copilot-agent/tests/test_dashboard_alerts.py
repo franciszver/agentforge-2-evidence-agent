@@ -19,7 +19,7 @@ from app.dashboard_eval_history import EvalRunPoint
 from app.dashboard_metrics import DashboardMetrics
 
 
-def _eval_point(pass_rate: float, timestamp: str = "2026-01-01T00:00:00Z") -> EvalRunPoint:
+def _eval_point(pass_rate: float, timestamp: str) -> EvalRunPoint:
     """A minimal eval-history point; only ``pass_rate`` varies per test."""
     return EvalRunPoint(
         timestamp=timestamp, git_sha="abc123", total=10, passed=int(pass_rate * 10),
