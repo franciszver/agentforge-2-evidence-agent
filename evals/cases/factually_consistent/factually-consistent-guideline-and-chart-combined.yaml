@@ -19,12 +19,12 @@ retrieved_chunks:
     doc_id: "statin-monitoring"
     title: "Statin Therapy Monitoring"
     section: "Baseline Liver Function"
-    text: >
+    text: |-
       A baseline liver panel (e.g. ALT) is generally obtained before starting a
-      statin. Routine ongoing liver-enzyme monitoring in an asymptomatic
-      patient is usually not needed; liver enzymes are checked if the patient
-      develops symptoms suggestive of hepatotoxicity or if clinically
-      indicated for another reason.
+      statin. Routine ongoing liver-enzyme monitoring in an asymptomatic patient
+      is usually not needed; liver enzymes are checked if the patient develops
+      symptoms suggestive of hepatotoxicity (e.g. unexplained fatigue, jaundice,
+      right-upper-quadrant pain) or if clinically indicated for another reason.
 assertions:
   - type: verdict
     equals: verified

@@ -361,6 +361,49 @@ def test_guideline_chunk_citation_short_quote_still_fails_after_normalization():
 
 
 # ---------------------------------------------------------------------------
+# (c3) Narrowed whitespace normalization (security-gate finding): the P3G.1b
+# fix above originally stripped ALL whitespace, which would let a quote of
+# "50" match chunk text containing "5 0" -- silently collapsing two distinct
+# numeric tokens into one and inventing a match that was never really there.
+# The narrowed normalization (collapse whitespace runs to one space, then
+# fold only whitespace immediately ADJACENT TO A HYPHEN) must still bridge
+# the hyphen-fold case while refusing to bridge a plain token-separating
+# space.
+# ---------------------------------------------------------------------------
+
+
+def test_narrowed_whitespace_normalization_does_not_collapse_distinct_tokens():
+    # "5 0" (two distinct tokens, no hyphen) must NOT be matched by a quote
+    # of "50" -- proves the narrowed normalization does not fabricate a
+    # match by bridging a token-separating space, unlike the old
+    # strip-all-whitespace behavior.
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, "The dose range is 5 0 mg, not otherwise specified."))
+    citation = _chunk_citation(quote_or_value="50 mg")
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.QUOTE_NOT_FOUND
+    assert result.passed is False
+
+
+def test_narrowed_whitespace_normalization_still_folds_hyphen_adjacent_whitespace():
+    # "borderline-high" (no space) must still verify against the chunk's
+    # line-folded "borderline- high" (one space next to the hyphen) -- the
+    # narrowing must not regress the original P3G.1b fix this guards.
+    corpus_index = _corpus_index(_FakeChunk(_LINE_FOLDED_CHUNK_ID, _LINE_FOLDED_CHUNK_TEXT))
+    citation = _chunk_citation(
+        source_id="lipid-panel-reference",
+        field_or_chunk_id=_LINE_FOLDED_CHUNK_ID,
+        quote_or_value="borderline-high 130-159 mg/dL",
+    )
+
+    result = check_document_citation(citation, _fact_index(), corpus_index)
+
+    assert result.status is CitationStatus.VALID
+    assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
 # (d) a citation with a nonexistent source_id/chunk_id fails (no fabrication)
 # ---------------------------------------------------------------------------
 

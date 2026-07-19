@@ -12,13 +12,15 @@ retrieved_chunks:
     doc_id: "a1c-targets"
     title: "A1c Targets for Adults with Diabetes"
     section: "Target Ranges"
-    text: >
-      Most non-pregnant adults with diabetes: A1c target generally below 7%.
-      Healthy adults with a long life expectancy and low hypoglycemia risk: a
-      stricter target, below 6.5%, may be reasonable if it can be reached
-      safely. Older adults, or those with limited life expectancy, significant
-      comorbidity, or a history of severe hypoglycemia: a looser target, such
-      as below 8% or 8.5%, is often more appropriate.
+    text: |-
+      - Most non-pregnant adults with diabetes: A1c target generally below 7%.
+      - Healthy adults with a long life expectancy and low hypoglycemia risk: a
+        stricter target, below 6.5%, may be reasonable if it can be reached safely.
+      - Older adults, or those with limited life expectancy, significant
+        comorbidity, or a history of severe hypoglycemia: a looser target, such as
+        below 8% or 8.5%, is often more appropriate.
+      - Pregnant patients with pre-existing or gestational diabetes have distinct,
+        tighter glycemic targets that are outside the scope of this summary.
 assertions:
   - type: verdict
     equals: verified

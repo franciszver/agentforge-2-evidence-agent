@@ -10,10 +10,17 @@ retrieved_chunks:
     doc_id: "hypertension-lifestyle"
     title: "Hypertension Lifestyle Management and Follow-Up"
     section: "Common Lifestyle Interventions"
-    text: >
-      Sodium reduction, commonly targeted around 1,500-2,300 mg/day depending
-      on the source guidance. Regular aerobic physical activity, commonly
-      cited around 90-150 minutes/week.
+    text: |-
+      - Dietary pattern emphasizing vegetables, fruit, whole grains, and reduced
+        saturated fat (a DASH-style pattern) is commonly cited as lowering
+        systolic pressure meaningfully in adherent patients.
+      - Sodium reduction, commonly targeted around 1,500-2,300 mg/day depending on
+        the source guidance.
+      - Regular aerobic physical activity, commonly cited around 90-150
+        minutes/week.
+      - Weight reduction where applicable — even modest weight loss is commonly
+        associated with a measurable blood-pressure reduction.
+      - Limiting alcohol intake and, where relevant, smoking cessation support.
 assertions:
   - type: verdict
     equals: verified

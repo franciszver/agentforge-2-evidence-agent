@@ -236,22 +236,28 @@ but does not reproduce that incidental whitespace exactly (observed on
 qwen3:4b: it emitted "borderline-high", no space, against the chunk's
 "borderline- high", one space) was, before this fix, failing
 ``QUOTE_NOT_FOUND`` on a near-miss that carries the exact same words in the
-exact same order. Both ``quote_or_value`` and the raw chunk text are now
-whitespace-STRIPPED ENTIRELY (every whitespace character -- space/tab/
-newline -- removed, not merely collapsed to a canonical single space) before
-the substring test: collapsing runs down to one space cannot bridge a
-zero-space-vs-one-space difference (collapsing only normalizes 2+ characters
-down to 1; an existing single-space-vs-no-space gap survives unchanged), so
-full removal is the normalization that actually absorbs it. This is a
-strictly narrowing-safe change to the no-fabrication guarantee: two strings
-that already differ in WORD content (an added, removed, or changed word)
-introduce different non-whitespace CHARACTERS into the comparison sequence
-regardless of whitespace removal, so they still fail to match -- a
-hallucinated/paraphrased/wrong-value quote fails exactly as before (proven by
-this module's own tests: a wrong number/range, or an inserted word, still
-fails ``QUOTE_NOT_FOUND`` after this change). Applied AFTER the empty-quote
-and length-floor guards above (which operate on the un-normalized
-``stripped_quote``), so those guards' behavior is unchanged.
+exact same order. Both ``quote_or_value`` and the raw chunk text are
+normalized (``_normalize_chunk_whitespace``) before the substring test:
+first, every run of whitespace is collapsed to a single space (absorbs
+ordinary line-wrap newlines); second, whitespace immediately adjacent to a
+hyphen is folded away entirely (absorbs the "borderline- high" vs
+"borderline-high" case specifically). Whitespace that separates two
+otherwise-unrelated tokens (not adjacent to a hyphen) is deliberately left
+in place -- exactly one space, never removed -- so this narrows P3G.1b's
+original fix, which stripped ALL whitespace unconditionally (a security-gate
+finding: that let a quote of "50" match chunk text containing "5 0",
+silently collapsing two distinct numeric tokens into one). See
+``test_narrowed_whitespace_normalization_does_not_collapse_distinct_tokens``.
+
+This is a strictly narrowing-safe change to the no-fabrication guarantee: two
+strings that already differ in WORD content (an added, removed, or changed
+word) introduce different non-whitespace CHARACTERS into the comparison
+sequence regardless of whitespace normalization, so they still fail to
+match -- a hallucinated/paraphrased/wrong-value quote fails exactly as before
+(proven by this module's own tests: a wrong number/range, or an inserted
+word, still fails ``QUOTE_NOT_FOUND`` after this change). Applied AFTER the
+empty-quote and length-floor guards above (which operate on the
+un-normalized ``stripped_quote``), so those guards' behavior is unchanged.
 
 **Recency notices (issue #153) -- an additive, separate concern from
 citation re-validation above, not a change to it.**
@@ -633,6 +639,22 @@ class CorpusChunkIndex:
 _MIN_CHUNK_QUOTE_NON_WHITESPACE_CHARS = 3
 
 _WHITESPACE_RE = re.compile(r"\s+")
+# Whitespace immediately adjacent to a hyphen (either side, or both) -- see
+# module docstring, "Whitespace-normalized substring check". Applied AFTER
+# collapsing whitespace runs, so at most one space can appear on each side
+# here by the time this runs.
+_HYPHEN_WHITESPACE_RE = re.compile(r"\s*-\s*")
+
+
+def _normalize_chunk_whitespace(text: str) -> str:
+    """Collapse whitespace runs to a single space, then fold away whitespace
+    immediately adjacent to a hyphen -- see module docstring, "Whitespace-
+    normalized substring check", for why this is narrower than stripping all
+    whitespace: a single space that separates two distinct tokens (not
+    adjacent to a hyphen) is preserved, so e.g. "50" never matches text
+    containing "5 0"."""
+    collapsed = _WHITESPACE_RE.sub(" ", text)
+    return _HYPHEN_WHITESPACE_RE.sub("-", collapsed)
 
 
 def check_document_citation(
@@ -689,8 +711,8 @@ def check_document_citation(
         # the module docstring section by this name, and this module's
         # tests: a wrong number/range, or an inserted word, still fails
         # QUOTE_NOT_FOUND after this change).
-        normalized_quote = _WHITESPACE_RE.sub("", stripped_quote)
-        normalized_chunk_text = _WHITESPACE_RE.sub("", chunk_text)
+        normalized_quote = _normalize_chunk_whitespace(stripped_quote)
+        normalized_chunk_text = _normalize_chunk_whitespace(chunk_text)
         if normalized_quote not in normalized_chunk_text:
             return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.QUOTE_NOT_FOUND)
         return DocumentCitationCheckResult(document_citation=citation, status=CitationStatus.VALID)

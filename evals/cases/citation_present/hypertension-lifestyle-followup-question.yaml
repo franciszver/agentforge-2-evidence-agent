@@ -22,10 +22,13 @@ retrieved_chunks:
     doc_id: "hypertension-lifestyle"
     title: "Hypertension Lifestyle Management and Follow-Up"
     section: "Follow-Up Cadence"
-    text: >
-      Elevated blood pressure or Stage 1 hypertension managed with lifestyle alone:
-      recheck at roughly 3-6 months to assess response before deciding whether to add
-      pharmacotherapy.
+    text: |-
+      - Elevated blood pressure or Stage 1 hypertension managed with lifestyle
+        alone: recheck at roughly 3-6 months to assess response before deciding
+        whether to add pharmacotherapy.
+      - Once on stable antihypertensive therapy at target: routine follow-up
+        roughly every 3-6 months is a commonly cited cadence, more frequent if
+        therapy was recently changed or control is not yet at target.
     rerank_score: 0.9
 assertions:
   - type: verdict
