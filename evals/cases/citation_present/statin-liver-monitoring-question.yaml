@@ -28,15 +28,23 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b, post-P3G.1b prompt-eng): given BOTH real
+  chart-data tool results and a retrieved guideline chunk for the same turn,
+  the model DOES now attempt to surface the guideline passage -- the claim
+  extractor emits TWO document_citations entries quoting the liver-function
+  monitoring chunk with a genuinely verbatim quote. But both entries give
+  "field_or_chunk_id" as the bare section slug ("baseline-liver-function")
+  instead of the full, doc-id-qualified chunk id shown in the guideline
+  catalog ("statin-monitoring#baseline-liver-function") -- despite the
+  extraction prompt explicitly instructing "copied in full (e.g.
+  'a1c-targets#target-ranges', not just 'target-ranges')" -- so
+  ``check_document_citation`` fails closed with UNKNOWN_CHUNK (no chunk
+  exists under the truncated id) and citation_present never fires (verdict
+  stays verified/partially_verified on the chart-data claims alone). This is
+  an honest, reproducible P3G.1 finding: the local 4B model's grasp of the
+  guideline evidence and its ability to quote it verbatim have both measurably
+  improved with the P3G.1b prompt-eng iteration (see the sibling
+  a1c-target-question and warfarin-antibiotic-question cases, which now
+  genuinely pass), but its adherence to the exact chunk-id FORMAT the
+  citation schema requires remains unreliable -- not a harness bug; the
+  assertions are the correct target and are deliberately not weakened.
