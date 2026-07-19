@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.trace_store import FeedbackThumb, SpanStatus, SpanType, TraceStore, hash_args
+from app.trace_store import FeedbackThumb, Span, SpanStatus, SpanType, TraceStore, hash_args
 
 # The exact pre-P3.8 schema (committed on main before this branch added
 # span_id/parent_span_id/worker_name/sub_task_type) -- see
@@ -60,6 +60,41 @@ def db_path(tmp_path: Path) -> str:
 @pytest.fixture
 def store(db_path: str) -> TraceStore:
     return TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+
+def test_span_constructs_without_the_p38_fields_defaulting_to_none() -> None:
+    """``evals/`` (a separate pytest root, run from the repo root as
+    ``pytest evals/ -m "not integration"``) constructs ``Span`` directly
+    with only the pre-P3.8 field set (see
+    ``evals/runner/tests/test_review_queue_generator.py``) -- it has no
+    reason to know about span_id/parent_span_id/worker_name/sub_task_type.
+    Those four must be defaulted (``None``), not required positional args,
+    or every such construction site breaks with ``TypeError: Span.__init__()
+    missing 4 required positional arguments``."""
+    span = Span(
+        id=1,
+        correlation_id="corr-1",
+        span_type=SpanType.TOOL,
+        start_ts=0.0,
+        end_ts=1.0,
+        duration_ms=1000.0,
+        status=SpanStatus.OK,
+        tool_name="get_medications",
+        args_hash=None,
+        model=None,
+        tokens_in=None,
+        tokens_out=None,
+        verdict=None,
+        claim_count=None,
+        stripped_count=None,
+        feedback_thumb=None,
+        feedback_comment=None,
+        error_category=None,
+    )
+    assert span.span_id is None
+    assert span.parent_span_id is None
+    assert span.worker_name is None
+    assert span.sub_task_type is None
 
 
 def test_schema_created_idempotently(db_path: str) -> None:

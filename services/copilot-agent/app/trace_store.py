@@ -174,10 +174,10 @@ class Span:
     feedback_thumb: FeedbackThumb | None
     feedback_comment: str | None
     error_category: str | None
-    span_id: str | None
-    parent_span_id: str | None
-    worker_name: str | None
-    sub_task_type: str | None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    worker_name: str | None = None
+    sub_task_type: str | None = None
 
 
 def hash_args(args: Mapping[str, Any], secret: str) -> str:
