@@ -201,6 +201,38 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE confirms that the combination of aspirin and clopidogrel is used in specific clinical situations, such as after a coronary stent, which aligns with the CLAIM's mention of acute coronary syndrome or PCI.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE acknowledges that combining aspirin with clopidogrel involves a known bleeding risk, which aligns with the CLAIM that this combination increases the risk of bleeding.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE acknowledges the intentional use of aspirin and clopidogrel in specific situations and acknowledges the associated bleeding risk as a tradeoff, which supports the CLAIM that their combination should be used with caution and only when benefits outweigh risks.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE acknowledges the intentional use of dual antiplatelet therapy in specific situations and mentions the need to reassess its duration, which supports the CLAIM's emphasis on monitoring for bleeding and reviewing the therapy's indication.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }

@@ -175,6 +175,14 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE suggests rechecking blood pressure after 3-6 months to assess response to lifestyle changes, which supports the CLAIM that a new appointment should be scheduled to monitor blood pressure and assess lifestyle changes.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }

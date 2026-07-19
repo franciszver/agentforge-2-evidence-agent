@@ -72,9 +72,10 @@ model:
   fails on any category regression.
 - Full detail: `docs/W2_ARCHITECTURE.md` (target architecture, schemas,
   SLOs, data lineage), `docs/MODEL_AND_HARDWARE_SELECTION.md` (why
-  Qwen3-8B-Q5_K_M, and the measured 6/12 guideline-citation ceiling on
-  8 GB VRAM), `docs/W2_AUDIT.md` (**Stage-4 hardening checklist results**,
-  below).
+  Qwen3-8B-Q5_K_M, and the measured guideline-citation ceiling on
+  8 GB VRAM under the tightened provenance-AND-semantic-support
+  definition of "verified"), `docs/W2_AUDIT.md` (**Stage-4 hardening
+  checklist results**, below).
 
 ## Stage-4 hardening (P4.1, #25)
 

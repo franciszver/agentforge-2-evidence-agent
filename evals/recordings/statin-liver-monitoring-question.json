@@ -160,6 +160,22 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE states that routine liver-enzyme monitoring is not generally needed for asymptomatic patients on statins, which contradicts the CLAIM that routine monitoring is generally recommended.",
+        "verdict": "not_supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE states that routine liver-enzyme monitoring is usually not needed for asymptomatic patients, which contradicts the CLAIM that it would be prudent to consider routine monitoring.",
+        "verdict": "not_supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }
