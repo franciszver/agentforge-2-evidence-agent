@@ -41,14 +41,18 @@ assertions:
 # fixture above is now the REAL, complete corpus section text; see the
 # xfail reason below for the honest result against it.
 xfail: >
-  OBSERVED (recorded, qwen3:4b) against the real, complete guideline chunk:
-  the model surfaces a guideline_chunk DocumentCitation for this turn, but
-  its extracted quote is a paraphrase/compression of the real corpus
-  section (it drops the "NSAIDs and other antiplatelet agents" clause and
-  the leading/trailing sentences), so it is not a verbatim substring of the
-  real chunk text and fails QUOTE_NOT_FOUND -- verdict stays
-  partially_verified and guideline_citation_present never fires. An honest,
-  reproducible P3G.1 finding about the local 4B model's tendency to
-  compress a retrieved guideline passage rather than quote it verbatim, not
-  a harness bug -- the assertions are the correct target and are
+  OBSERVED (re-recorded #58, qwen3-8b-q5) against the real, complete
+  guideline chunk: a genuine near-miss, a DIFFERENT failure mode than this
+  case showed under qwen3:4b. The model surfaces TWO guideline_chunk
+  DocumentCitations this time, both quoting the warfarin-specific-cautions
+  passage verbatim and both surviving citation re-validation --
+  guideline_citation_present alone would pass here. But the overall
+  verdict still fails to reach ``verified``: 1 of the 7 extracted claims
+  (an unrelated chart-data claim) lacks a valid source ref and gets
+  stripped ("Not found in record"), so the citation axis lands on
+  SOME_VERIFIED and the verdict stays partially_verified. citation_present's
+  actual assertion genuinely fires, but the case as a whole still doesn't
+  meet the combined bar (``verdict equals verified`` AND
+  ``guideline_citation_present``). An honest, reproducible P3G.1 finding,
+  not a harness bug -- the assertions are the correct target and are
   deliberately not weakened.
