@@ -23,14 +23,19 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): with no chart-data tool_data provided (a
-  guideline-only question), the model either declines to answer at all
-  ("outside the scope of patient-specific data retrieval tools") or answers
-  correctly in prose but the claim extractor fabricates a plausible-looking
-  SourceRef pointing at a tool call that never happened, instead of using
-  the provided guideline_chunk document_citations format -- so the claim
-  fails citation re-validation (verdict: blocked) even though a real,
+  OBSERVED (recorded, qwen3:4b): despite no chart-data tool_data being
+  provided for this patient (the question is guideline-only), the planner
+  still calls get_medications, finds an empty medication list, and answers
+  by declaring the question moot for this patient ("not currently taking
+  any anticoagulants ... no dietary interactions to evaluate") -- never
+  engaging with the retrieved DOAC-vs-warfarin guideline chunk at all. The
+  one citation the extractor produces is a real, correctly-grounded
+  SourceRef against that empty medication list, not a fabrication -- but
+  because the guideline chunk is never quoted or cited, the claim fails
+  citation re-validation (verdict: blocked) even though a real,
   verbatim-quotable guideline chunk was available. This is an honest,
-  reproducible P3G.1 finding about the local 4B extraction model, not a
-  harness bug -- the assertion (verdict: verified) is the correct target
-  and is deliberately not weakened.
+  reproducible P3G.1 finding about the local 4B model's tendency to deflect
+  a general guideline question onto irrelevant patient-specific data
+  instead of answering from the retrieved evidence, not a harness bug --
+  the assertion (verdict: verified) is the correct target and is
+  deliberately not weakened.

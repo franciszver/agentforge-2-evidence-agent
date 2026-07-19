@@ -29,14 +29,15 @@ assertions:
   - type: guideline_citation_present
 xfail: >
   OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  and a retrieved guideline chunk for the same turn, the model DOES attempt
+  to surface the guideline passage -- the claim extractor emits a
+  document_citations entry quoting the LDL reference-range chunk. But the
+  quoted text drops the single space after the line-folded "borderline-"
+  hyphen ("borderline-high" vs. the chunk's actual "borderline- high"), so
+  the verbatim substring check fails (QUOTE_NOT_FOUND) and the claim never
+  becomes a surviving VERIFIED guideline_chunk citation -- citation_present
+  never fires (verdict stays verified/partially_verified on the chart-data
+  claims alone). This is an honest, reproducible P3G.1 finding about the
+  local 4B model's near-miss verbatim quoting of retrieved guideline text,
+  not a harness bug -- the assertions are the correct target and are
+  deliberately not weakened.
