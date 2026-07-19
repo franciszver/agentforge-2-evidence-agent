@@ -190,6 +190,16 @@ class Settings(BaseSettings):
     # this flag -- see app/chat.py's _log_encounter_record.
     copilot_evidence_retrieval_enabled: bool = False
 
+    # Issue #47: when true, POST /chat additionally runs the semantic-support
+    # LLM-judge (app.semantic_support) over every DocumentCitation whose
+    # verbatim-provenance check already passed -- a citation only counts as
+    # "verified" when BOTH the quote is real (existing check) AND the judge
+    # affirms it actually supports the claim's prose. Default OFF -- pending
+    # the P3.9b measurement (reliability against a labeled mini-eval) that
+    # decides whether this ships; flag off is byte-identical to today (no
+    # extra LLM call, no behavior change). See app/semantic_support.py.
+    copilot_semantic_support_enabled: bool = False
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""
