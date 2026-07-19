@@ -1,0 +1,32 @@
+meta {
+  name: Feedback (POST /feedback)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/feedback
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{bearerToken}}
+}
+
+body:json {
+  {
+    "correlation_id": "{{correlationId}}",
+    "thumb": "down",
+    "comment": "The citation didn't match what the chart actually said."
+  }
+}
+
+docs {
+  Thumbs up/down (+ optional comment, max 2000 chars) on a prior `POST
+  /chat` response, linked by `correlation_id` (the `X-Correlation-ID`
+  header from that response). `thumb` is `"up"` or `"down"`. Returns 201 on
+  success; a write failure surfaces as a 500 rather than being silently
+  swallowed (see `app.feedback`'s module docstring -- feedback is a
+  deliberate clinician action, unlike passive telemetry).
+}

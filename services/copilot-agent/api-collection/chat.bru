@@ -1,0 +1,35 @@
+meta {
+  name: Chat (POST /chat)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/chat
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{bearerToken}}
+}
+
+body:json {
+  {
+    "message": "What were the patient's most recent vitals?",
+    "patient_id": 1,
+    "conversation_id": null
+  }
+}
+
+docs {
+  Streams a Server-Sent Events response (`ChatEvent`: conversation,
+  tool_call, reasoning_delta, answer, verification, done). The response's
+  `X-Correlation-ID` header is the id to reuse against `POST /feedback` and
+  `GET /review/promote`. `conversation_id` may be omitted/`null` to start a
+  new conversation, or set to a prior turn's id to continue one (a
+  mismatched `patient_id` on a resumed conversation returns 409).
+
+  Dev-stack auth is a stub that accepts any non-empty bearer token -- see
+  `app.chat._default_token_validator`.
+}

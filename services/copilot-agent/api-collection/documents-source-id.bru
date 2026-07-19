@@ -1,0 +1,23 @@
+meta {
+  name: Source Document (GET /documents/:source_id)
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/documents/{{sourceId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{bearerToken}}
+}
+
+docs {
+  Fetches a previously-ingested source document's raw bytes by its
+  `source_id`. 400 for a malformed `source_id`, 404 when no document is
+  stored under it. Bearer-gated the same way as `POST /chat`/`POST
+  /feedback`; also passes through the launch-binding checker (see
+  `app.launch_binding`).
+}
