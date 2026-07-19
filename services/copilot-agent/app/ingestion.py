@@ -604,13 +604,64 @@ class LocalIngestionStore:
         """
         if not re.fullmatch(r"[0-9a-f]{32}", source_id):
             return None
-        meta_path = self._base_dir / "meta" / f"{source_id}.json"
-        try:
-            raw = meta_path.read_text()
-            payload = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
+        payload = self._read_json_sidecar(self._base_dir / "meta" / f"{source_id}.json")
+        if payload is None:
             return None
         patient_id = payload.get("patient_id")
         return patient_id if isinstance(patient_id, int) else None
+
+    @staticmethod
+    def _read_json_sidecar(path: Path) -> dict[str, Any] | None:
+        """Read and JSON-parse a stored sidecar into a dict, or ``None`` if it
+        is missing/unreadable/malformed or not a JSON object. The single
+        fail-closed read both ``read_source_patient_id`` and
+        ``list_citations_for_patient`` share -- a corrupt or missing sidecar
+        must never propagate an ``OSError``/``JSONDecodeError`` to a caller
+        (see ``read_source_patient_id``'s fail-closed rationale)."""
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def list_citations_for_patient(self, patient_id: int) -> list[Citation]:
+        """Every ``Citation`` extracted from documents stored under
+        ``patient_id`` -- backs /chat's per-patient lab/intake-form
+        ``DocumentCitation`` path (P3.9a, issue #46).
+
+        **Patient-scoped by construction.** Reads every ``facts/*.json``
+        sidecar ``save_facts`` wrote, keeping ONLY the ones whose own
+        ``patient_id`` field (written at save time, never derived from the
+        caller's request) equals ``patient_id`` -- a document saved under a
+        different patient never contributes a citation here, regardless of
+        which document happens to be read first or how many other patients'
+        facts are stored alongside it. The stored value must be an ``int``
+        that equals ``patient_id`` (the same ``isinstance(..., int)``
+        discipline as ``read_source_patient_id``) -- a type-strict compare so
+        a non-int stored ``patient_id`` (e.g. a float ``101.0`` from some
+        future ingestion path) can never numerically coincide with a
+        different patient's id. Fails closed (skips, never raises) on a
+        malformed/unreadable sidecar.
+        """
+        citations: list[Citation] = []
+        for fact_path in (self._base_dir / "facts").glob("*.json"):
+            payload = self._read_json_sidecar(fact_path)
+            if payload is None:
+                continue
+            stored_patient_id = payload.get("patient_id")
+            if not isinstance(stored_patient_id, int) or stored_patient_id != patient_id:
+                continue
+            facts = payload.get("facts")
+            if not isinstance(facts, list):
+                continue
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    continue
+                citation = fact.get("citation")
+                if not isinstance(citation, dict):
+                    continue
+                try:
+                    citations.append(Citation.model_validate(citation))
+                except ValueError:
+                    continue
+        return citations

@@ -109,6 +109,7 @@ from app.planner import Planner, PlannerCompleted, PlannerResult, ReasoningDelta
 from app.rendering import RenderedAnswer, RenderedClaim
 from app.reranking import OllamaRerankScorer, Reranker
 from app.retrieval import build_retriever_from_corpus
+from app.schemas.ingestion import Citation
 from app.schemas.reranking import RerankedChunk
 from app.supervisor import EvidenceRetrieverWorker, IntakeExtractorWorker, RetrieveSubTask, Supervisor
 from app.trace_store import TraceStore, record_span_best_effort
@@ -613,12 +614,15 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
 
     The intake-extractor worker is real (not a stub) -- it shares this same
     ``LocalIngestionStore``/``OllamaClient`` wiring ``app.documents`` already
-    uses -- but P3.9 never dispatches an ``IngestSubTask`` from /chat: wiring
-    per-patient fact citations (``DocumentFactIndex``) into a *live* chat turn
-    needs a patient-scoped document lookup this PR does not add (see the
-    P3.9 PR description for why that is explicitly deferred to a follow-up
-    issue). Constructing a real worker anyway costs nothing (it is never
-    invoked) and keeps ``Supervisor`` construction uniform.
+    uses -- but /chat still never dispatches an ``IngestSubTask``: ingesting
+    a NEW document stays a separate concern from a chat turn. Constructing a
+    real worker anyway costs nothing (it is never invoked from here) and
+    keeps ``Supervisor`` construction uniform. Per-patient fact citations
+    (``DocumentFactIndex``) into a *live* chat turn (P3.9's original
+    deferral, resolved by P3.9a / issue #46) instead reads a patient's
+    ALREADY-ingested facts straight from the same ``LocalIngestionStore`` --
+    see ``get_patient_fact_provider`` -- no worker dispatch needed for a
+    plain, patient-scoped disk read.
 
     P3.10a (epic #52 step 1): the embedder (dense-vector retrieval,
     ``nomic-embed-text``) and the intake-extractor worker (vision-based
@@ -699,6 +703,43 @@ def get_evidence_retriever(
         return chunks
 
     return _retrieve
+
+
+PatientFactProvider = Callable[[int], Sequence[Citation]]
+
+
+def _no_op_patient_fact_provider(patient_id: int) -> list[Citation]:
+    """Flag-OFF default: no disk read, ``[]`` every time -- the per-patient
+    fact-citation path (P3.9a) is fully flag-gated, same posture as
+    ``_no_op_evidence_retriever``."""
+    return []
+
+
+def get_patient_fact_provider(settings: Settings = Depends(get_settings)) -> PatientFactProvider:
+    """FastAPI dependency: the active per-patient fact lookup for /chat's
+    P3.9a lab/intake-form ``DocumentCitation`` path (issue #46). Override in
+    tests.
+
+    Flag ON (``copilot_evidence_retrieval_enabled`` -- the SAME flag as the
+    P3.9 guideline-corpus path; this is the other half of "evidence
+    retrieval"): reads ``LocalIngestionStore.list_citations_for_patient``,
+    which is scoped STRICTLY to the ``patient_id`` it is called with -- see
+    that method's docstring for how it fails closed on any malformed/foreign
+    data. ``_stream_chat`` calls this ONLY with ``conversation.patient_id``,
+    the SAME id ``/chat``'s launch-patient binding (#124 Phase 5, flag-gated,
+    ``get_launch_binding_checker``) and P2.16 conversation binding already
+    verify before a turn ever reaches this call -- a request that failed
+    either of those checks never dispatches the planner, let alone this
+    lookup, so this function never has an opportunity to see an
+    unauthorized ``patient_id``.
+
+    Flag OFF (default): ``_no_op_patient_fact_provider`` -- no disk read,
+    ``[]`` every time, byte-identical to before this dependency existed.
+    """
+    if not settings.copilot_evidence_retrieval_enabled:
+        return _no_op_patient_fact_provider
+    store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
+    return store.list_citations_for_patient
 
 
 def _log_encounter_record(
@@ -901,6 +942,7 @@ def _stream_chat(
     user: str,
     clock: Clock,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
+    patient_fact_provider: PatientFactProvider = _no_op_patient_fact_provider,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -1052,13 +1094,30 @@ def _stream_chat(
             _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
             retrieved_chunks = []
 
+        # P3.9a (issue #46): this turn's bound patient's own extracted
+        # lab/intake-form fact citations (flag-gated -- see
+        # get_patient_fact_provider), offered to the extraction pipeline
+        # below alongside the guideline chunks and tool-result catalog.
+        # ``conversation.patient_id`` is the SAME id already verified by the
+        # launch-patient binding and P2.16 conversation binding above -- this
+        # lookup is never given any other patient's id. Fail-soft, same
+        # discipline as evidence_retriever above: a lookup failure must never
+        # break an otherwise-working chat turn, and is logged by TYPE ONLY.
+        try:
+            patient_facts = patient_fact_provider(conversation.patient_id)
+        except Exception as exc:
+            _logger.warning("patient fact lookup failed", extra={"error_type": type(exc).__name__})
+            patient_facts = []
+
         # Run the answer->claims extraction pipeline and populate the verification
         # frame with the REAL verdict / citation chips / warnings for this answer.
         # ``run_verification`` re-validates every extracted claim against the RAW
         # records (deterministic, no LLM) and strips the unverifiable ones, so a
         # miscited or injection-steered claim never reaches the user as fact.
         verification_start_ts = time.time()
-        verdict_result, rendered = run_verification(extractor, result, retrieved_chunks=retrieved_chunks)
+        verdict_result, rendered = run_verification(
+            extractor, result, retrieved_chunks=retrieved_chunks, patient_facts=patient_facts
+        )
         verification_end_ts = time.time()
         _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
         verdict_trace_record = to_trace_record(verdict_result)
@@ -1162,6 +1221,7 @@ async def chat_endpoint(
     trace_store: TraceStore = Depends(get_trace_store),
     clock: Clock = Depends(get_clock),
     evidence_retriever: EvidenceRetriever = Depends(get_evidence_retriever),
+    patient_fact_provider: PatientFactProvider = Depends(get_patient_fact_provider),
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
@@ -1204,7 +1264,16 @@ async def chat_endpoint(
 
     return StreamingResponse(
         _stream_chat(
-            planner, extractor, conversation, store, trace_store, request.message, user, clock, evidence_retriever
+            planner,
+            extractor,
+            conversation,
+            store,
+            trace_store,
+            request.message,
+            user,
+            clock,
+            evidence_retriever,
+            patient_fact_provider,
         ),
         media_type="text/event-stream",
     )
