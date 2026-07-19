@@ -89,7 +89,19 @@ class LlmCallStats:
     tokens_out: int | None
 
 
-class OllamaError(Exception):
+class LLMEngineError(Exception):
+    """Common base for text-LLM-engine failures, shared by ``OllamaError`` and
+    ``app.llama_server_client.LlamaServerError`` (#60).
+
+    Callers that must tolerate either configured ``copilot_llm_engine``
+    (``ollama`` or ``llama_server``, see ``app.chat.get_text_llm_client``)
+    should catch this base rather than one engine's concrete type, so a
+    call site does not silently work under one engine and raise a 500 under
+    the other.
+    """
+
+
+class OllamaError(LLMEngineError):
     """Raised when an Ollama request or constrained extraction fails.
 
     The message is intentionally log-safe: it never embeds raw model output,
