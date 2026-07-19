@@ -294,10 +294,11 @@ def _quote_for_row(row: ExtractedLabRow, *, normalized_flag: LabFlagCode | None)
 
 def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int, row_index: int) -> LabResultFact:
     normalized_flag = _normalize_flag_code(row.abnormal_flag)
+    page_number = page_index + 1
     citation = Citation(
         source_type="lab_pdf",
         source_id=source_id,
-        page_or_section=f"page {page_index + 1}",
+        page_or_section=f"page {page_number}",
         # Issue #40: the test name alone is NOT a unique fact id -- the same
         # test extracted twice (e.g. a repeat panel across two dated pages)
         # would otherwise collide on (source_id, field_or_chunk_id) and be
@@ -306,7 +307,7 @@ def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int
         # page_index differs across pages), so appending both makes this id
         # uniquely identify this one extracted occurrence, never just the
         # test it names.
-        field_or_chunk_id=f"{row.test}#page{page_index + 1}-row{row_index}",
+        field_or_chunk_id=f"{row.test}#page{page_number}-row{row_index}",
         quote_or_value=_quote_for_row(row, normalized_flag=normalized_flag),
     )
     return LabResultFact(
@@ -397,11 +398,12 @@ def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, p
     # would otherwise collide on (source_id, field_or_chunk_id) the same way
     # a repeat lab test does -- appending the page qualifier makes this id
     # unique to the one page it was actually read from.
-    field_or_chunk_id = f"{sections_id}#page{page_index + 1}"
+    page_number = page_index + 1
+    field_or_chunk_id = f"{sections_id}#page{page_number}"
     citation = Citation(
         source_type="intake_form",
         source_id=source_id,
-        page_or_section=f"page {page_index + 1}",
+        page_or_section=f"page {page_number}",
         field_or_chunk_id=field_or_chunk_id,
         quote_or_value=quote,
     )
