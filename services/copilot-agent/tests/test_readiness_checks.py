@@ -5,7 +5,7 @@ import asyncio
 import httpx
 
 from app.config import Settings
-from app.readiness import check_ollama, check_openemr, check_trace_store
+from app.readiness import check_llama_server, check_ollama, check_openemr, check_trace_store
 
 
 def _run_check(handler, check_fn, settings: Settings):
@@ -62,6 +62,26 @@ def test_check_ollama_not_ok_on_connection_error():
 
     settings = Settings(ollama_base_url="http://ollama:11434")
     result = _run_check(handler, check_ollama, settings)
+
+    assert result.ok is False
+
+
+def test_check_llama_server_ok_on_2xx_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    settings = Settings(llama_server_base_url="http://llama-server:8080")
+    result = _run_check(handler, check_llama_server, settings)
+
+    assert result.ok is True
+
+
+def test_check_llama_server_not_ok_on_connection_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    settings = Settings(llama_server_base_url="http://llama-server:8080")
+    result = _run_check(handler, check_llama_server, settings)
 
     assert result.ok is False
 
