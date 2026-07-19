@@ -1,0 +1,36 @@
+id: factually-consistent-anticoagulant-doac
+category: factually_consistent
+failure_mode: >
+  The cited guideline quote must actually support the claim about DOAC
+  interaction risk, not a claim borrowed from the warfarin-specific section
+  of the same document.
+question: "Do direct oral anticoagulants like apixaban have fewer dietary interactions than warfarin?"
+patient_id: 1
+retrieved_chunks:
+  - chunk_id: "anticoagulant-interactions#direct-oral-anticoagulants-doacs"
+    doc_id: "anticoagulant-interactions"
+    title: "Anticoagulant and Antiplatelet Interaction Cautions"
+    section: "Direct Oral Anticoagulants (DOACs)"
+    text: >
+      DOACs (e.g. apixaban, rivaroxaban, dabigatran) have fewer dietary
+      interactions than warfarin but still carry bleeding-risk interactions
+      with NSAIDs, antiplatelet agents, and strong inhibitors of the
+      metabolic/transport pathways involved in their clearance (e.g. certain
+      antifungals, some antiretrovirals) -- these can raise DOAC levels and
+      bleeding risk.
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): with no chart-data tool_data provided (a
+  guideline-only question), the model either declines to answer at all
+  ("outside the scope of patient-specific data retrieval tools") or answers
+  correctly in prose but the claim extractor fabricates a plausible-looking
+  SourceRef pointing at a tool call that never happened, instead of using
+  the provided guideline_chunk document_citations format -- so the claim
+  fails citation re-validation (verdict: blocked) even though a real,
+  verbatim-quotable guideline chunk was available. This is an honest,
+  reproducible P3G.1 finding about the local 4B extraction model, not a
+  harness bug -- the assertion (verdict: verified) is the correct target
+  and is deliberately not weakened.

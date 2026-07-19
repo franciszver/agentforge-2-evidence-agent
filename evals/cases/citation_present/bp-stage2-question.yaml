@@ -1,0 +1,44 @@
+id: bp-stage2-question
+category: citation_present
+failure_mode: >
+  P3G.1: a guideline-answerable chart question must yield an answer whose clinical claim
+  carries a VERIFIED guideline_chunk DocumentCitation -- a real retrieved chunk, quoted
+  verbatim -- alongside the chart-data citation.
+question: "What was his last blood pressure reading, and what category does that fall into?"
+patient_id: 1
+tool_data:
+  get_vitals:
+    items:
+      - vital_type: "blood_pressure_systolic"
+        value: 148
+        unit: "mmHg"
+        date: "2026-06-01T09:00:00"
+      - vital_type: "blood_pressure_diastolic"
+        value: 94
+        unit: "mmHg"
+        date: "2026-06-01T09:00:00"
+retrieved_chunks:
+  - chunk_id: "blood-pressure-categories#categories"
+    doc_id: "blood-pressure-categories"
+    title: "Blood Pressure Categories and Thresholds"
+    section: "Categories"
+    text: >
+      Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or higher.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
+  and a retrieved guideline chunk for the same turn, the model consistently
+  answers only from the chart data and never surfaces or quotes the
+  guideline passage in its final answer -- so the claim extractor has no
+  guideline text to cite and produces zero guideline_chunk document
+  citations (verdict stays verified/partially_verified on the chart-data
+  claims alone, but citation_present -- a claim carrying a VERIFIED
+  guideline_chunk citation -- never fires). This is an honest, reproducible
+  P3G.1 finding about the local 4B model's current tendency to prioritize
+  structured chart data over retrieved guideline evidence when both are
+  available in one turn, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.

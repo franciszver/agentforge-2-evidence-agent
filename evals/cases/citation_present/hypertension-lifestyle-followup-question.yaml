@@ -1,0 +1,46 @@
+id: hypertension-lifestyle-followup-question
+category: citation_present
+failure_mode: >
+  P3G.1: a guideline-answerable chart question must yield an answer whose clinical claim
+  carries a VERIFIED guideline_chunk DocumentCitation -- a real retrieved chunk, quoted
+  verbatim -- alongside the chart-data citation.
+question: "His blood pressure was elevated at his last visit and we're trying lifestyle changes -- when should we have him back?"
+patient_id: 1
+tool_data:
+  get_vitals:
+    items:
+      - vital_type: "blood_pressure_systolic"
+        value: 132
+        unit: "mmHg"
+        date: "2026-06-01T09:00:00"
+      - vital_type: "blood_pressure_diastolic"
+        value: 84
+        unit: "mmHg"
+        date: "2026-06-01T09:00:00"
+retrieved_chunks:
+  - chunk_id: "hypertension-lifestyle#follow-up-cadence"
+    doc_id: "hypertension-lifestyle"
+    title: "Hypertension Lifestyle Management and Follow-Up"
+    section: "Follow-Up Cadence"
+    text: >
+      Elevated blood pressure or Stage 1 hypertension managed with lifestyle alone:
+      recheck at roughly 3-6 months to assess response before deciding whether to add
+      pharmacotherapy.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
+  and a retrieved guideline chunk for the same turn, the model consistently
+  answers only from the chart data and never surfaces or quotes the
+  guideline passage in its final answer -- so the claim extractor has no
+  guideline text to cite and produces zero guideline_chunk document
+  citations (verdict stays verified/partially_verified on the chart-data
+  claims alone, but citation_present -- a claim carrying a VERIFIED
+  guideline_chunk citation -- never fires). This is an honest, reproducible
+  P3G.1 finding about the local 4B model's current tendency to prioritize
+  structured chart data over retrieved guideline evidence when both are
+  available in one turn, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.

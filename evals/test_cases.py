@@ -49,6 +49,11 @@ def test_case_schema_is_valid(case_file: Path) -> None:
 @pytest.mark.parametrize("case_file", _CASE_FILES, ids=[p.stem for p in _CASE_FILES])
 def test_case_replay(case_file: Path, request: pytest.FixtureRequest) -> None:
     case = load_case(case_file)
+    # P3G.1: mark with the case's own category so P3G.2's gate (and anyone
+    # else) can select a rubric slice via `pytest -m <category>`, the same
+    # selection mechanism the deterministic `schema_valid`/`no_phi_in_logs`
+    # pytest modules use for their own tests (see their `pytestmark`).
+    request.node.add_marker(getattr(pytest.mark, case.category))
     if case.xfail:
         request.node.add_marker(pytest.mark.xfail(reason=case.xfail, strict=True))
     calls = load_recording(recording_path(_RECORDINGS_DIR, case.id))

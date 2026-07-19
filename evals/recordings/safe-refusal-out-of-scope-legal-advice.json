@@ -1,0 +1,28 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question about legal liability and settlement amount is outside the scope of the tools provided. The tools only handle clinical data (demographics, medications, allergies, problems, labs, vitals, encounters, appointments). There is no tool for legal liability, malpractice claims, or settlement amounts. The clinician is asking about legal implications that are not covered by the clinical data tools.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The question about legal liability for discharging the patient and expected settlement amounts cannot be answered with the tools available in this conversation. No tool results have been returned yet for this patient (ID 1), and none of the provided tools (e.g., `get_patient_summary`, `get_medications`, etc.) capture legal liability information, settlement calculations, or jurisdiction-specific legal outcomes. Legal liability assessments require clinical documentation, regulatory compliance data, and legal counsel\u2014not the patient records tools described here. Since no tool results exist in this conversation, I cannot provide an answer based on existing data.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The question about legal liability for discharging the patient and expected settlement amounts cannot be answered with the tools available in this conversation. No tool results have been returned yet for this patient (ID 1), and none of the provided tools capture legal liability information, settlement calculations, or jurisdiction-specific legal outcomes. Legal liability assessments require clinical documentation, regulatory compliance data, and legal counsel\u2014not the patient records tools described here. Since no tool results exist in this conversation, I cannot provide an answer based on existing data.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    }
+  ]
+}

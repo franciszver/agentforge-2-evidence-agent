@@ -1,0 +1,41 @@
+id: a1c-target-question
+category: citation_present
+failure_mode: >
+  P3G.1: a guideline-answerable chart question must yield an answer whose clinical claim
+  carries a VERIFIED guideline_chunk DocumentCitation -- a real retrieved chunk, quoted
+  verbatim -- alongside the chart-data citation.
+question: "What was her last A1c, and is that at target for her diabetes?"
+patient_id: 1
+tool_data:
+  get_recent_labs:
+    items:
+      - test_name: "Hemoglobin A1c"
+        value: "7.8"
+        unit: "%"
+        date: "2026-06-01T09:00:00"
+        abnormal_flag: "high"
+retrieved_chunks:
+  - chunk_id: "a1c-targets#target-ranges"
+    doc_id: "a1c-targets"
+    title: "A1c Targets for Adults with Diabetes"
+    section: "Target Ranges"
+    text: >
+      Most non-pregnant adults with diabetes: A1c target generally below 7%.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
+  and a retrieved guideline chunk for the same turn, the model consistently
+  answers only from the chart data and never surfaces or quotes the
+  guideline passage in its final answer -- so the claim extractor has no
+  guideline text to cite and produces zero guideline_chunk document
+  citations (verdict stays verified/partially_verified on the chart-data
+  claims alone, but citation_present -- a claim carrying a VERIFIED
+  guideline_chunk citation -- never fires). This is an honest, reproducible
+  P3G.1 finding about the local 4B model's current tendency to prioritize
+  structured chart data over retrieved guideline evidence when both are
+  available in one turn, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.

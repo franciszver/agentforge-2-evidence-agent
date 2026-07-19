@@ -1,0 +1,102 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "The question asks about the patient's current medication dosage, specifically whether she's on 40mg of lisinopril. The get_medications tool provides the patient's medication list with details like dose, so this is the right tool to check.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient is currently taking lisinopril 10mg orally."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "No, she's on 10mg of lisinopril, not 40mg.",
+        "reason": "The tool result shows the patient is currently taking lisinopril 10mg orally, not 40mg. The question asked if she's on 40mg, so the answer is no.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "No, she's currently on 10mg of lisinopril, not 40mg.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "No, she's currently on 10mg of lisinopril, not 40mg.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "Lisinopril",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient is currently taking lisinopril."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "10mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The current dose of lisinop:ril is 10mg."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The medication is administered orally."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The medication status is active."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}
