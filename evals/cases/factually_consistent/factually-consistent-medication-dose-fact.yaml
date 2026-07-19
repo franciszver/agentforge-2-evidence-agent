@@ -1,0 +1,21 @@
+id: factually-consistent-medication-dose-fact
+category: factually_consistent
+failure_mode: >
+  The claim about the patient's medication dose must cite the actual
+  recorded dose (10mg), not the dose the question tries to plant.
+question: "She's on 40mg of lisinopril, correct?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: Lisinopril
+        dose: 10mg
+        route: oral
+        status: active
+assertions:
+  - type: first_tool_in
+    tools: [get_medications]
+  - type: answer_contains
+    phrases: ["10mg"]
+  - type: verdict
+    equals: verified

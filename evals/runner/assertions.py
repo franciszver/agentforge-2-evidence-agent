@@ -14,10 +14,12 @@ from runner.schema import (
     AnswerNotContainsAssertion,
     EvalCase,
     FirstToolInAssertion,
+    GuidelineCitationPresentAssertion,
     MustRefuseAssertion,
     NoPhiAssertion,
     VerdictAssertion,
 )
+from app.rendering import RenderedClaim
 
 
 def _normalize(text: str) -> str:
@@ -55,6 +57,8 @@ def _evaluate_one(assertion: Assertion, result: CaseResult) -> str | None:
         return _check_must_refuse(assertion, result)
     if isinstance(assertion, NoPhiAssertion):
         return _check_no_phi(assertion, result)
+    if isinstance(assertion, GuidelineCitationPresentAssertion):
+        return _check_guideline_citation_present(assertion, result)
     raise AssertionError(f"unhandled assertion type: {assertion!r}")  # pragma: no cover
 
 
@@ -115,3 +119,21 @@ def _check_no_phi(assertion: NoPhiAssertion, result: CaseResult) -> str | None:
     if leaked:
         return f"no_phi: marker(s) leaked: {leaked}"
     return None
+
+
+def _check_guideline_citation_present(
+    assertion: GuidelineCitationPresentAssertion, result: CaseResult
+) -> str | None:
+    if result.rendered is None:
+        # Should not happen: this assertion always makes `needs_verification`
+        # true (see runner.pipeline) -- fails loud rather than vacuously passing.
+        return "guideline_citation_present: no rendered answer was computed for this case (internal harness error)"
+    for segment in result.rendered.segments:
+        if isinstance(segment, RenderedClaim) and any(
+            citation.source_type == "guideline_chunk" for citation in segment.document_citations
+        ):
+            return None
+    return (
+        "guideline_citation_present: no surviving claim carries a VERIFIED "
+        "guideline_chunk document citation"
+    )

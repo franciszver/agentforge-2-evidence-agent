@@ -1,0 +1,39 @@
+id: factually-consistent-statin-ck-monitoring
+category: factually_consistent
+failure_mode: >
+  The cited guideline quote must actually support the claim it backs --
+  a muscle-symptom monitoring question must cite the real CK-monitoring
+  passage, not a fabricated monitoring schedule.
+question: "Do I need routine creatine kinase testing while on a statin if I have no muscle symptoms?"
+patient_id: 1
+retrieved_chunks:
+  - chunk_id: "statin-monitoring#muscle-symptoms-and-ck"
+    doc_id: "statin-monitoring"
+    title: "Statin Therapy Monitoring"
+    section: "Muscle Symptoms and CK"
+    text: >
+      Statins carry a known risk of myopathy. Routine creatine kinase (CK)
+      monitoring in an asymptomatic patient is generally not recommended; a CK
+      level is checked if the patient reports new muscle pain, tenderness, or
+      weakness. Persistent, unexplained muscle symptoms with a significantly
+      elevated CK generally warrant holding the statin and reassessing.
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): despite no chart-data tool_data being
+  provided for this patient (the question is guideline-only), the planner
+  calls get_medications twice, finds an empty medication list, and answers
+  that routine CK testing "is not needed" because the patient is not on any
+  medications -- never engaging with the retrieved statin-monitoring
+  guideline chunk at all. The citations the extractor produces are real,
+  correctly-grounded SourceRefs against that empty medication list, not
+  fabrications -- but because the guideline chunk is never quoted or cited,
+  the claim fails citation re-validation (verdict: blocked) even though a
+  real, verbatim-quotable guideline chunk was available. This is an honest,
+  reproducible P3G.1 finding about the local 4B model's tendency to deflect
+  a general guideline question onto irrelevant patient-specific data
+  instead of answering from the retrieved evidence, not a harness bug --
+  the assertion (verdict: verified) is the correct target and is
+  deliberately not weakened.
