@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.main import app
-from app.readiness import get_ollama_client, get_openemr_client
+from app.readiness import get_llama_server_client, get_ollama_client, get_openemr_client
 
 client = TestClient(app)
 
@@ -86,6 +86,54 @@ def test_ready_returns_503_when_ollama_down(tmp_path):
     body = response.json()
     assert body["status"] == "not_ready"
     assert body["checks"]["ollama"]["ok"] is False
+
+
+def test_ready_omits_llama_server_check_when_engine_is_ollama(tmp_path):
+    # Default engine ("ollama"): embeddings + vision extraction always use
+    # Ollama, and chat/extract also route through Ollama, so llama-server is
+    # never in the request path and must not appear in the report.
+    app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        trace_db_path=str(tmp_path / "traces.db")
+    )
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert "llama_server" not in response.json()["checks"]
+
+
+def test_ready_returns_200_when_llama_server_engine_and_all_healthy(tmp_path):
+    app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        copilot_llm_engine="llama_server", trace_db_path=str(tmp_path / "traces.db")
+    )
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["llama_server"]["ok"] is True
+
+
+def test_ready_returns_503_when_llama_server_engine_and_llama_server_down(tmp_path):
+    app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_llama_server_client] = _fake_client_dependency(_down_handler)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        copilot_llm_engine="llama_server", trace_db_path=str(tmp_path / "traces.db")
+    )
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    assert body["checks"]["llama_server"]["ok"] is False
 
 
 def test_ready_returns_503_when_trace_store_not_writable(tmp_path):
