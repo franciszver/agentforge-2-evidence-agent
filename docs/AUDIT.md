@@ -177,6 +177,63 @@ All three were fixed in **#190** (internal token URL decoupled from the browser-
 
 ---
 
+## Phase 2 Week-2 hardening checklist (P4.1, Stage 4, issue #25)
+
+- **Status:** Complete, 2026-07-19. No dedicated file named "Stage-4 hardening
+  checklist" exists in Phase 1 (`agentforge-1-clinical-copilot`) — its own
+  Phase 5 ("Hardening + polish") was a set of numbered tasks (P5.1-P5.6:
+  capacity run, CI expansion, README rewrite, ARCHITECTURE.md finalization,
+  this AUDIT.md, fresh-clone validation), not a standalone security
+  checklist artifact. This section therefore builds the checklist from two
+  things that *do* exist and are load-bearing: (a) this document's own
+  finding taxonomy (confidentiality-at-rest, authorization-consistency,
+  perimeter/session hardening, retention) applied fresh to Phase 2's new
+  code, and (b) the security-review conventions in this repo's `CLAUDE.md`
+  (PSR-3 structured logging with no PHI/secret interpolation, catch broad
+  exceptions without leaking `getMessage()`/`str(exc)` to callers,
+  fail-closed on error, injection resistance, auth/authz checks at every
+  boundary). It is scoped to the **Week-2 additions only** — ingestion,
+  hybrid retrieval/reranking, the extended verification layer, the
+  supervisor/workers, the `llama_server` engine + `/ready`, and per-patient
+  document-fact citations. The OpenEMR base and Phase 1's own agent code are
+  unchanged and already covered by the findings above.
+- **Method:** every Week-2 module (`app/ingestion.py`, `app/retrieval.py`,
+  `app/reranking.py`, `app/supervisor.py`, `app/llama_server_client.py`,
+  `app/readiness.py`, `app/verification.py`/`app/extraction.py`,
+  `app/documents.py`, the `app/chat.py` wiring, and the
+  `app/dashboard*.py`/`app/encounter_observability.py` observability
+  additions) read directly against the checklist categories below. No
+  candidate finding is reported without a `file:line` citation to the
+  actual code.
+
+| Category | Result |
+|---|---|
+| PHI/secrets in logs | **Pass.** No `f"..."`/string-interpolated logger calls anywhere in the Week-2 modules; every log call uses PSR-3-style `extra={}` context. `app/chat.py:1089-1094,1106-1109` and `app/supervisor.py:28-37` carry an explicit, enforced invariant: exceptions from evidence-retrieval, patient-fact lookup, and worker handoffs are logged by exception **type only**, never `str(exc)`, specifically because those exception messages can embed the clinician's question text. |
+| Fail-closed on error | **Pass.** `app/ingestion.py` never substitutes a guessed value for an illegible field (`None`/dropped row only); a failed per-page VLM call is tracked in `IngestionResult.failed_pages` rather than silently indistinguishable from "legitimately empty," so a caller cannot present a partial extraction as complete. `app/ingestion.py`'s document-store methods (`read_source_patient_id`, `list_citations_for_patient`) fail closed to `None`/skip on any malformed sidecar file. `app/chat.py:1091-1110` treats evidence-retrieval and patient-fact-lookup failures as fail-soft (empty list), never crashing an otherwise-working chat turn. |
+| Exception handling | **Pass.** Every Week-2 module translates library-specific exceptions (`pdfium.PdfiumError`, `httpx.HTTPError`, etc.) into one stable, log-safe error type (`IngestionError`, `RetrievalError`, `RerankError`, `LlamaServerError`) rather than letting raw exceptions escape. One low-severity note: `app/reranking.py:170` (`raise RerankError(str(exc))`) passes a message through, but only inside `_RecordedRerankScorer`, a CI record/replay test scorer never used on the live request path — informational, not a production exposure. |
+| Auth/authz boundary correctness | **Pass, consistent with Phase 1's existing posture.** `/health`, `/ready`, and the dashboard are unauthenticated by explicit documented design (`app/dashboard.py:24`, "same posture as the rest of the agent's unauthenticated GET surface") — this matches Phase 1's own posture and is not a Phase-2-introduced gap. `app/readiness.py`'s `check_trace_store` returns only `type(exc).__name__` on failure, never a file path or driver string, so `/ready` cannot leak internal deployment details. `app/ingestion.py`'s citation-overlay `source_id` lookup is regex-validated (`[0-9a-f]{32}`) independently at both the endpoint and the store layer before it can reach `Path.glob`, and `read_source_patient_id` backs the flag-gated launch-patient binding check the same way Phase 1's tools do — no bypass path found. |
+| Injection resistance | **Pass, verified deliberately.** The one genuinely new injection surface Phase 2 introduces — a malicious/adversarial uploaded PDF whose VLM-extracted `patient_facts` become part of the "fact catalog" fed to the claim-extraction LLM (`app/extraction.py`) — was checked directly: that extraction LLM has no tool/client/token access, correctly reusing Phase 1's existing "summarizer-class-safe" containment for quarantined tool output (`app/planner.py`, `app/quarantine.py`) rather than introducing a new, unaudited trust boundary. |
+| Resource/DoS considerations | **Pass, already mitigated by design.** `app/ingestion.py` bounds `MAX_PAGES` (50) and `MAX_PAGE_POINTS` (8000pt), validated before any page is rendered or stored. `app/retrieval.py` bounds query length (`MAX_QUERY_CHARS`, 2000) and FTS5 token count, preempting an unbounded-query DoS. `app/llama_server_client.py` applies `max_tokens: 1536` unconditionally to every request — a documented fix for a measured 305-second runaway generation under an open-ended schema field. |
+| Dependency/supply-chain | **Pass.** The `pip-audit` CI job (added by `#24`, `.github/workflows/copilot-ci.yml`) installs the project via `pip install -e ".[dev]"` from `pyproject.toml` and scans the full resolved environment, so `pypdfium2` and every other Week-2 ingestion/retrieval dependency is already covered with no CI change required. |
+
+**Findings requiring a fix:** none. Every category above was checked against
+real code, cited by `file:line`, and came back clean — the Week-2 surface was
+built to the same discipline this audit already documented for Phase 1
+(fail-closed extraction, type-only exception logging, structural containment
+of untrusted content), not bolted on separately.
+
+**Carried-forward items, unchanged by this pass:** the base-platform items in
+the "Confirmed findings" section above (F-1, F-2, F-3, F-5, F-8, F-9, F-10)
+and the Phase 1 debt disposition table (`docs/W2_ARCHITECTURE.md` "Phase 1
+Debt Disposition") are OpenEMR-base or Phase-1-agent concerns outside
+Week-2's own code and are not re-litigated here. One process item surfaced
+during this pass, outside this document's scope to decide: `planning/PLAN.md`
+Stage 4 calls for flipping the repo public "when it passes" — the repo is
+currently **private**; flipping repo visibility is an owner decision, not
+made as part of this checklist run (see PR for this issue).
+
+---
+
 ## Cross-cutting analysis
 
 **Performance.** This audit did not benchmark; performance measurement is deliberately deferred to Phase 5. The relevant baseline note for agent latency is that OpenEMR's REST/FHIR read path is the Co-Pilot's data source, and every agent tool call becomes an authenticated API round-trip against it. The audit surfaced no request-path bottleneck that would block Phase 1, but the API-log write on `KernelEvents::TERMINATE` (F-2) adds a synchronous per-request insert of the full response body, which is worth including when Phase 5 profiles end-to-end agent latency.
