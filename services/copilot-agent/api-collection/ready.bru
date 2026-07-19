@@ -1,0 +1,19 @@
+meta {
+  name: Ready
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/ready
+  body: none
+  auth: none
+}
+
+docs {
+  Dependency-aware readiness check: OpenEMR FHIR reachability, the
+  configured Ollama/llama-server engine, and a real read/write against the
+  trace-store SQLite database. Returns 200 with `status: "ready"` when every
+  check passes, 503 with `status: "not_ready"` and the per-check detail
+  otherwise.
+}

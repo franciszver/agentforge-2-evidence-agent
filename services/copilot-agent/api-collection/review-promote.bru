@@ -1,0 +1,21 @@
+meta {
+  name: Promote to Regression Case
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/review/promote?correlation_id={{correlationId}}
+  body: none
+  auth: none
+}
+
+params:query {
+  correlation_id: {{correlationId}}
+}
+
+docs {
+  Promotes a completed `POST /chat` interaction (by `correlation_id`) into
+  a generated regression-eval-case YAML fixture. Returns 404 if no trace
+  spans exist for that correlation id.
+}
