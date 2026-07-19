@@ -82,6 +82,7 @@ from app.check_drug_interactions import check_drug_interactions
 from app.ollama_client import LLMEngineError, LlmCallStats
 from app.planner import PlannerResult
 from app.rendering import RenderedAnswer, render_answer
+from app.schemas.ingestion import Citation
 from app.schemas.planner import ToolName
 from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
@@ -94,7 +95,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.verdict import VerdictResult, compute_verdict
-from app.verification import CacheIndex, CorpusChunkIndex, check_claims, recency_notices
+from app.verification import CacheIndex, CorpusChunkIndex, DocumentFactIndex, check_claims, recency_notices
 
 _logger = logging.getLogger(__name__)
 
@@ -124,7 +125,14 @@ class ClaimExtractorLike(Protocol):
     tool-result catalog. Defaulting to ``()`` means ``run_verification``
     only ever passes it explicitly when non-empty (see that function), so
     every pre-existing test double that implements this Protocol without the
-    parameter keeps working unmodified."""
+    parameter keeps working unmodified.
+
+    ``patient_facts`` (P3.9a, issue #46) is the same kind of ADDITIVE,
+    optional capability: the bound patient's own extracted lab/intake-form
+    fact citations (``app.schemas.ingestion.Citation``), offered as extra
+    citable evidence alongside the tool-result catalog and any guideline
+    chunks. Also defaults to ``()`` and is only ever passed non-empty, for
+    the same backward-compatibility reason."""
 
     def extract_claims(
         self,
@@ -133,6 +141,7 @@ class ClaimExtractorLike(Protocol):
         tools: Sequence[ToolName],
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
+        patient_facts: Sequence[Citation] = (),
     ) -> list[Claim]: ...
 
 
@@ -221,6 +230,33 @@ Guideline passages:
 {guideline_catalog}
 """
 
+# P3.9a (issue #46): appended (not merged into) _EXTRACT_INSTRUCTIONS ONLY
+# when the bound patient has >=1 extracted document fact -- see
+# _build_fact_catalog and ClaimExtractor.extract_claims. Mirrors
+# _GUIDELINE_INSTRUCTIONS' shape, but for the "lab_pdf"/"intake_form" source
+# types app.schemas.ingestion.DocumentCitation also allows, re-validated by
+# app.verification.check_document_citation against a DocumentFactIndex built
+# from these SAME patient-scoped facts (never a paraphrase, never another
+# patient's facts -- see app.chat.get_patient_fact_provider).
+_FACT_INSTRUCTIONS = """
+You may ALSO cite facts extracted from this patient's own uploaded lab \
+reports or intake forms, listed below, via "document_citations" (in \
+addition to, or instead of, "source_refs"). Each such citation has:
+  - "source_type": exactly "lab_pdf" or "intake_form", matching the source \
+below.
+  - "source_id": EXACTLY one of the document ids below.
+  - "field_or_chunk_id": EXACTLY one of the field ids below, copied in full.
+  - "page_or_section": the page shown for that fact below.
+  - "quote_or_value": copied VERBATIM, character-for-character, from that \
+fact's quote below -- never paraphrased, summarized, or invented. Only quote \
+text that is actually present below.
+
+Only cite a document id / field id that is actually listed below -- never invent one.
+
+Patient document facts:
+{fact_catalog}
+"""
+
 
 def normalize_raw_results(
     tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None]
@@ -287,30 +323,41 @@ class ClaimExtractor:
         tools: Sequence[ToolName],
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
+        patient_facts: Sequence[Citation] = (),
     ) -> list[Claim]:
         """Return the cited claims decomposed from ``answer``.
 
         ``raw_results`` must already be normalized (see
         ``normalize_raw_results``). Fails soft: an answer with nothing citable
-        (no tool-result catalog AND no ``retrieved_chunks``) short-circuits to
-        ``[]`` with no model call, and a malformed/failed extraction returns
-        ``[]`` (downstream this yields a fail-closed ``blocked`` verdict per
-        P3.7).
+        (no tool-result catalog, no ``retrieved_chunks``, and no
+        ``patient_facts``) short-circuits to ``[]`` with no model call, and a
+        malformed/failed extraction returns ``[]`` (downstream this yields a
+        fail-closed ``blocked`` verdict per P3.7).
 
         ``retrieved_chunks`` (P3.9, additive): the P3.5 evidence-retriever
         worker's reranked guideline-corpus chunks for this turn's question,
         offered as EXTRA citable evidence via ``_GUIDELINE_INSTRUCTIONS`` --
         never required; an answer with only a tool-result catalog (or only
         guideline chunks, e.g. a guideline-only question with no chart-data
-        tool call this turn) still works exactly as before."""
+        tool call this turn) still works exactly as before.
+
+        ``patient_facts`` (P3.9a, additive, issue #46): the bound patient's
+        own extracted lab/intake-form fact citations, offered as EXTRA
+        citable evidence via ``_FACT_INSTRUCTIONS`` -- never required, and
+        never anything but that ONE patient's own facts (the caller,
+        ``app.chat.get_patient_fact_provider``, is what enforces that scope;
+        this method has no patient-identity concept of its own)."""
         catalog = _build_catalog(tools, raw_results)
         guideline_catalog = _build_guideline_catalog(retrieved_chunks)
-        if not catalog and not guideline_catalog:
+        fact_catalog = _build_fact_catalog(patient_facts)
+        if not catalog and not guideline_catalog and not fact_catalog:
             return []
 
         instructions = _EXTRACT_INSTRUCTIONS.format(catalog=catalog or "(none)")
         if guideline_catalog:
             instructions += "\n" + _GUIDELINE_INSTRUCTIONS.format(guideline_catalog=guideline_catalog)
+        if fact_catalog:
+            instructions += "\n" + _FACT_INSTRUCTIONS.format(fact_catalog=fact_catalog)
 
         # Message layout matches the structure spike #140 measured at 100%
         # citation-validity for wide-format tools: the tool-result DATA first,
@@ -377,6 +424,22 @@ def _build_guideline_catalog(chunks: Sequence[RerankedChunk]) -> str:
     return "\n".join(lines)
 
 
+def _build_fact_catalog(citations: Sequence[Citation]) -> str:
+    """Catalog of every patient-document fact's citable identity (doc id,
+    field id, page) PLUS its literal extracted quote -- mirrors
+    ``_build_guideline_catalog`` (the quote itself is only ever available
+    here, so it must be included for the model to quote it verbatim). Empty
+    string when ``citations`` is empty."""
+    lines: list[str] = []
+    for citation in citations:
+        lines.append(
+            f'{citation.field_or_chunk_id} (source_id="{citation.source_id}", '
+            f'source_type="{citation.source_type}") / {citation.page_or_section}'
+        )
+        lines.append(f"  quote: {citation.quote_or_value}")
+    return "\n".join(lines)
+
+
 def _build_tool_result_messages(
     tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None]
 ) -> list[dict[str, str]]:
@@ -434,6 +497,7 @@ def run_verification(
     extractor: ClaimExtractorLike,
     result: PlannerResult,
     retrieved_chunks: Sequence[RerankedChunk] = (),
+    patient_facts: Sequence[Citation] = (),
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
@@ -451,19 +515,34 @@ def run_verification(
     ``app.verification.check_document_citation``): built directly from these
     SAME retrieved chunks' raw text, never a paraphrase, so a claim that
     quotes something the retrieved passage never actually says fails exactly
-    like a hallucinated structured-data citation fails ``check_source_ref``."""
+    like a hallucinated structured-data citation fails ``check_source_ref``.
+
+    ``patient_facts`` (P3.9a, additive, issue #46): the bound patient's own
+    extracted lab/intake-form fact citations, if any -- ``app.chat``'s ONLY
+    responsibility is to source this list strictly scoped to the ONE patient
+    a turn is bound to (see ``app.chat.get_patient_fact_provider``); this
+    function trusts it and never re-derives or widens the scope. Passed to
+    the extractor ONLY when non-empty, same discipline as
+    ``retrieved_chunks``, and used to build the ``DocumentFactIndex`` any
+    resulting ``lab_pdf``/``intake_form`` document citations are re-validated
+    against -- built directly from these SAME patient-scoped facts, never a
+    paraphrase and never another patient's facts, so a citation naming a
+    fact this patient does not have (whether hallucinated or, worse, an
+    attempt to cite a different patient's data) fails closed exactly like
+    ``check_document_citation``'s ``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
 
+    extract_kwargs: dict[str, Any] = {}
     if retrieved_chunks:
-        claims = extractor.extract_claims(
-            answer=result.answer, tools=tools, raw_results=normalized, retrieved_chunks=retrieved_chunks
-        )
-    else:
-        claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized)
+        extract_kwargs["retrieved_chunks"] = retrieved_chunks
+    if patient_facts:
+        extract_kwargs["patient_facts"] = patient_facts
+    claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized, **extract_kwargs)
     index = CacheIndex.from_raw_results(normalized)
     corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
-    claim_results = check_claims(claims, index, corpus_index=corpus_index)
+    fact_index = DocumentFactIndex.from_citations(patient_facts) if patient_facts else None
+    claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
     rendered = render_answer(claim_results)
 
     medications = collect_medications(tools, result.raw_results)
