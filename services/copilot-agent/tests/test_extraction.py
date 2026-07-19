@@ -44,14 +44,13 @@ from app.ollama_client import OllamaError
 from app.openemr_client import OpenEmrClient
 from app.planner import PlannerResult, ToolCallTrace
 from app.rendering import Notice, RenderedClaim
-from app.schemas.ingestion import Citation as DocumentIngestionCitation
-from app.schemas.ingestion import DocumentCitation
 from app.schemas.common import (
     AllergySeverity,
     MedicationStatus,
     SourceRef,
     VitalType,
 )
+from app.schemas.ingestion import Citation as DocumentIngestionCitation, DocumentCitation
 from app.schemas.planner import ToolName
 from app.schemas.tools import (
     AllergiesOutput,
