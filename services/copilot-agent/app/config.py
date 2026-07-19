@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
     # Dense-embedding model for hybrid guideline-corpus retrieval (P3.3,
-    # app/retrieval.py) -- distinct from ollama_model (chat/extraction).
+    # app/retrieval.py) -- distinct from ollama_model (chat/extraction). Only
+    # consulted when copilot_embed_engine == "ollama" (P3.10b, see below);
+    # the llama_server embed engine is the default.
     ollama_embedding_model: str = "nomic-embed-text"
 
     # OAuth2 endpoints on the OpenEMR "default" site. Paths are relative to
@@ -156,6 +158,26 @@ class Settings(BaseSettings):
     llama_server_model: str = "qwen3-8b"
     llama_server_api_timeout_seconds: float = 60.0
     llama_server_extract_max_retries: int = 2
+
+    # P3.10b (epic #52 step 2): which engine serves dense-vector embeddings
+    # (nomic-embed-text) for hybrid guideline-corpus retrieval -- see
+    # app/chat.py's _build_evidence_workers. Literal "ollama" or
+    # "llama_server". A DEDICATED flag rather than reusing
+    # copilot_llm_engine: the two roles are independently rollback-able (an
+    # answer-model rollback to Ollama should not also silently move
+    # embeddings, and vice versa). Default "llama_server" -- nomic-embed is
+    # the same GGUF weights either way (app.llama_server_embed_client.
+    # LlamaServerEmbedClient), so retrieval quality is unaffected; see the
+    # parity check recorded in the P3.10b PR description.
+    copilot_embed_engine: str = "llama_server"
+    # Connection info for the SECOND llama-server instance, running in
+    # `--embedding` mode, serving nomic-embed-text -- a distinct service from
+    # llama_server_base_url above (which serves chat/extract). See
+    # app/llama_server_embed_client.py and docker-compose.copilot.yml.
+    llama_server_embed_base_url: str = "http://llama-server-embed:8080"
+    llama_server_embed_model: str = "nomic-embed-text-v1.5"
+    llama_server_embed_api_timeout_seconds: float = 60.0
+    llama_server_embed_max_retries: int = 2
 
     # P3.9: when true, POST /chat additionally routes each turn's question
     # through the P3.5 supervisor's evidence-retriever worker (hybrid

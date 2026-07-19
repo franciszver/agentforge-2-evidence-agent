@@ -2,11 +2,13 @@
 answer/extract/reranker LLM roles from Ollama to llama-server, gated by
 ``Settings.copilot_llm_engine``.
 
-Hard invariant this test exists to pin down: embeddings
-(``nomic-embed-text``) and vision document-ingestion extraction MUST stay on
-Ollama regardless of the engine flag -- only the planner chat/extract, claim
-extraction, and LLM-as-reranker roles are engine-selectable. No real network
-is touched anywhere in this file.
+Hard invariant this test exists to pin down: vision document-ingestion
+extraction MUST stay on Ollama regardless of either engine flag -- only the
+planner chat/extract, claim extraction, and LLM-as-reranker roles are
+selectable via ``copilot_llm_engine``, and the embedder is separately
+selectable via ``copilot_embed_engine`` (P3.10b, epic #52 step 2 -- see
+``test_chat_embed_engine_routing.py`` for that flag's dedicated coverage).
+No real network is touched anywhere in this file.
 """
 
 from __future__ import annotations
@@ -69,12 +71,13 @@ def test_claim_extractor_uses_llama_server_by_default(monkeypatch):
     assert isinstance(extractor._ollama, LlamaServerClient)
 
 
-def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when_flagged(tmp_path):
+def test_evidence_workers_keep_intake_extractor_on_ollama_even_when_flagged(tmp_path):
     """The most important regression this migration must not introduce: the
-    embedder (dense-vector retrieval, ``nomic-embed-text``) and the
     vision-document-ingestion ``IntakeExtractorWorker`` must stay on
     ``OllamaClient`` even when ``copilot_llm_engine`` selects llama-server --
-    only the reranker's LLM-as-judge scorer is engine-selectable."""
+    only the reranker's LLM-as-judge scorer is engine-selectable via that
+    flag. (The embedder is covered by ``test_chat_embed_engine_routing.py``,
+    P3.10b -- its own, dedicated ``copilot_embed_engine`` flag.)"""
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None, copilot_llm_engine="llama_server", copilot_ingestion_base_dir=str(tmp_path)
     )
@@ -82,7 +85,6 @@ def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 
     assert isinstance(intake_worker._ollama_client, OllamaClient)
-    assert isinstance(evidence_worker._retriever._embedder, OllamaClient)
     assert isinstance(evidence_worker._reranker._scorer._client, LlamaServerClient)
 
 
@@ -92,7 +94,6 @@ def test_evidence_workers_use_llama_server_reranker_by_default(tmp_path):
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 
     assert isinstance(intake_worker._ollama_client, OllamaClient)
-    assert isinstance(evidence_worker._retriever._embedder, OllamaClient)
     assert isinstance(evidence_worker._reranker._scorer._client, LlamaServerClient)
 
 
@@ -104,5 +105,4 @@ def test_evidence_workers_use_ollama_reranker_when_flagged(tmp_path):
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 
     assert isinstance(intake_worker._ollama_client, OllamaClient)
-    assert isinstance(evidence_worker._retriever._embedder, OllamaClient)
     assert isinstance(evidence_worker._reranker._scorer._client, OllamaClient)
