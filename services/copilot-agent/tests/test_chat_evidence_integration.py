@@ -27,9 +27,11 @@ from fastapi.testclient import TestClient
 
 from app.chat import (
     ChatEvent,
+    _no_op_support_judge_provider,
     get_claim_extractor,
     get_evidence_retriever,
     get_planner_factory,
+    get_support_judge_provider,
     get_token_validator,
     get_trace_store,
 )
@@ -153,6 +155,12 @@ def test_real_chat_turn_produces_a_verified_document_citation_via_the_traced_sup
     app.dependency_overrides[get_claim_extractor] = lambda: _FakeExtractor()
     app.dependency_overrides[get_trace_store] = lambda: trace_store
     app.dependency_overrides[get_evidence_retriever] = lambda: _real_evidence_retriever(trace_store)
+    # This test's extractor is a scripted double (no live model) -- the
+    # issue #47 semantic-support gate needs an LLM-capable judge, which this
+    # test has none of, so keep it off here regardless of Settings' default
+    # (issue #81) to stay hermetic; the gate itself is covered separately by
+    # tests/test_semantic_support.py and tests/test_support_judge_provider.py.
+    app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
 
     response = client.post(
         "/chat",
@@ -212,6 +220,7 @@ def test_evidence_retrieval_failure_is_fail_soft_and_logs_only_the_error_type(tm
     app.dependency_overrides[get_claim_extractor] = lambda: _NoClaimsExtractor()
     app.dependency_overrides[get_trace_store] = lambda: trace_store
     app.dependency_overrides[get_evidence_retriever] = lambda: _failing_evidence_retriever
+    app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
 
     response = client.post(
         "/chat",

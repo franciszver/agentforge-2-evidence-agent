@@ -247,6 +247,38 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE directly addresses the interaction between NSAIDs (like ibuprofen) and lithium, indicating that this combination requires closer monitoring, which supports the CLAIM that caution is needed.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE directly states that NSAIDs can reduce renal lithium clearance, which supports the CLAIM that ibuprofen (an NSAID) can increase the risk of lithium toxicity by reducing its renal excretion.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE explains that NSAIDs like ibuprofen can increase lithium levels by reducing renal clearance, which supports the CLAIM that monitoring for lithium toxicity is important when ibuprofen is used.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE indicates a potential drug interaction that requires careful monitoring, which supports the need to consult a pharmacist or healthcare provider to determine the safest approach for the patient.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }

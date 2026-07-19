@@ -107,14 +107,51 @@ class CaseResult:
     rendered: RenderedAnswer | None
 
 
+def _has_assertion(case: EvalCase, *assertion_types: type) -> bool:
+    """Whether any of ``case.assertions`` is an instance of one of
+    ``assertion_types`` -- the shared check ``needs_verification`` and
+    ``needs_semantic_support`` both build on, for their own assertion-type
+    subsets."""
+    return any(isinstance(assertion, assertion_types) for assertion in case.assertions)
+
+
 def needs_verification(case: EvalCase) -> bool:
     """Whether this case's assertions require the extraction/verification
     stage (i.e. it has a ``verdict`` or, P3G.1, ``guideline_citation_present``
     assertion -- both need the same ``ClaimExtractor``/``check_claims`` pass)."""
-    return any(
-        isinstance(assertion, (VerdictAssertion, GuidelineCitationPresentAssertion))
-        for assertion in case.assertions
-    )
+    return _has_assertion(case, VerdictAssertion, GuidelineCitationPresentAssertion)
+
+
+# Issue #81 (owner-revised methodology, P3.9c): the gate is judged against
+# the STABLE recordings already on main rather than a fresh answer re-draw
+# (a fresh re-draw of all 12 cases turned out to be an unlucky sample --
+# planner variance, unrelated to the gate -- see docs/MODEL_AND_HARDWARE_
+# SELECTION.md's variance caveat). ``statin-ck-myopathy-question`` is the one
+# case that remains excluded: its stable (pre-#81) recording was never
+# re-recordable under the gate (#58's original claim-extraction decode
+# limitation, still true), so it has no committed extraction to judge from.
+# ``dual-antiplatelet-question`` IS one of the six stable provenance-passing
+# cases re-judged this cycle -- its stable recording has a real extraction to
+# append a judge call onto -- so it is no longer excluded here.
+_CANNOT_RERECORD_UNDER_GATE = frozenset({"statin-ck-myopathy-question"})
+
+
+def needs_semantic_support(case: EvalCase) -> bool:
+    """Whether this case's verification pass must also run the issue #47
+    semantic-support gate (``app.semantic_support``, on by default in
+    production since issue #81 -- ``Settings.copilot_semantic_support_enabled``).
+
+    Scoped to cases with a ``guideline_citation_present`` assertion: that is
+    exactly the ``citation_present`` category's own assertion vocabulary (see
+    ``runner.schema``'s module docstring), the ONE category re-recorded with
+    the gate on (issue #81) -- every other category's committed recording
+    predates the gate and has no ``SemanticSupportJudgement`` call to replay,
+    so this must not widen beyond that one assertion type without
+    re-recording the newly-included cases too. ``_CANNOT_RERECORD_UNDER_GATE``
+    carves out the one case whose recording could not be updated (see above)."""
+    if case.id in _CANNOT_RERECORD_UNDER_GATE:
+        return False
+    return _has_assertion(case, GuidelineCitationPresentAssertion)
 
 
 def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
@@ -167,5 +204,14 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # the live P3.9 /chat wiring's `evidence_retriever(message)` -> `run_verification`
     # handoff -- see `runner.schema.RetrievedChunkFixture`.
     retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
-    verdict_result, rendered = run_verification(extractor, planner_result, retrieved_chunks=retrieved_chunks)
+    # Issue #81: the SAME client already driving the planner/extractor also
+    # satisfies `SemanticSupportJudgeLike` (both are duck-typed against one
+    # `.extract` call -- see `app.semantic_support.SemanticSupportJudgeLike`),
+    # so no separate client construction is needed here the way `app.chat`
+    # needs one (`get_support_judge_provider`) -- see `needs_semantic_support`
+    # for which cases actually exercise the judge call.
+    support_judge = ollama_client if needs_semantic_support(case) else None
+    verdict_result, rendered = run_verification(
+        extractor, planner_result, retrieved_chunks=retrieved_chunks, support_judge=support_judge
+    )
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)

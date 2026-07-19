@@ -161,6 +161,14 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE directly states that the A1c target for most non-pregnant adults with diabetes is generally below 7%, which supports the CLAIM that the A1c value is above this target range.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }

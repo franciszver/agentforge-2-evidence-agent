@@ -1,0 +1,75 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "Check her active medications for a statin.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "Active oral Atorvastatin 20mg."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Routine liver-enzyme monitoring is not needed for an asymptomatic patient on a statin.",
+        "reason": "The guideline says routine monitoring is usually not needed absent symptoms.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Routine liver-enzyme monitoring is not needed for an asymptomatic patient on a statin.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Routine liver-enzyme monitoring is not needed for an asymptomatic patient on a statin.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "statin-monitoring#baseline-liver-function",
+                "page_or_section": "Statin Therapy Monitoring / Baseline Liver Function",
+                "quote_or_value": "Routine ongoing liver-enzyme monitoring in an asymptomatic patient is usually not needed.",
+                "source_id": "statin-monitoring",
+                "source_type": "guideline_chunk"
+              }
+            ],
+            "source_refs": [],
+            "text": "Routine liver-enzyme monitoring is not needed for an asymptomatic patient on a statin."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "verdict": "supported",
+        "reason": "The quote directly states monitoring is usually not needed, matching the claim."
+      },
+      "schema": "SemanticSupportJudgement"
+    }
+  ]
+}

@@ -194,11 +194,11 @@ class Settings(BaseSettings):
     # LLM-judge (app.semantic_support) over every DocumentCitation whose
     # verbatim-provenance check already passed -- a citation only counts as
     # "verified" when BOTH the quote is real (existing check) AND the judge
-    # affirms it actually supports the claim's prose. Default OFF -- pending
-    # the P3.9b measurement (reliability against a labeled mini-eval) that
-    # decides whether this ships; flag off is byte-identical to today (no
-    # extra LLM call, no behavior change). See app/semantic_support.py.
-    copilot_semantic_support_enabled: bool = False
+    # affirms it actually supports the claim's prose. Default ON (issue #81):
+    # the P3.9b measurement showed the gate reliable (6/6 adversarial caught,
+    # 6/6 supported-correct), so "verified" now means provenance AND semantic
+    # support in production. See app/semantic_support.py.
+    copilot_semantic_support_enabled: bool = True
 
 
 def get_settings() -> Settings:

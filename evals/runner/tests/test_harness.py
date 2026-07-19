@@ -56,6 +56,27 @@ def test_case_with_passing_assertions_reports_no_failures() -> None:
     assert failures == []
 
 
+# --- semantic-support gate (issue #81): the runner must actually wire a
+# support judge into citation_present cases' verification pass, not just
+# replay a recording that happens to have a pre-baked SemanticSupportJudgement
+# call sitting in it unused. Both fixtures share the SAME (question, chart
+# data, retrieved chunk) setup -- only the recorded judge verdict differs --
+# so a passing "pass" fixture and a failing "downgrade" fixture together prove
+# the wiring genuinely branches on the judge's response rather than always
+# passing (or always failing) regardless of what it says.
+
+
+def test_semantic_support_gate_downgrades_a_judge_rejected_citation() -> None:
+    failures = _run_fixture("semantic-support-downgrade")
+    assert failures, "a judge verdict of not_supported must fail the case, not silently verify"
+    assert any("guideline_citation_present" in failure for failure in failures)
+
+
+def test_semantic_support_gate_leaves_a_judge_supported_citation_verified() -> None:
+    failures = _run_fixture("semantic-support-pass")
+    assert failures == []
+
+
 # --- fail (an eval failure is a test failure) ----------------------------
 
 

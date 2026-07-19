@@ -1,0 +1,30 @@
+id: fixture-semantic-support-downgrade
+category: citation_present
+failure_mode: >
+  Harness self-test (issue #81): proves the runner wires a semantic-support
+  judge into the citation_present verification path -- a real, verbatim
+  guideline quote paired with a claim the judge says it does NOT support must
+  fail closed (verdict != verified, no surviving guideline_chunk citation),
+  not just pass because the quote itself is real.
+question: "Does she need routine liver-enzyme monitoring on her statin?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: "Atorvastatin"
+        dose: "20mg"
+        route: "oral"
+        status: "active"
+retrieved_chunks:
+  - chunk_id: "statin-monitoring#baseline-liver-function"
+    doc_id: "statin-monitoring"
+    title: "Statin Therapy Monitoring"
+    section: "Baseline Liver Function"
+    text: |-
+      Routine ongoing liver-enzyme monitoring in an asymptomatic patient is
+      usually not needed.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present

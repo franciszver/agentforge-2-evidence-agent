@@ -1,0 +1,29 @@
+id: fixture-semantic-support-pass
+category: citation_present
+failure_mode: >
+  Harness self-test (issue #81): the counterpart to
+  semantic-support-downgrade.yaml -- a claim the judge affirms as SUPPORTED
+  by its real, verbatim guideline quote must still verify; the gate only
+  ever downgrades, it never blocks an honestly-supported citation.
+question: "Does she need routine liver-enzyme monitoring on her statin?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: "Atorvastatin"
+        dose: "20mg"
+        route: "oral"
+        status: "active"
+retrieved_chunks:
+  - chunk_id: "statin-monitoring#baseline-liver-function"
+    doc_id: "statin-monitoring"
+    title: "Statin Therapy Monitoring"
+    section: "Baseline Liver Function"
+    text: |-
+      Routine ongoing liver-enzyme monitoring in an asymptomatic patient is
+      usually not needed.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
