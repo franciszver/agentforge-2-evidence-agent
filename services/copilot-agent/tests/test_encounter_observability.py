@@ -118,6 +118,36 @@ def test_build_encounter_record_from_a_simulated_encounter(trace_store: TraceSto
     assert record.extraction_confidence_note  # documented, non-empty
 
 
+def test_steps_are_ordered_by_start_ts_not_insertion_order(trace_store: TraceStore) -> None:
+    """On /chat, tool spans are written inline as they stream but llm spans
+    are batched afterward (``app.chat``'s ``_emit_llm_spans``), so insertion
+    order can put every tool span before every llm span regardless of the
+    real timeline. Insert an llm span, THEN a tool span whose start_ts falls
+    BETWEEN two llm spans' start_ts, then another llm span -- insertion
+    order would put the tool span last; start_ts order puts it in the
+    middle, matching what actually happened."""
+    correlation_id = "corr-ordering"
+    trace_store.record_llm_span(
+        correlation_id=correlation_id, start_ts=0.0, end_ts=0.1, ok=True, model="qwen3:4b", tokens_in=1, tokens_out=1
+    )
+    trace_store.record_llm_span(
+        correlation_id=correlation_id, start_ts=2.0, end_ts=2.1, ok=True, model="qwen3:4b", tokens_in=1, tokens_out=1
+    )
+    # Inserted LAST, but its start_ts (1.0) falls between the two llm spans above.
+    trace_store.record_tool_span(
+        correlation_id=correlation_id,
+        start_ts=1.0,
+        end_ts=1.1,
+        ok=True,
+        tool_name="get_medications",
+        args={},
+    )
+
+    record = build_encounter_record(correlation_id, trace_store)
+
+    assert [step.kind for step in record.steps] == ["llm", "tool", "llm"]
+
+
 def test_retrieval_summary_counts_hits_and_top_scores() -> None:
     from app.schemas.reranking import RerankedChunk
 

@@ -281,9 +281,28 @@ class TraceStore:
         try:
             connection.execute(_SCHEMA)
             connection.execute(_INDEX)
+            self._migrate_missing_columns(connection)
             connection.commit()
         finally:
             connection.close()
+
+    def _migrate_missing_columns(self, connection: sqlite3.Connection) -> None:
+        """Idempotent migration for an EXISTING ``spans`` table predating a
+        column this version of the schema adds (P3.8's ``span_id``/
+        ``parent_span_id``/``worker_name``/``sub_task_type``). ``CREATE
+        TABLE IF NOT EXISTS`` alone is a no-op against a pre-existing table
+        with an older column set -- without this, every write naming a
+        missing column raises ``sqlite3.OperationalError``, which
+        ``record_span_best_effort`` swallows: tracing would silently stop
+        entirely against an un-migrated production DB. SQLite's
+        ``ALTER TABLE ... ADD COLUMN`` is safe here: every added column is
+        nullable with no default, so existing rows are unaffected. A no-op
+        on a fresh/already-migrated DB (nothing missing to add)."""
+        existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(spans)")}
+        for column in _COLUMNS:
+            if column in ("id", *_ALWAYS_COLUMNS) or column in existing_columns:
+                continue
+            connection.execute(f"ALTER TABLE spans ADD COLUMN {column} TEXT")
 
     def _insert(self, *, span_type: SpanType, correlation_id: str, start_ts: float, end_ts: float, status: SpanStatus, **type_specific: Any) -> int:
         duration_ms = (end_ts - start_ts) * 1000
