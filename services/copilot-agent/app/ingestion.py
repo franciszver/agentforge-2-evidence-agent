@@ -604,16 +604,25 @@ class LocalIngestionStore:
         """
         if not re.fullmatch(r"[0-9a-f]{32}", source_id):
             return None
-        meta_path = self._base_dir / "meta" / f"{source_id}.json"
-        try:
-            raw = meta_path.read_text()
-            payload = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
+        payload = self._read_json_sidecar(self._base_dir / "meta" / f"{source_id}.json")
+        if payload is None:
             return None
         patient_id = payload.get("patient_id")
         return patient_id if isinstance(patient_id, int) else None
+
+    @staticmethod
+    def _read_json_sidecar(path: Path) -> dict[str, Any] | None:
+        """Read and JSON-parse a stored sidecar into a dict, or ``None`` if it
+        is missing/unreadable/malformed or not a JSON object. The single
+        fail-closed read both ``read_source_patient_id`` and
+        ``list_citations_for_patient`` share -- a corrupt or missing sidecar
+        must never propagate an ``OSError``/``JSONDecodeError`` to a caller
+        (see ``read_source_patient_id``'s fail-closed rationale)."""
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def list_citations_for_patient(self, patient_id: int) -> list[Citation]:
         """Every ``Citation`` extracted from documents stored under
@@ -632,11 +641,8 @@ class LocalIngestionStore:
         """
         citations: list[Citation] = []
         for fact_path in (self._base_dir / "facts").glob("*.json"):
-            try:
-                payload = json.loads(fact_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, dict) or payload.get("patient_id") != patient_id:
+            payload = self._read_json_sidecar(fact_path)
+            if payload is None or payload.get("patient_id") != patient_id:
                 continue
             facts = payload.get("facts")
             if not isinstance(facts, list):
