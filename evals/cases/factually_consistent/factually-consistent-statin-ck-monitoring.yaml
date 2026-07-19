@@ -22,18 +22,10 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): despite no chart-data tool_data being
-  provided for this patient (the question is guideline-only), the planner
-  calls get_medications twice, finds an empty medication list, and answers
-  that routine CK testing "is not needed" because the patient is not on any
-  medications -- never engaging with the retrieved statin-monitoring
-  guideline chunk at all. The citations the extractor produces are real,
-  correctly-grounded SourceRefs against that empty medication list, not
-  fabrications -- but because the guideline chunk is never quoted or cited,
-  the claim fails citation re-validation (verdict: blocked) even though a
-  real, verbatim-quotable guideline chunk was available. This is an honest,
-  reproducible P3G.1 finding about the local 4B model's tendency to deflect
-  a general guideline question onto irrelevant patient-specific data
-  instead of answering from the retrieved evidence, not a harness bug --
-  the assertion (verdict: verified) is the correct target and is
-  deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b): get_medications returns an empty items
+  list (called twice). The extracted claims never cite the retrieved
+  guideline chunk (zero document_citations); each carries SourceRef(s)
+  citing record_id '0' (fields 'medications', 'symptoms') on that empty
+  list, which has no record at that index, so ``check_source_ref`` returns
+  UNKNOWN_RECORD for every citation. verdict: blocked;
+  guideline_citation_present never fires.

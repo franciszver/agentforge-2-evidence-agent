@@ -29,14 +29,10 @@ assertions:
     phrases: ["160-189"]
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): with no chart-data tool_data provided (a
-  guideline-only question), the model either declines to answer at all
-  ("outside the scope of patient-specific data retrieval tools") or answers
-  correctly in prose but the claim extractor fabricates a plausible-looking
-  SourceRef pointing at a tool call that never happened, instead of using
-  the provided guideline_chunk document_citations format -- so the claim
-  fails citation re-validation (verdict: blocked) even though a real,
-  verbatim-quotable guideline chunk was available. This is an honest,
-  reproducible P3G.1 finding about the local 4B extraction model, not a
-  harness bug -- the assertion (verdict: verified) is the correct target
-  and is deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b): the planner dispatches no tool calls for
+  this turn. The extracted claims never cite the retrieved guideline chunk
+  (zero document_citations); each carries a SourceRef with a tool_call_id
+  ('call_0', or the malformed 'call_:' for one claim) that does not match
+  any dispatched tool call (the trace is empty), so ``check_source_ref``
+  returns UNKNOWN_TOOL_CALL for every claim. verdict: blocked;
+  guideline_citation_present never fires.

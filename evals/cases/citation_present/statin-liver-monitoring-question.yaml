@@ -30,23 +30,15 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b, post-P3G.1b prompt-eng): given BOTH real
-  chart-data tool results and a retrieved guideline chunk for the same turn,
-  the model DOES now attempt to surface the guideline passage -- the claim
-  extractor emits TWO document_citations entries quoting the liver-function
-  monitoring chunk with a genuinely verbatim quote. But both entries give
-  "field_or_chunk_id" as the bare section slug ("baseline-liver-function")
-  instead of the full, doc-id-qualified chunk id shown in the guideline
-  catalog ("statin-monitoring#baseline-liver-function") -- despite the
-  extraction prompt explicitly instructing "copied in full (e.g.
-  'a1c-targets#target-ranges', not just 'target-ranges')" -- so
-  ``check_document_citation`` fails closed with UNKNOWN_CHUNK (no chunk
-  exists under the truncated id) and citation_present never fires (verdict
-  stays verified/partially_verified on the chart-data claims alone). This is
-  an honest, reproducible P3G.1 finding: the local 4B model's grasp of the
-  guideline evidence and its ability to quote it verbatim have both measurably
-  improved with the P3G.1b prompt-eng iteration (see the sibling
-  a1c-target-question and warfarin-antibiotic-question cases, which now
-  genuinely pass), but its adherence to the exact chunk-id FORMAT the
-  citation schema requires remains unreliable -- not a harness bug; the
-  assertions are the correct target and are deliberately not weakened.
+  OBSERVED (recorded, qwen3:4b): the claim extractor emits two
+  document_citations entries for the liver-function-monitoring chunk. Both
+  give "field_or_chunk_id" as the bare section slug
+  ("baseline-liver-function") instead of the fully-qualified chunk id
+  ("statin-monitoring#baseline-liver-function"), so
+  ``check_document_citation`` returns UNKNOWN_CHUNK. Separately, the quoted
+  text ends "...suggestive of hepatotoxicity." where the real chunk
+  continues "(e.g. unexplained fatigue, jaundice, right-upper-quadrant
+  pain) or if clinically indicated for another reason." -- so the quote is
+  not a verbatim substring of the real chunk text even under a correct
+  chunk id. verdict stays partially_verified; guideline_citation_present
+  never fires.
