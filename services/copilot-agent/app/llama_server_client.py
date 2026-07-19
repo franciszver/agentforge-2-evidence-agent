@@ -59,7 +59,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
-from app.ollama_client import LlmCallStats, OllamaClient
+from app.ollama_client import LLMEngineError, LlmCallStats, OllamaClient
 
 _logger = logging.getLogger(__name__)
 
@@ -71,10 +71,13 @@ _CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 _MAX_TOKENS = 1536
 
 
-class LlamaServerError(Exception):
+class LlamaServerError(LLMEngineError):
     """Raised when a llama-server request or constrained extraction fails.
 
-    Log-safe: never embeds raw model output (mirrors ``OllamaError``).
+    Log-safe: never embeds raw model output (mirrors ``OllamaError``). Shares
+    ``LLMEngineError`` as a common base with ``OllamaError`` (#60) so callers
+    that must degrade gracefully regardless of the configured
+    ``copilot_llm_engine`` can catch one type.
     """
 
 
