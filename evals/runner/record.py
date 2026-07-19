@@ -1,18 +1,27 @@
 """Record mode (P4.7, ``docs/TEST_PLAN.md`` Sec 9): drives a case through the
-REAL pipeline against the LIVE model and commits its ordered Ollama
-responses as ``evals/recordings/<id>.json``.
+REAL pipeline against the LIVE model and commits its ordered Ollama/
+llama-server responses as ``evals/recordings/<id>.json``.
 
-Local, opt-in, needs a reachable Ollama. Ollama has no published host port on
-the dev stack by design (internal-only network, no egress) -- point
-``OLLAMA_BASE_URL`` at a bridge (e.g. a disposable ``socat`` container
-publishing the internal ``ollama`` service to the host), the same convention
-``evals/injection/test_injection.py`` and
-``services/copilot-agent/tests/test_ollama_client.py`` already use.
+Local, opt-in, needs a reachable live model. Two engines are supported,
+mirroring ``app.config.Settings.copilot_llm_engine``:
+
+  * ``ollama`` (default) -- Ollama has no published host port on the dev
+    stack by design (internal-only network, no egress) -- point
+    ``OLLAMA_BASE_URL`` at a bridge (e.g. a disposable ``socat`` container
+    publishing the internal ``ollama`` service to the host), the same
+    convention ``evals/injection/test_injection.py`` and
+    ``services/copilot-agent/tests/test_ollama_client.py`` already use.
+  * ``llama_server`` (#58) -- point ``LLAMA_SERVER_BASE_URL`` at a reachable
+    ``llama-server`` instance (e.g. a host-published one at
+    ``http://127.0.0.1:8080``); uses ``app.llama_server_client.LlamaServerClient``,
+    the same production client ``app.chat.get_text_llm_client`` wires up for
+    ``copilot_llm_engine=llama_server``.
 
 Usage (from repo root):
 
     OLLAMA_BASE_URL=http://localhost:11435 python evals/runner/record.py uc2-meds
     OLLAMA_BASE_URL=http://localhost:11435 python evals/runner/record.py --all
+    RECORD_ENGINE=llama_server LLAMA_SERVER_BASE_URL=http://127.0.0.1:8080 python evals/runner/record.py --all
 
 Tears down nothing itself -- the bridge (if any) is the caller's to start and
 stop.
@@ -32,10 +41,11 @@ for _root in (str(_AGENT_ROOT), str(_EVALS_ROOT)):
         sys.path.insert(0, _root)
 
 from app.config import Settings  # noqa: E402
+from app.llama_server_client import LlamaServerClient  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
 
 from runner.loader import discover_case_files, load_case  # noqa: E402
-from runner.ollama_replay import RecordingOllamaClient, recording_path, save_recording  # noqa: E402
+from runner.ollama_replay import OllamaLike, RecordingOllamaClient, recording_path, save_recording  # noqa: E402
 from runner.pipeline import run_case  # noqa: E402
 
 _CASES_DIR = _EVALS_ROOT / "cases"
@@ -50,11 +60,21 @@ def _find_case_file(case_id: str) -> Path:
     raise SystemExit(f"no case with id {case_id!r} under {_CASES_DIR} or {_REGRESSIONS_DIR}")
 
 
-def record_case(case_id: str, ollama_base_url: str) -> None:
+def _build_live_client(engine: str, ollama_base_url: str) -> OllamaLike:
+    """Build the live model client for ``engine`` -- ``"ollama"`` (default)
+    or ``"llama_server"`` (#58, same production client as
+    ``copilot_llm_engine=llama_server``)."""
+    if engine == "llama_server":
+        settings = Settings(llama_server_api_timeout_seconds=180.0)
+        return LlamaServerClient.from_settings(settings)
+    settings = Settings(ollama_base_url=ollama_base_url, ollama_api_timeout_seconds=180.0)
+    return OllamaClient.from_settings(settings)
+
+
+def record_case(case_id: str, ollama_base_url: str, engine: str) -> None:
     case = load_case(_find_case_file(case_id))
 
-    settings = Settings(ollama_base_url=ollama_base_url, ollama_api_timeout_seconds=180.0)
-    recorder = RecordingOllamaClient(OllamaClient.from_settings(settings))
+    recorder = RecordingOllamaClient(_build_live_client(engine, ollama_base_url))  # type: ignore[arg-type]
 
     result = run_case(case, recorder)
 
@@ -77,6 +97,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+    engine = os.environ.get("RECORD_ENGINE", "ollama")
 
     case_ids = (
         [load_case(p).id for p in discover_case_files(_CASES_DIR, _REGRESSIONS_DIR)]
@@ -87,7 +108,7 @@ def main() -> None:
         parser.error("pass one or more case ids, or --all")
 
     for case_id in case_ids:
-        record_case(case_id, ollama_base_url)
+        record_case(case_id, ollama_base_url, engine)
 
 
 if __name__ == "__main__":

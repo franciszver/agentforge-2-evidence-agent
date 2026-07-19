@@ -29,6 +29,24 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+# #58 could NOT re-record this case against qwen3-8b-q5: under the
+# llama_server engine, the model's claim extraction call for this turn
+# deterministically emits a claim with an empty `source_refs` list ("There
+# are no recent lab results available for CK levels."), which fails
+# VerifiedAnswer's "every claim needs >=1 SourceRef or DocumentCitation"
+# validator both retry attempts (temperature=0, byte-identical output each
+# time) -- `app.llama_server_client.LlamaServerClient.extract` then raises
+# `LlamaServerError` after exhausting retries. `app.extraction.extract_claims`
+# only catches `app.ollama_client.OllamaError` (not `LlamaServerError`, a
+# separate exception hierarchy), so the exception propagates uncaught and
+# the eval harness's `RecordingOllamaClient` never gets a completed call to
+# save -- no recording can be produced for this case under this engine at
+# all. This looks like a real production gap (the llama_server engine
+# migration's `extract_claims` except clause doesn't cover its own client's
+# error type), reported for a follow-up issue; out of #58's scope since
+# fixing it means touching services/copilot-agent/app/extraction.py
+# (product runtime code), which #58 explicitly disallows. This case's
+# recording/xfail below are UNCHANGED from the qwen3:4b era pending that fix.
 xfail: >
   OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
   and a retrieved guideline chunk for the same turn, the model consistently
