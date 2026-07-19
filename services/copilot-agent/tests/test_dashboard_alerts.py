@@ -15,7 +15,16 @@ from __future__ import annotations
 import pytest
 
 from app.dashboard_alerts import DEFAULT_THRESHOLDS, Alert, AlertThresholds, evaluate_alerts
+from app.dashboard_eval_history import EvalRunPoint
 from app.dashboard_metrics import DashboardMetrics
+
+
+def _eval_point(pass_rate: float, timestamp: str = "2026-01-01T00:00:00Z") -> EvalRunPoint:
+    """A minimal eval-history point; only ``pass_rate`` varies per test."""
+    return EvalRunPoint(
+        timestamp=timestamp, git_sha="abc123", total=10, passed=int(pass_rate * 10),
+        failed=10 - int(pass_rate * 10), xfailed=0, pass_rate=pass_rate,
+    )
 
 
 def _metrics(**overrides: object) -> DashboardMetrics:
@@ -175,6 +184,143 @@ def test_verification_fail_rate_just_above_threshold_fires() -> None:
 def test_verification_fail_rate_none_does_not_fire() -> None:
     metrics = _metrics(verification_pass_rate=None)
     assert evaluate_alerts(metrics) == []
+
+
+# ---------------------------------------------------------------------------
+# extraction-failure rate (P3G.4 / #24, real data source not yet wired --
+# see module docstring)
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_failure_rate_just_below_threshold_does_not_fire() -> None:
+    metrics = _metrics()
+    rate = DEFAULT_THRESHOLDS.extraction_failure_rate - 0.001
+    assert evaluate_alerts(metrics, extraction_failure_rate=rate) == []
+
+
+def test_extraction_failure_rate_exactly_at_threshold_does_not_fire() -> None:
+    metrics = _metrics()
+    rate = DEFAULT_THRESHOLDS.extraction_failure_rate
+    assert evaluate_alerts(metrics, extraction_failure_rate=rate) == []
+
+
+def test_extraction_failure_rate_just_above_threshold_fires() -> None:
+    metrics = _metrics()
+    rate = DEFAULT_THRESHOLDS.extraction_failure_rate + 0.001
+    alerts = evaluate_alerts(metrics, extraction_failure_rate=rate)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.metric == "extraction-failure rate"
+    assert alert.current_value == pytest.approx(rate)
+    assert alert.threshold == DEFAULT_THRESHOLDS.extraction_failure_rate
+    assert alert.explanation
+    assert "extraction" in alert.explanation.lower()
+
+
+def test_extraction_failure_rate_none_does_not_fire() -> None:
+    metrics = _metrics()
+    assert evaluate_alerts(metrics, extraction_failure_rate=None) == []
+
+
+def test_extraction_failure_rate_defaults_to_none_when_not_supplied() -> None:
+    metrics = _metrics()
+    assert evaluate_alerts(metrics) == []
+
+
+# ---------------------------------------------------------------------------
+# retrieval latency (P3G.4 / #24, real data source not yet wired -- see
+# module docstring)
+# ---------------------------------------------------------------------------
+
+
+def test_retrieval_latency_just_below_threshold_does_not_fire() -> None:
+    metrics = _metrics()
+    latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms - 0.1
+    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=latency) == []
+
+
+def test_retrieval_latency_exactly_at_threshold_does_not_fire() -> None:
+    metrics = _metrics()
+    latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms
+    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=latency) == []
+
+
+def test_retrieval_latency_just_above_threshold_fires() -> None:
+    metrics = _metrics()
+    latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms + 0.1
+    alerts = evaluate_alerts(metrics, retrieval_p95_latency_ms=latency)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.metric == "retrieval p95 latency"
+    assert alert.current_value == pytest.approx(latency)
+    assert alert.threshold == DEFAULT_THRESHOLDS.retrieval_p95_latency_ms
+    assert alert.unit == "ms"
+    assert alert.explanation
+    assert "retrieval" in alert.explanation.lower()
+
+
+def test_retrieval_latency_none_does_not_fire() -> None:
+    metrics = _metrics()
+    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=None) == []
+
+
+# ---------------------------------------------------------------------------
+# eval-regression (P3G.4 / #24) -- compares the two most recent recorded
+# eval runs (app.dashboard_eval_history); wired to real data on the
+# dashboard, unlike extraction-failure-rate/retrieval-latency above.
+# ---------------------------------------------------------------------------
+
+
+def test_eval_regression_small_drop_does_not_fire() -> None:
+    # 0.90 -> 0.86 is a 0.04 drop, below the 0.05 tolerance.
+    history = [_eval_point(0.90, "2026-01-01T00:00:00Z"), _eval_point(0.86, "2026-01-02T00:00:00Z")]
+    assert evaluate_alerts(_metrics(), eval_history=history) == []
+
+
+def test_eval_regression_exactly_at_threshold_does_not_fire() -> None:
+    # 0.90 -> 0.85 is exactly a 0.05 drop.
+    history = [_eval_point(0.90, "2026-01-01T00:00:00Z"), _eval_point(0.85, "2026-01-02T00:00:00Z")]
+    assert evaluate_alerts(_metrics(), eval_history=history) == []
+
+
+def test_eval_regression_just_above_threshold_fires() -> None:
+    # 0.90 -> 0.84 is a 0.06 drop, above the 0.05 tolerance.
+    history = [_eval_point(0.90, "2026-01-01T00:00:00Z"), _eval_point(0.84, "2026-01-02T00:00:00Z")]
+    alerts = evaluate_alerts(_metrics(), eval_history=history)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.metric == "eval-regression"
+    assert alert.current_value == pytest.approx(0.06)
+    assert alert.threshold == DEFAULT_THRESHOLDS.eval_pass_rate_regression
+    assert alert.explanation
+    assert "eval" in alert.explanation.lower()
+
+
+def test_eval_regression_improvement_does_not_fire() -> None:
+    history = [_eval_point(0.80, "2026-01-01T00:00:00Z"), _eval_point(0.95, "2026-01-02T00:00:00Z")]
+    assert evaluate_alerts(_metrics(), eval_history=history) == []
+
+
+def test_eval_regression_single_point_does_not_fire() -> None:
+    history = [_eval_point(0.50, "2026-01-01T00:00:00Z")]
+    assert evaluate_alerts(_metrics(), eval_history=history) == []
+
+
+def test_eval_regression_empty_history_does_not_fire() -> None:
+    assert evaluate_alerts(_metrics(), eval_history=[]) == []
+
+
+def test_eval_regression_uses_most_recent_two_points_regardless_of_order() -> None:
+    # History is not guaranteed sorted by the caller -- the alert must use
+    # the chronologically last two points, not list position.
+    history = [
+        _eval_point(0.60, "2026-01-03T00:00:00Z"),  # most recent, out of order
+        _eval_point(0.90, "2026-01-01T00:00:00Z"),
+        _eval_point(0.95, "2026-01-02T00:00:00Z"),
+    ]
+    alerts = evaluate_alerts(_metrics(), eval_history=history)
+    assert len(alerts) == 1
+    assert alerts[0].current_value == pytest.approx(0.35)
 
 
 # ---------------------------------------------------------------------------
