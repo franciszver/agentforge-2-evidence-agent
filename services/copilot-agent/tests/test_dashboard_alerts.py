@@ -193,21 +193,21 @@ def test_verification_fail_rate_none_does_not_fire() -> None:
 
 
 def test_extraction_failure_rate_just_below_threshold_does_not_fire() -> None:
-    metrics = _metrics()
     rate = DEFAULT_THRESHOLDS.extraction_failure_rate - 0.001
-    assert evaluate_alerts(metrics, extraction_failure_rate=rate) == []
+    metrics = _metrics(extraction_failure_rate=rate)
+    assert evaluate_alerts(metrics) == []
 
 
 def test_extraction_failure_rate_exactly_at_threshold_does_not_fire() -> None:
-    metrics = _metrics()
     rate = DEFAULT_THRESHOLDS.extraction_failure_rate
-    assert evaluate_alerts(metrics, extraction_failure_rate=rate) == []
+    metrics = _metrics(extraction_failure_rate=rate)
+    assert evaluate_alerts(metrics) == []
 
 
 def test_extraction_failure_rate_just_above_threshold_fires() -> None:
-    metrics = _metrics()
     rate = DEFAULT_THRESHOLDS.extraction_failure_rate + 0.001
-    alerts = evaluate_alerts(metrics, extraction_failure_rate=rate)
+    metrics = _metrics(extraction_failure_rate=rate)
+    alerts = evaluate_alerts(metrics)
     assert len(alerts) == 1
     alert = alerts[0]
     assert alert.metric == "extraction-failure rate"
@@ -218,8 +218,8 @@ def test_extraction_failure_rate_just_above_threshold_fires() -> None:
 
 
 def test_extraction_failure_rate_none_does_not_fire() -> None:
-    metrics = _metrics()
-    assert evaluate_alerts(metrics, extraction_failure_rate=None) == []
+    metrics = _metrics(extraction_failure_rate=None)
+    assert evaluate_alerts(metrics) == []
 
 
 def test_extraction_failure_rate_defaults_to_none_when_not_supplied() -> None:
@@ -234,21 +234,21 @@ def test_extraction_failure_rate_defaults_to_none_when_not_supplied() -> None:
 
 
 def test_retrieval_latency_just_below_threshold_does_not_fire() -> None:
-    metrics = _metrics()
     latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms - 0.1
-    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=latency) == []
+    metrics = _metrics(retrieval_p95_latency_ms=latency)
+    assert evaluate_alerts(metrics) == []
 
 
 def test_retrieval_latency_exactly_at_threshold_does_not_fire() -> None:
-    metrics = _metrics()
     latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms
-    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=latency) == []
+    metrics = _metrics(retrieval_p95_latency_ms=latency)
+    assert evaluate_alerts(metrics) == []
 
 
 def test_retrieval_latency_just_above_threshold_fires() -> None:
-    metrics = _metrics()
     latency = DEFAULT_THRESHOLDS.retrieval_p95_latency_ms + 0.1
-    alerts = evaluate_alerts(metrics, retrieval_p95_latency_ms=latency)
+    metrics = _metrics(retrieval_p95_latency_ms=latency)
+    alerts = evaluate_alerts(metrics)
     assert len(alerts) == 1
     alert = alerts[0]
     assert alert.metric == "retrieval p95 latency"
@@ -260,8 +260,8 @@ def test_retrieval_latency_just_above_threshold_fires() -> None:
 
 
 def test_retrieval_latency_none_does_not_fire() -> None:
-    metrics = _metrics()
-    assert evaluate_alerts(metrics, retrieval_p95_latency_ms=None) == []
+    metrics = _metrics(retrieval_p95_latency_ms=None)
+    assert evaluate_alerts(metrics) == []
 
 
 # ---------------------------------------------------------------------------
