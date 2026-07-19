@@ -94,6 +94,7 @@ from app.schemas.tools import (
     MedicationsOutput,
 )
 from app.schemas.verification import Claim, VerifiedAnswer
+from app.semantic_support import SemanticSupportJudgeLike, apply_semantic_support
 from app.verdict import VerdictResult, compute_verdict
 from app.verification import CacheIndex, CorpusChunkIndex, DocumentFactIndex, check_claims, recency_notices
 
@@ -498,6 +499,7 @@ def run_verification(
     result: PlannerResult,
     retrieved_chunks: Sequence[RerankedChunk] = (),
     patient_facts: Sequence[Citation] = (),
+    support_judge: SemanticSupportJudgeLike | None = None,
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
@@ -529,7 +531,16 @@ def run_verification(
     paraphrase and never another patient's facts, so a citation naming a
     fact this patient does not have (whether hallucinated or, worse, an
     attempt to cite a different patient's data) fails closed exactly like
-    ``check_document_citation``'s ``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``."""
+    ``check_document_citation``'s ``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``.
+
+    ``support_judge`` (issue #47, additive): when supplied, every claim whose
+    citations already all passed provenance re-validation is additionally
+    re-judged by ``app.semantic_support.apply_semantic_support`` -- a
+    ``DocumentCitation`` whose quote is real but does not, per the judge,
+    actually support the claim's prose is downgraded, failing that claim.
+    ``None`` (the default, and what every caller not opting into
+    ``Settings.copilot_semantic_support_enabled`` passes) skips this step
+    entirely -- byte-identical to today, no extra LLM call."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
 
@@ -561,6 +572,8 @@ def run_verification(
             # had been empty) rather than let the exception propagate.
             _logger.warning("patient fact index build failed", extra={"error_type": type(exc).__name__})
     claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
+    if support_judge is not None:
+        claim_results = apply_semantic_support(claim_results, support_judge)
     rendered = render_answer(claim_results)
 
     medications = collect_medications(tools, result.raw_results)
