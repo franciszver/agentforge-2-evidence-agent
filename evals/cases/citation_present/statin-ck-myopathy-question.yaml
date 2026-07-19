@@ -47,6 +47,16 @@ assertions:
 # fixing it means touching services/copilot-agent/app/extraction.py
 # (product runtime code), which #58 explicitly disallows. This case's
 # recording/xfail below are UNCHANGED from the qwen3:4b era pending that fix.
+#
+# #81 (gate-ON re-recording pass) tried again, twice: attempt 1 again failed
+# claim extraction after exhausting retries (no recording produced, same
+# symptom as #58); attempt 2 crashed on an uncaught live-request timeout
+# during an earlier planner-decision call (a transient infra issue, not
+# informative about the extraction bug above). Per the coordinator's
+# no-repeated-rerolling rule, this case was not attempted a third time -- its
+# recording remains the ORIGINAL, pre-#81 (qwen3:4b-era) one, and
+# `runner.pipeline.needs_semantic_support` explicitly excludes this case id
+# so replay never asks it for a support-judge call it doesn't have.
 xfail: >
   OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
   and a retrieved guideline chunk for the same turn, the model consistently

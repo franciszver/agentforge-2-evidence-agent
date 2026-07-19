@@ -27,7 +27,40 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "No encounters or appointments found, so we need to check the patient's summary for any general information or next steps.",
+        "reason": "With no appointments or encounters recorded, it's necessary to check the patient's medication and lab results to assess the current status and determine the next course of action.",
+        "tool": "get_medications",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "With no medications, appointments, or encounters recorded, it's necessary to check the patient's lab results to assess the current status and determine the next course of action.",
+        "tool": "get_recent_labs",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "With no medications, appointments, encounters, or lab results recorded, it's necessary to check the patient's problem list to assess the current status and determine the next course of action.",
+        "tool": "get_problems",
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "No data found in any of the previous tools, so it's necessary to get a patient summary to understand the overall status.",
         "tool": "get_patient_summary",
         "tool_args": null
       },
@@ -43,54 +76,54 @@
     {
       "kind": "extract",
       "response": {
-        "action": "answer",
-        "final_answer": "Since there are no scheduled appointments and no recent encounters, it would be appropriate to schedule a follow-up appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
-        "reason": "The patient's summary indicates no medications, allergies, or problems, and no recent labs, vitals, encounters, or appointments. The next step would be to schedule a follow-up appointment.",
-        "tool": null,
-        "tool_args": null
-      },
-      "schema": "PlannerDecision"
-    },
-    {
-      "kind": "chat",
-      "response": "The patient, Eval Patient, has no scheduled appointments, no encounters, and no recorded medications, allergies, problems, labs, or vitals. Since there is no recent encounter or appointment, there is no specific follow-up date provided in the data. The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
-      "schema": null
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "answer": "The patient, Eval Patient, has no scheduled appointments, no encounters, and no recorded medications, allergies, problems, labs, or vitals. Since there is no recent encounter or appointment, there is no specific follow-up date provided in the data. The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
-        "source_refs": null
-      },
-      "schema": "FinalAnswer"
-    },
-    {
-      "kind": "extract",
-      "response": {
         "claims": [
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "0",
-                "field": "appointment_count",
+                "asserted_value": "Eval",
+                "field": "first_name",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no scheduled appointments."
+            "text": "The patient's first name is Eval."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "0",
-                "field": "encounter_count",
+                "asserted_value": "Patient",
+                "field": "last_name",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no encounters."
+            "text": "The patient's last name is Patient."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "2000-01-01",
+                "field": "date_of_birth",
+                "record_id": "0",
+                "tool_call_id": "call_5"
+              }
+            ],
+            "text": "The patient's date of birth is January 1, 2000."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "unknown",
+                "field": "sex",
+                "record_id": "0",
+                "tool_call_id": "call_5"
+              }
+            ],
+            "text": "The patient's sex is unknown."
           },
           {
             "document_citations": [],
@@ -99,10 +132,10 @@
                 "asserted_value": "0",
                 "field": "medication_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no recorded medications."
+            "text": "The patient has no medications recorded."
           },
           {
             "document_citations": [],
@@ -111,10 +144,10 @@
                 "asserted_value": "0",
                 "field": "allergy_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no recorded allergies."
+            "text": "The patient has no allergies recorded."
           },
           {
             "document_citations": [],
@@ -123,10 +156,10 @@
                 "asserted_value": "0",
                 "field": "problem_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no recorded problems."
+            "text": "The patient has no problems recorded."
           },
           {
             "document_citations": [],
@@ -135,10 +168,10 @@
                 "asserted_value": "0",
                 "field": "recent_lab_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no recent labs recorded."
+            "text": "The patient has no recent lab results recorded."
           },
           {
             "document_citations": [],
@@ -147,30 +180,34 @@
                 "asserted_value": "0",
                 "field": "vital_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The patient, Eval Patient, has no recorded vitals."
+            "text": "The patient has no vital signs recorded."
           },
           {
-            "document_citations": [
+            "document_citations": [],
+            "source_refs": [
               {
-                "field_or_chunk_id": "hypertension-lifestyle#follow-up-cadence",
-                "page_or_section": "Follow-Up Cadence",
-                "quote_or_value": "Elevated blood pressure or Stage 1 hypertension managed with lifestyle alone: recheck at roughly 3-6 months to assess response before deciding whether to add pharmacotherapy.",
-                "source_id": "hypertension-lifestyle",
-                "source_type": "guideline_chunk"
+                "asserted_value": "0",
+                "field": "encounter_count",
+                "record_id": "0",
+                "tool_call_id": "call_5"
               }
             ],
+            "text": "The patient has no encounters recorded."
+          },
+          {
+            "document_citations": [],
             "source_refs": [
               {
                 "asserted_value": "0",
                 "field": "appointment_count",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_5"
               }
             ],
-            "text": "The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes."
+            "text": "The patient has no appointments recorded."
           }
         ]
       },
