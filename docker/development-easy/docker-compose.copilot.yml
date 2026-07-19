@@ -73,7 +73,8 @@ services:
       - -c
       - |
         set -e
-        if [ -f /models/qwen3-8b-q5_k_m.gguf ]; then
+        GGUF_FILE=qwen3-8b-q5_k_m.gguf
+        if [ -f "/models/$${GGUF_FILE}" ]; then
           echo "GGUF already present, skipping download"; exit 0
         fi
         pip install --no-cache-dir --quiet "huggingface_hub[cli]"
@@ -81,7 +82,7 @@ services:
           --revision 0b69f75b7472688e6808490aa2b85efdb81b5ce7 \
           --include "Qwen_Qwen3-8B-Q5_K_M.gguf" \
           --local-dir /tmp/gguf-download
-        mv /tmp/gguf-download/Qwen_Qwen3-8B-Q5_K_M.gguf /models/qwen3-8b-q5_k_m.gguf
+        mv "/tmp/gguf-download/Qwen_Qwen3-8B-Q5_K_M.gguf" "/models/$${GGUF_FILE}"
     networks:
       - copilot_internal
 
@@ -144,8 +145,16 @@ services:
     networks:
       - copilot_internal
     depends_on:
-      - ollama
-      - llama-server
+      ollama:
+        condition: service_started
+      # service_healthy (not just service_started): llama-server's own
+      # healthcheck above only passes once /health responds, which requires
+      # the GGUF to be fully loaded onto the GPU -- without this condition,
+      # agent could start (and, if COPILOT_LLM_ENGINE=llama_server, serve a
+      # request) before the model finishes loading, surfacing as a generic
+      # connection-refused LlamaServerError instead of "still starting".
+      llama-server:
+        condition: service_healthy
 
 networks:
   copilot_internal:
