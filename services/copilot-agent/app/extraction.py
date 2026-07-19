@@ -541,7 +541,25 @@ def run_verification(
     claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized, **extract_kwargs)
     index = CacheIndex.from_raw_results(normalized)
     corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
-    fact_index = DocumentFactIndex.from_citations(patient_facts) if patient_facts else None
+    fact_index = None
+    if patient_facts:
+        try:
+            fact_index = DocumentFactIndex.from_citations(patient_facts)
+        except ValueError as exc:
+            # DocumentFactIndex.from_citations raises on a duplicate
+            # (source_id, field_or_chunk_id) key -- should never happen for
+            # real ingestion-produced citations (source_id is a per-document
+            # uuid; issue #40 already page/row-qualifies field_or_chunk_id
+            # within one document), but this call site is mid-SSE-stream
+            # (app.chat._stream_chat has already yielded the `conversation`
+            # frame by the time this runs): an uncaught raise here would
+            # abort an otherwise-working turn instead of just degrading the
+            # fact-citation half of it. Fail closed to an empty index
+            # (check_claim/check_claims already treat `fact_index=None` as
+            # "no document facts available" -- any lab_pdf/intake_form
+            # citation then fails UNKNOWN_SOURCE, same as if patient_facts
+            # had been empty) rather than let the exception propagate.
+            _logger.warning("patient fact index build failed", extra={"error_type": type(exc).__name__})
     claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
     rendered = render_answer(claim_results)
 
