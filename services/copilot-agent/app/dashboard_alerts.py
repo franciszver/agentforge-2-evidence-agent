@@ -2,10 +2,9 @@
 P3G.4/#24).
 
 Pure threshold logic over ``app.dashboard_metrics.DashboardMetrics`` (plus,
-as of P3G.4, two optional standalone values and the eval-run history) -- no
-I/O, no recomputation of metrics that ``DashboardMetrics`` already has.
-Seven alerts, each read straight off its input or derived from fields
-already on it:
+as of P3G.4, the eval-run history) -- no I/O, no recomputation of metrics
+that ``DashboardMetrics`` already has. Seven alerts, each read straight off
+the DTO or derived from fields already on it:
 
 - **p95 latency**: ``metrics.p95_latency_ms`` directly.
 - **error rate**: ``metrics.error_rate`` directly.
@@ -22,14 +21,15 @@ already on it:
   #149 lands.
 - **verification-fail rate**: DERIVED as ``1 - verification_pass_rate``.
   ``None`` (no alert) when ``verification_pass_rate`` is ``None``.
-- **extraction-failure rate** (P3G.4/#24): an ``evaluate_alerts`` keyword
-  argument, ``None`` by default. No ``app.trace_store`` span exists yet for
-  document-ingestion extraction (see ``app.ingestion.IngestionResult``'s
+- **extraction-failure rate** (P3G.4/#24): ``metrics.extraction_failure_rate``
+  directly -- always ``None`` today. No ``app.trace_store`` span exists yet
+  for document-ingestion extraction (see ``app.ingestion.IngestionResult``'s
   ``failed_pages``), so -- same "dormant until a future issue wires the
   data" posture as tool-failure rate above -- this alert is implemented and
-  tested against a directly-supplied rate, not yet computed from live spans.
-- **retrieval p95 latency** (P3G.4/#24): likewise an ``evaluate_alerts``
-  keyword argument, ``None`` by default, for the same reason -- retrieval
+  tested now and will start evaluating real data once a future issue
+  computes this field from live spans.
+- **retrieval p95 latency** (P3G.4/#24): ``metrics.retrieval_p95_latency_ms``
+  directly, likewise always ``None`` today for the same reason -- retrieval
   (``app.retrieval``) has no dedicated span yet.
 - **eval-regression** (P3G.4/#24): DERIVED from the pass-rate drop between
   the two most recent points in ``eval_history``
@@ -213,27 +213,26 @@ def evaluate_alerts(
     metrics: DashboardMetrics,
     thresholds: AlertThresholds = DEFAULT_THRESHOLDS,
     *,
-    extraction_failure_rate: float | None = None,
-    retrieval_p95_latency_ms: float | None = None,
     eval_history: Sequence[EvalRunPoint] = (),
 ) -> list[Alert]:
     """Pure function: which alerts are active for ``metrics`` (plus the
-    P3G.4/#24 inputs below).
+    P3G.4/#24 ``eval_history`` input).
 
     Fixed evaluation order: p95 latency, error rate, tool-failure rate,
     verification-fail rate, extraction-failure rate, retrieval p95 latency,
     eval-regression. See module docstring for boundary (``>``, not ``>=``)
     and ``None`` handling.
 
-    ``extraction_failure_rate``/``retrieval_p95_latency_ms`` default to
-    ``None`` (no alert) because, as of P3G.4, no live span data feeds these
-    yet -- document ingestion and retrieval do not record a dedicated
+    ``metrics.extraction_failure_rate``/``metrics.retrieval_p95_latency_ms``
+    are always ``None`` today (see ``DashboardMetrics``'s docstring for
+    those fields) because, as of P3G.4, no live span data feeds them yet --
+    document ingestion and retrieval do not record a dedicated
     ``app.trace_store`` span the way requests/tools/LLM calls/verification
     do. This mirrors the tool-failure-rate alert's own documented "dormant
     until #149" precedent above: the rule is implemented and tested now, and
-    will start evaluating real data once a future issue wires the
-    corresponding spans. ``eval_history`` (``app.dashboard_eval_history``)
-    IS real, already-committed data -- the dashboard passes it live.
+    will start evaluating real data once a future issue computes this field
+    from live spans. ``eval_history`` (``app.dashboard_eval_history``) IS
+    real, already-committed data -- the dashboard passes it live.
     """
     tool_failure_rate = (
         metrics.retry_count / metrics.tool_call_count if metrics.tool_call_count > 0 else None
@@ -268,14 +267,14 @@ def evaluate_alerts(
         ),
         (
             "extraction-failure rate",
-            extraction_failure_rate,
+            metrics.extraction_failure_rate,
             thresholds.extraction_failure_rate,
             _EXTRACTION_FAILURE_RATE_EXPLANATION,
             "rate",
         ),
         (
             "retrieval p95 latency",
-            retrieval_p95_latency_ms,
+            metrics.retrieval_p95_latency_ms,
             thresholds.retrieval_p95_latency_ms,
             _RETRIEVAL_LATENCY_EXPLANATION,
             "ms",

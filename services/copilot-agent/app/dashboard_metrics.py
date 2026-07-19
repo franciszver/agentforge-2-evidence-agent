@@ -58,6 +58,18 @@ class DashboardMetrics:
     verification_pass_rate: float | None
     feedback_up_count: int
     feedback_down_count: int
+    # P3G.4/#24: always None today -- unlike every field above, no
+    # ``spans`` row exists yet for document-ingestion extraction or
+    # retrieval (``app.trace_store.SpanType`` has no EXTRACTION/RETRIEVAL
+    # member), so there is nothing in this table to aggregate. Present here
+    # (rather than as a separate parameter elsewhere) so
+    # ``app.dashboard_alerts.evaluate_alerts`` reads every alert input the
+    # same uniform way -- straight off this DTO -- same "dormant until a
+    # future issue wires the data" posture already documented for
+    # ``tool_call_count``/``retry_count`` above (see that field's docstring
+    # in this module, and ``app.dashboard_alerts``'s module docstring).
+    extraction_failure_rate: float | None = None
+    retrieval_p95_latency_ms: float | None = None
 
 
 def _percentile(sorted_values: list[float], percentile: float) -> float | None:
