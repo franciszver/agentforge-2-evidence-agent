@@ -39,7 +39,8 @@ from app.ingestion import (
     render_pdf_pages_to_png,
 )
 from app.ollama_client import OllamaError
-from app.schemas.ingestion import IntakeFormExtraction, IntakeFormFact, LabFlagCode, LabResultFact
+from app.schemas.ingestion import DocumentCitation, IntakeFormExtraction, IntakeFormFact, LabFlagCode, LabResultFact
+from app.verification import CitationStatus, CorpusChunkIndex, DocumentFactIndex, check_document_citation
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lab_report_synthetic.pdf"
 _INTAKE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "intake_form_synthetic.pdf"
@@ -200,9 +201,6 @@ def test_repeat_test_across_pages_gets_distinct_field_or_chunk_ids(store):
     # citations must NOT raise (no key collision), and each citation must
     # verify against ITS OWN occurrence's quote, fail-closed against the
     # other's.
-    from app.schemas.ingestion import DocumentCitation
-    from app.verification import CitationStatus, CorpusChunkIndex, DocumentFactIndex, check_document_citation
-
     fact_index = DocumentFactIndex.from_citations([first.citation, second.citation])
     corpus_index = CorpusChunkIndex.from_chunks([])
 
