@@ -61,7 +61,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -108,7 +108,7 @@ class SemanticSupportJudgeLike(Protocol):
     signature) -- no tool access, no chat streaming, nothing beyond one
     constrained call."""
 
-    def extract(self, prompt_or_messages: object, schema: type, *, options: object = None) -> object: ...
+    def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None) -> Any: ...
 
 
 _SYSTEM_PROMPT = """\
@@ -150,7 +150,7 @@ def judge_support(claim_text: str, quote: str, judge: SemanticSupportJudgeLike) 
         {"role": "user", "content": _INSTRUCTIONS_TEMPLATE.format(claim=claim_text, quote=quote)},
     ]
     try:
-        judgement = judge.extract(messages, SemanticSupportJudgement)
+        judgement: SemanticSupportJudgement = judge.extract(messages, SemanticSupportJudgement)
     except LLMEngineError:
         return False
     return judgement.verdict is SupportVerdict.SUPPORTED
