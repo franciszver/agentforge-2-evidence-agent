@@ -106,15 +106,24 @@ def test_dashboard_no_external_network_reference() -> None:
 
 
 def test_dashboard_no_banner_when_all_metrics_healthy(tmp_path) -> None:
-    # 1 fast, successful request -- nothing crosses any P4.6 threshold.
+    # 1 fast, successful request -- nothing crosses any P4.6/P3G.4 threshold.
+    # eval_history is overridden to a single healthy point too: the real
+    # committed history (app/data/eval_history.json) is a live, growing file
+    # unrelated to this test's "everything is healthy" intent -- see
+    # app.dashboard_alerts's eval-regression alert, which needs at least two
+    # points to compare and so cannot fire against one.
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret="test-secret")
     trace_store.record_request_span(correlation_id="c1", start_ts=0.0, end_ts=0.1, ok=True)
     app.dependency_overrides[get_trace_store] = lambda: trace_store
+    app.dependency_overrides[get_eval_history_provider] = lambda: (
+        lambda: [EvalRunPoint(timestamp="2026-01-01T00:00:00Z", git_sha="abc", total=1, passed=1, failed=0, xfailed=0, pass_rate=1.0)]
+    )
 
     try:
         response = client.get("/dashboard")
     finally:
         app.dependency_overrides.pop(get_trace_store, None)
+        app.dependency_overrides.pop(get_eval_history_provider, None)
 
     assert response.status_code == 200
     assert "data-testid=\"alert-banner\"" not in response.text
