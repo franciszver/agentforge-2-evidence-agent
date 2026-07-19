@@ -22,6 +22,7 @@ no external API):
 
 from __future__ import annotations
 
+import functools
 import json
 import warnings
 from pathlib import Path
@@ -38,10 +39,11 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from jsonschema import RefResolver
 
-from app.chat import get_trace_store
+from app.chat import get_token_validator, get_trace_store
 from app.config import Settings, get_settings
 from app.main import app
 from app.readiness import get_ollama_client, get_openemr_client
+from app.trace_store import TraceStore
 
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "openapi" / "openapi.json"
 
@@ -54,8 +56,30 @@ def _clear_overrides():
     app.dependency_overrides.clear()
 
 
+@functools.lru_cache(maxsize=1)
 def _load_pinned_spec() -> dict[str, Any]:
     return json.loads(_SPEC_PATH.read_text(encoding="utf-8"))
+
+
+def _ok_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200)
+
+
+def _down_handler(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+def _fake_client_dependency(handler):
+    """Same shape as ``tests/test_ready.py``'s helper of the same name --
+    duplicated rather than imported since that module's helper is
+    module-private, and the two suites are testing different concerns
+    (readiness semantics vs. spec conformance)."""
+
+    async def _override():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as fake_client:
+            yield fake_client
+
+    return _override
 
 
 def _assert_response_matches_spec(
@@ -104,18 +128,8 @@ def test_health_response_conforms_to_spec() -> None:
 def test_ready_response_conforms_to_spec_when_ready(tmp_path) -> None:
     spec = _load_pinned_spec()
 
-    def _ok_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200)
-
-    def _fake_client(handler):
-        async def _override():
-            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as fake_client:
-                yield fake_client
-
-        return _override
-
-    app.dependency_overrides[get_openemr_client] = _fake_client(_ok_handler)
-    app.dependency_overrides[get_ollama_client] = _fake_client(_ok_handler)
+    app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_ok_handler)
+    app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(trace_db_path=str(tmp_path / "traces.db"))
 
     response = client.get("/ready")
@@ -127,21 +141,8 @@ def test_ready_response_conforms_to_spec_when_ready(tmp_path) -> None:
 def test_ready_response_conforms_to_spec_when_not_ready(tmp_path) -> None:
     spec = _load_pinned_spec()
 
-    def _down_handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
-
-    def _ok_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200)
-
-    def _fake_client(handler):
-        async def _override():
-            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as fake_client:
-                yield fake_client
-
-        return _override
-
-    app.dependency_overrides[get_openemr_client] = _fake_client(_down_handler)
-    app.dependency_overrides[get_ollama_client] = _fake_client(_ok_handler)
+    app.dependency_overrides[get_openemr_client] = _fake_client_dependency(_down_handler)
+    app.dependency_overrides[get_ollama_client] = _fake_client_dependency(_ok_handler)
     app.dependency_overrides[get_settings] = lambda: Settings(trace_db_path=str(tmp_path / "traces.db"))
 
     response = client.get("/ready")
@@ -151,14 +152,10 @@ def test_ready_response_conforms_to_spec_when_not_ready(tmp_path) -> None:
 
 
 def test_feedback_response_conforms_to_spec(tmp_path) -> None:
-    from app.trace_store import TraceStore
-
     spec = _load_pinned_spec()
 
     def _ok_validator(token: str) -> None:
         return None
-
-    from app.chat import get_token_validator
 
     app.dependency_overrides[get_token_validator] = lambda: _ok_validator
     app.dependency_overrides[get_trace_store] = lambda: TraceStore(
