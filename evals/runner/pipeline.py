@@ -122,21 +122,18 @@ def needs_verification(case: EvalCase) -> bool:
     return _has_assertion(case, VerdictAssertion, GuidelineCitationPresentAssertion)
 
 
-# Issue #81: two citation_present cases could not be re-recorded under the
-# gate this cycle -- every live attempt reached a real planner/answer turn
-# but then failed the claim-extraction (VerifiedAnswer) decode after
-# exhausting retries (a real, reproducible flakiness at that specific step
-# for these cases' inputs, not a harness bug):
-#   * dual-antiplatelet-question: 3 attempts, all identical planner/answer
-#     text, all failed at the same extraction step.
-#   * statin-ck-myopathy-question: 2 attempts (same outcome both times) --
-#     this is the SAME case #58 already documented as "could not be
-#     re-recorded" (see category_baseline.json's #58 note); still true.
-# Per that same precedent, both recordings are left UNCHANGED (pre-#81,
-# gate-off) rather than forcing further live attempts hoping for a lucky
-# draw -- so neither must be asked for a support-judge call its recording
-# doesn't have.
-_CANNOT_RERECORD_UNDER_GATE = frozenset({"dual-antiplatelet-question", "statin-ck-myopathy-question"})
+# Issue #81 (owner-revised methodology, P3.9c): the gate is judged against
+# the STABLE recordings already on main rather than a fresh answer re-draw
+# (a fresh re-draw of all 12 cases turned out to be an unlucky sample --
+# planner variance, unrelated to the gate -- see docs/MODEL_AND_HARDWARE_
+# SELECTION.md's variance caveat). ``statin-ck-myopathy-question`` is the one
+# case that remains excluded: its stable (pre-#81) recording was never
+# re-recordable under the gate (#58's original claim-extraction decode
+# limitation, still true), so it has no committed extraction to judge from.
+# ``dual-antiplatelet-question`` IS one of the six stable provenance-passing
+# cases re-judged this cycle -- its stable recording has a real extraction to
+# append a judge call onto -- so it is no longer excluded here.
+_CANNOT_RERECORD_UNDER_GATE = frozenset({"statin-ck-myopathy-question"})
 
 
 def needs_semantic_support(case: EvalCase) -> bool:

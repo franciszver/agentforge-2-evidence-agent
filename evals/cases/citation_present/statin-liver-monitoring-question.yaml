@@ -30,30 +30,18 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON -- issue #47/#81's whole
-  reason for existing). This case's PRE-#81 recording had a genuine
-  provenance-without-support defect: the model paired a real, verbatim
-  quote ("Routine ongoing liver-enzyme monitoring in an asymptomatic
-  patient is usually not needed") with a claim asserting the opposite
-  ("Routine liver-enzyme monitoring is generally recommended") -- exactly
-  the failure mode issue #47 was opened to catch. Re-recorded against the
-  live model with the gate ON to see whether a fresh draw would answer
-  faithfully: this draw hedges overall (closes with "it is not possible to
-  determine if routine monitoring is required" once the specific statin is
-  unclear), but two of its individual extracted claims still assert
-  monitoring "is typically recommended for patients on certain statins" and
-  that the clinician "should review the specific statin ... to make an
-  informed decision about monitoring" -- both paired with real, verbatim
-  guideline quotes that are on-topic but do not actually say what the claim
-  says. The semantic-support judge (Qwen3-8B-Q5, the same engine) correctly
-  calls BOTH not_supported: the first quote is about a baseline panel
-  BEFORE starting a statin, not about ongoing monitoring being
-  recommended; the second is about whether monitoring is needed at all, not
-  about reviewing which specific statin is in use. Both citations are
-  downgraded to NOT_SEMANTICALLY_SUPPORTED, no claim in this answer
-  survives with a verified guideline_chunk citation, and the verdict lands
-  on partially_verified. This is the gate doing exactly its job -- a real,
-  verbatim quote is still not enough when the claim it's paired with
-  doesn't actually follow from it. Honestly NOT a 6th supported citation;
-  the P3G.1 assertions are the correct target and are deliberately not
-  weakened.
+  OBSERVED (issue #81, gate-ON re-judge of the stable committed recording,
+  live Qwen3-8B-Q5 semantic-support judge): this is the case #47/#81
+  specifically targeted. The recorded answer carries a real, verbatim
+  DocumentCitation from `statin-monitoring#baseline-liver-function` --
+  `check_document_citation` correctly renders it VALID (the quote is
+  genuinely from the source). But the quote says routine liver-enzyme
+  monitoring is usually NOT needed for an asymptomatic patient, while the
+  claim it's attached to asserts monitoring IS generally recommended /
+  worth considering -- a real, verbatim guideline quote paired with an
+  unrelated-in-direction claim, exactly the provenance-without-support
+  defect issue #47 was written to catch. The live semantic-support judge
+  correctly calls BOTH affected claims `not_supported`, downgrading the
+  overall verdict to `partially_verified`. Honestly NOT a supported
+  citation -- the gate is working as designed, not a harness bug. The
+  assertions are the correct target and are deliberately not weakened.

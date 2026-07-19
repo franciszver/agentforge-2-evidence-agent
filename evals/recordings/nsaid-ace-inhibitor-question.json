@@ -23,7 +23,7 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "To check for potential drug interactions between ibuprofen and lisinopril, we need to confirm the patient's allergies and any contraindications.",
+        "reason": "To check for potential drug interactions between ibuprofen and lisinopril, we need to confirm the patient's allergies.",
         "tool": "get_allergies",
         "tool_args": null
       },
@@ -33,8 +33,8 @@
       "kind": "extract",
       "response": {
         "action": "answer",
-        "final_answer": "The patient is taking Lisinopril and has no recorded allergies. However, ibuprofen can interact with Lisinopril, potentially increasing the risk of kidney damage. It is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient.",
-        "reason": "The patient is taking Lisinopril and has no recorded allergies. Ibuprofen can interact with Lisinopril, potentially increasing the risk of kidney damage. It is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient.",
+        "final_answer": "The patient is taking Lisinopril at a dose of 10mg orally and has no recorded allergies. Ibuprofen can interact with Lisinopril, potentially increasing the risk of kidney damage. It is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient.",
+        "reason": "The patient is taking Lisinopril at a dose of 10mg orally and has no recorded allergies. Ibuprofen can interact with Lisinopril, potentially increasing the risk of kidney damage. It is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient.",
         "tool": null,
         "tool_args": null
       },
@@ -42,13 +42,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recorded allergies for this patient. Ibuprofen is generally not contraindicated with Lisinopril, but caution is advised as nonsteroidal anti-inflammatory drugs (NSAIDs) like ibuprofen can potentially reduce the effectiveness of Lisinopril in patients with kidney disease or those at risk for kidney damage. It is recommended to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient's specific medical condition.",
+      "response": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recorded allergies for this patient. Ibuprofen is generally considered safe to use with Lisinopril, but it is important to note that nonsteroidal anti-inflammatory drugs (NSAIDs) like ibuprofen can potentially reduce the effectiveness of Lisinopril in managing blood pressure. Therefore, it is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is appropriate for the patient's specific situation.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recorded allergies for this patient. Ibuprofen is generally not contraindicated with Lisinopril, but caution is advised as nonsteroidal anti-inflammatory drugs (NSAIDs) like ibuprofen can potentially reduce the effectiveness of Lisinopril in patients with kidney disease or those at risk for kidney damage. It is recommended to consult with a healthcare provider before taking ibuprofen to ensure it is safe for the patient's specific medical condition.",
+        "answer": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recorded allergies for this patient. Ibuprofen is generally considered safe to use with Lisinopril, but it is important to note that nonsteroidal anti-inflammatory drugs (NSAIDs) like ibuprofen can potentially reduce the effectiveness of Lisinopril in managing blood pressure. Therefore, it is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is appropriate for the patient's specific situation.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -103,37 +103,37 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "Lisinopril",
-                "field": "name",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              },
-              {
-                "asserted_value": "Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an angiotensin-receptor blocker (e.g. losartan) can blunt the blood-pressure-lowering effect and, more importantly, can reduce renal perfusion \u2014 the combination is sometimes described as part of a \"triple whammy\" when a diuretic is also present.",
+                "asserted_value": "Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an angiotensin-receptor blocker (e.g. losartan) can blunt the blood-pressure-lowering effect",
                 "field": "text",
-                "record_id": "nsaid-interactions",
+                "record_id": "nsaid-interactions#ace-inhibitors-and-arbs",
                 "tool_call_id": "nsaid-interactions"
               }
             ],
-            "text": "Combining an NSAID with an ACE inhibitor like Lisinopril can reduce the effectiveness of Lisinopril in patients with kidney disease or those at risk for kidney damage."
+            "text": "Ibuprofen can potentially reduce the effectiveness of Lisinopril in managing blood pressure."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "Lisinopril",
-                "field": "name",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              },
+                "asserted_value": "Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an angiotensin-receptor blocker (e.g. losartan) can blunt the blood-pressure-lowering effect and, more importantly, can reduce renal perfusion \u2014 the combination is sometimes described as part of a \"triple whammy\" when a diuretic is also present.",
+                "field": "text",
+                "record_id": "nsaid-interactions#ace-inhibitors-and-arbs",
+                "tool_call_id": "nsaid-interactions"
+              }
+            ],
+            "text": "Combining ibuprofen with Lisinopril can reduce renal perfusion, especially in older adults, patients with reduced kidney function, or those who are volume-depleted."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
               {
                 "asserted_value": "Caution is generally warranted, especially in older adults, patients with reduced kidney function, or those who are volume-depleted; renal function is often checked if the combination is used for more than a short course.",
                 "field": "text",
-                "record_id": "nsaid-interactions",
-                "tool_call_id": "nsaidGideline"
+                "record_id": "nsaid-interactions#ace-inhibitors-and-arbs",
+                "tool_call_id": "nsaid-interactions"
               }
             ],
-            "text": "Caution is generally warranted when combining NSAIDs with ACE inhibitors like Lisinopril, especially in patients with reduced kidney function."
+            "text": "It is advisable to consult with a healthcare provider before taking ibuprofen to ensure it is appropriate for the patient's specific situation."
           }
         ]
       },
