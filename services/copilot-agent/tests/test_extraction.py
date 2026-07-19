@@ -39,6 +39,7 @@ from app.extraction import (
     normalize_raw_results,
     run_verification,
 )
+from app.llama_server_client import LlamaServerError
 from app.ollama_client import OllamaError
 from app.openemr_client import OpenEmrClient
 from app.planner import PlannerResult, ToolCallTrace
@@ -81,6 +82,23 @@ class _FakeExtractOllama:
         self.extract_calls.append((prompt_or_messages, schema))
         if self._error:
             raise OllamaError("scripted extraction failure")
+        return self._result if self._result is not None else VerifiedAnswer(claims=[])
+
+
+class _FakeExtractLlamaServer:
+    """Scripted extraction client mirroring ``_FakeExtractOllama``, but for the
+    ``copilot_llm_engine=llama_server`` engine -- raises ``LlamaServerError``,
+    a hierarchy fully separate from ``OllamaError`` (#60)."""
+
+    def __init__(self, result: VerifiedAnswer | None = None, *, error: bool = False) -> None:
+        self._result = result
+        self._error = error
+        self.extract_calls: list[tuple[list[dict[str, str]], type]] = []
+
+    def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None) -> Any:
+        self.extract_calls.append((prompt_or_messages, schema))
+        if self._error:
+            raise LlamaServerError("scripted extraction failure")
         return self._result if self._result is not None else VerifiedAnswer(claims=[])
 
 
@@ -211,6 +229,24 @@ def test_extract_claims_short_circuits_when_no_records():
 def test_extract_claims_returns_empty_on_extraction_error():
     ollama = _FakeExtractOllama(error=True)
     extractor = ClaimExtractor(ollama_client=ollama)
+
+    claims = extractor.extract_claims(
+        answer="x",
+        tools=[ToolName.GET_MEDICATIONS],
+        raw_results=[_meds_raw(_lisinopril())],
+    )
+
+    assert claims == []
+
+
+def test_extract_claims_returns_empty_on_llama_server_extraction_error():
+    """Under ``copilot_llm_engine=llama_server`` the extract client is
+    ``LlamaServerClient``, which raises ``LlamaServerError`` -- a hierarchy
+    separate from ``OllamaError``. ``extract_claims`` must degrade to ``[]``
+    here exactly as it does for the Ollama engine (#60 real 500 gap: this
+    used to propagate uncaught)."""
+    llama_server = _FakeExtractLlamaServer(error=True)
+    extractor = ClaimExtractor(ollama_client=llama_server)
 
     claims = extractor.extract_claims(
         answer="x",
