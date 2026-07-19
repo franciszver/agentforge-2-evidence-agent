@@ -617,7 +617,11 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     """
     ollama_client = OllamaClient.from_settings(settings)
     retriever = build_retriever_from_corpus(embedder=ollama_client)
-    text_llm_client = get_text_llm_client(settings)
+    # Reuse the same ollama_client for the reranker in the default case
+    # instead of paying for a second httpx.Client/connection pool -- only
+    # construct a distinct client when the engine flag actually selects
+    # llama-server.
+    text_llm_client = ollama_client if settings.copilot_llm_engine != "llama_server" else get_text_llm_client(settings)
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
     return (

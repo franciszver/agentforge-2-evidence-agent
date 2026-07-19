@@ -27,12 +27,18 @@ Design notes:
     open-ended schema string field can still run away (measured: one
     extraction call ran 305s and hit the request timeout even with a schema
     in effect), so the cap is unconditional.
-  * ``<think>`` leak stripping mirrors ``OllamaClient._strip_leaked_thinking``.
-    The production launch flag is ``--reasoning off`` (server-side, not a
-    per-request field), which should prevent Qwen3's thinking preamble from
-    ever reaching ``message.content`` -- the strip is defense-in-depth for
-    the same failure mode ``OllamaClient`` guards against, harmless if the
-    server never leaks.
+  * ``<think>`` leak stripping and message normalization directly REUSE
+    ``OllamaClient._strip_leaked_thinking``/``_normalize_messages`` (both
+    pure, stateless static methods) rather than a second copy of the regex,
+    so the two clients can never drift on this shared, security-relevant
+    behavior. The production launch flag is ``--reasoning off`` (server-side,
+    not a per-request field), which should prevent Qwen3's thinking preamble
+    from ever reaching ``message.content`` -- the strip is defense-in-depth
+    for the same failure mode ``OllamaClient`` guards against, harmless if
+    the server never leaks.
+  * ``LlmCallStats`` is also reused directly from ``app.ollama_client``
+    (not redefined) -- callers reading ``call_stats`` off either client get
+    the same type regardless of which engine served the call.
   * ``temperature: 0`` by default, overridable per call via ``options``
     (merged directly onto the OpenAI-style top-level body).
   * Synchronous, injectable-``httpx.Client`` pattern matching
@@ -45,16 +51,15 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
+from app.ollama_client import LlmCallStats, OllamaClient
 
 _logger = logging.getLogger(__name__)
 
@@ -62,28 +67,8 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
-# Same defensive strip as OllamaClient -- see module docstring.
-_LEAKED_THINK_RE = re.compile(r"^.*?</think>\s*", re.DOTALL)
-
 # Hard cap applied to every call (chat and extract) -- see module docstring.
 _MAX_TOKENS = 1536
-
-
-@dataclass(frozen=True)
-class LlmCallStats:
-    """Timing + token counts for one completed call to llama-server.
-
-    Same shape as ``app.ollama_client.LlmCallStats`` so callers (``app.planner``,
-    ``app.extraction``) build ``llm`` trace spans identically regardless of
-    which client served the call.
-    """
-
-    model: str
-    start_ts: float
-    end_ts: float
-    ok: bool
-    tokens_in: int | None
-    tokens_out: int | None
 
 
 class LlamaServerError(Exception):
@@ -370,11 +355,12 @@ class LlamaServerClient:
             body["stream_options"] = {"include_usage": True}
         return body
 
-    @staticmethod
-    def _normalize_messages(prompt_or_messages: str | list[dict[str, str]]) -> list[dict[str, str]]:
-        if isinstance(prompt_or_messages, str):
-            return [{"role": "user", "content": prompt_or_messages}]
-        return prompt_or_messages
+    # Message normalization and leaked-<think> stripping are pure, stateless
+    # helpers with no Ollama-specific behavior -- reused directly from
+    # ``OllamaClient`` (rather than a second copy here) so the two clients
+    # can never drift on this shared, security-relevant regex.
+    _normalize_messages = staticmethod(OllamaClient._normalize_messages)
+    _strip_leaked_thinking = staticmethod(OllamaClient._strip_leaked_thinking)
 
     @staticmethod
     def _single_message_content(response: httpx.Response) -> tuple[str, int | None, int | None]:
@@ -394,7 +380,3 @@ class LlamaServerClient:
         tokens_in = tokens_in if isinstance(tokens_in, int) else None
         tokens_out = tokens_out if isinstance(tokens_out, int) else None
         return LlamaServerClient._strip_leaked_thinking(content), tokens_in, tokens_out
-
-    @staticmethod
-    def _strip_leaked_thinking(content: str) -> str:
-        return _LEAKED_THINK_RE.sub("", content, count=1)
