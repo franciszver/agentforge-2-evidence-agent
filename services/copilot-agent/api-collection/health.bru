@@ -1,0 +1,17 @@
+meta {
+  name: Health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/health
+  body: none
+  auth: none
+}
+
+docs {
+  Liveness probe. Always returns `{"status": "ok"}` if the process is up --
+  does not check any dependency (OpenEMR, Ollama/llama-server, the trace
+  store). Use `GET /ready` for a dependency-aware check.
+}
