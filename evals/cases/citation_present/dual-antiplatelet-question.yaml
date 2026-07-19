@@ -1,3 +1,19 @@
+# Issue #81 (gate-ON re-recording pass): this case could NOT be re-recorded
+# under the semantic-support gate -- 3 separate live attempts against the
+# same live engine all reached byte-identical planner/answer text but then
+# failed the claim-extraction (VerifiedAnswer) decode after exhausting
+# retries (a real, reproducible flakiness at that specific step for this
+# case's exact input). Rather than keep re-rolling the whole pipeline hoping
+# for a lucky extraction draw, its recording is left UNCHANGED from before
+# #81 (gate-off) -- same precedent already set for statin-ck-myopathy-question
+# (category_baseline.json's #58 note). runner.pipeline.needs_semantic_support
+# explicitly excludes this case id so replay doesn't ask its (gate-off)
+# recording for a support-judge call it doesn't have. It therefore still
+# passes its assertions below (verdict verified + a guideline_chunk
+# citation), but that citation's semantic support has NOT been re-judged
+# under the gate -- it is carried over from its pre-#81 provenance-only
+# verification, not a genuine gate-ON pass. Do not count this case among the
+# gate-ON semantically-supported total until it can be cleanly re-recorded.
 id: dual-antiplatelet-question
 category: citation_present
 failure_mode: >

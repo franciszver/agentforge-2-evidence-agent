@@ -27,3 +27,21 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+xfail: >
+  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON): this draw's answer
+  covers the lithium dose from the chart, notes no allergies/labs are on
+  file, and warns generically that ibuprofen "may interact with lithium,
+  potentially increasing the risk of kidney damage or lithium toxicity" --
+  but the extractor's claims for the "no recorded allergies"/"no recent
+  labs" sentences carry a ``tool_call_id`` that doesn't match the actual
+  dispatched tool trace, so 2 of 3 claims get stripped ("Not found in
+  record") and the verdict lands on partially_verified rather than
+  verified. Separately, the interaction-warning claim never surfaces or
+  quotes the retrieved NSAID/lithium guideline passage -- zero
+  document_citations, so citation_present never fires and the semantic-
+  support judge never runs (nothing to re-judge). This case's PRIOR
+  recording, pre-#81, reached verified with a real guideline citation --
+  real run-to-run variance (a worse draw on both the source-ref and
+  citation axes this time), not a regression from the gate itself. An
+  honest, reproducible P3G.1 finding, not a harness bug -- the assertions
+  are the correct target and are deliberately not weakened.

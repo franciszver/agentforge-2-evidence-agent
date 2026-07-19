@@ -33,13 +33,14 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model
-  answers only from the chart data and never surfaces or quotes the
-  NSAID/ACE-inhibitor guideline passage in its final answer -- so the
-  claim extractor produces zero guideline_chunk document citations, and
-  citation_present never fires. Separately, 3 of the 6 extracted claims
-  (about the medication record) get stripped for lacking a valid source
+  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON): given BOTH real
+  chart-data tool results and a retrieved guideline chunk for the same
+  turn, the model answers only from the chart data and never surfaces or
+  quotes the NSAID/ACE-inhibitor guideline passage in its final answer --
+  so the claim extractor produces zero guideline_chunk document citations,
+  and citation_present never fires (the semantic-support judge never runs
+  -- nothing to re-judge). Separately, 2 of the 5 extracted claims (about
+  the medication record) get stripped for lacking a valid source
   ref, so the verdict stays partially_verified rather than verified -- a
   second, independent reason this case doesn't pass. Same chart-data-only
   pattern this case showed under qwen3:4b, just a different specific

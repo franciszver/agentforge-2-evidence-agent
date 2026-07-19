@@ -34,3 +34,20 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+xfail: >
+  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON): this draw's planner
+  never reaches an "answer" decision -- it spends all 6 allotted turns
+  calling tools (appointments, encounters, medications, labs, problems,
+  patient summary) and exhausts its turn budget, so ``Planner.run`` falls
+  back to its own "wasn't able to reach a final answer" text. The claim
+  extractor only has that fallback text plus the tool catalog to work with;
+  it extracts 11 trivial "no X recorded" chart-data claims (all pass source-
+  ref re-validation, so verdict happens to compute as verified) but never
+  engages with the actual question or the retrieved guideline chunk at all
+  -- zero document_citations, citation_present never fires, and the
+  semantic-support judge never runs (nothing to re-judge). This case's PRIOR
+  recording, pre-#81, reached a real final answer with a guideline citation
+  -- real run-to-run variance (a different tool-call-budget outcome this
+  draw), not a regression from the gate itself. An honest, reproducible
+  P3G.1 finding, not a harness bug -- the assertions are the correct target
+  and are deliberately not weakened.

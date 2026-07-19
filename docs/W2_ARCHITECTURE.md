@@ -311,11 +311,12 @@ per this issue's own instruction not to block on live infra.
   production baseline"). That is roughly **2.6× Phase 1's single-request
   baseline**: the direct, expected latency cost of moving from a 4B to an
   8B-class model on the same 8 GB card, traded for materially better
-  citation reliability (Phase 2's own measured ceiling on this hardware is
-  6/12 verified citations on the `citation_present` eval category — see that
-  doc's "Why 6/12 is the ceiling on this hardware"). Both figures are
+  citation reliability (Phase 2's own measured ceiling on this hardware,
+  under the issue #47/#81 tightened definition — provenance AND semantic
+  support — is low; see that doc's "Why the ceiling on this hardware is low,
+  and getting lower under the tightened definition"). Both figures are
   measured-vs-measured, not measured-vs-projected.
-- **Eval-suite citation reliability.** The `citation_present` category's 6/12
+- **Eval-suite citation reliability.** The `citation_present` category's
   committed production baseline (`evals/category_baseline.json`) is the one
   Phase 2 metric with no Phase 1 equivalent to compare against (Phase 1 had
   no fail-closed verbatim-citation verification layer). It is CI-guarded by

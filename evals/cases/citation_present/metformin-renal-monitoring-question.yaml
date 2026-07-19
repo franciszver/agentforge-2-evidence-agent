@@ -30,16 +30,21 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor produces
-  zero guideline_chunk document citations, and citation_present never
-  fires. Separately, the model also asserts several "no recorded X" claims
-  (problems/allergies/labs/vitals/encounters/appointments) that don't all
-  carry a valid source ref, so 2 of 9 extracted claims get stripped and the
-  verdict stays partially_verified rather than verified -- a second,
-  independent reason this case doesn't pass. Same chart-data-only pattern
-  this case showed under qwen3:4b, just a different specific model. An
-  honest, reproducible P3G.1 finding, not a harness bug -- the assertions
-  are the correct target and are deliberately not weakened.
+  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON): a genuine near-miss,
+  the SAME failure mode as renal-function-ace-question/warfarin-antibiotic-
+  question below, not the chart-data-only pattern this case showed under
+  #58/qwen3:4b. This draw's answer DOES surface and quote the renal-
+  function-monitoring guideline passage ("eGFR is generally checked at
+  least annually in patients on metformin ...") in a claim that survives
+  citation re-validation -- the semantic-support judge affirms it as
+  genuinely `supported` ("directly supports the CLAIM"), so
+  guideline_citation_present alone would pass here. But the overall verdict
+  still fails to reach `verified`: 1 of the 9 extracted claims (an
+  unrelated "no recorded X" chart-data claim) lacks a valid source ref and
+  gets stripped ("Not found in record"), so the citation axis lands on
+  SOME_VERIFIED and the verdict stays partially_verified. citation_present's
+  actual assertion genuinely fires and the citation is honestly
+  semantically supported, but the case as a whole still doesn't meet the
+  combined bar (`verdict equals verified` AND `guideline_citation_present`).
+  An honest, reproducible P3G.1 finding, not a harness bug -- the
+  assertions are the correct target and are deliberately not weakened.
