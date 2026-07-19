@@ -100,4 +100,5 @@ def load_baseline(path: Path) -> dict[str, CategoryBaseline]:
             tolerance=entry.get("tolerance", 0.05),
         )
         for category, entry in raw.items()
+        if not category.startswith("_")
     }
