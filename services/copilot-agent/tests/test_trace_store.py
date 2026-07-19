@@ -13,11 +13,38 @@ tool ``args`` never appears verbatim anywhere in the file.
 from __future__ import annotations
 
 import secrets
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from app.trace_store import FeedbackThumb, SpanStatus, SpanType, TraceStore, hash_args
+
+# The exact pre-P3.8 schema (committed on main before this branch added
+# span_id/parent_span_id/worker_name/sub_task_type) -- see
+# services/copilot-agent/app/trace_store.py at commit e3c8c1d.
+_PRE_P38_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
+    span_type TEXT NOT NULL,
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_name TEXT,
+    args_hash TEXT,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    verdict TEXT,
+    claim_count INTEGER,
+    stripped_count INTEGER,
+    feedback_thumb TEXT,
+    feedback_comment TEXT,
+    error_category TEXT
+)
+"""
 
 # Derived (not a hardcoded literal) so no secret-shaped string is committed;
 # stable within a run, so the store fixture and the hash-equality assertions
@@ -38,6 +65,56 @@ def store(db_path: str) -> TraceStore:
 def test_schema_created_idempotently(db_path: str) -> None:
     # Constructing twice against the same path must not raise.
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+    TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+
+def test_migrates_a_pre_p38_db_so_new_columns_are_writable(db_path: str) -> None:
+    """An existing production ``traces.db`` predating this branch has the
+    pre-P3.8 column set (no span_id/parent_span_id/worker_name/
+    sub_task_type). ``CREATE TABLE IF NOT EXISTS`` alone is a no-op against
+    such a DB -- the columns never appear, and every write that names them
+    raises ``sqlite3.OperationalError``, which ``record_span_best_effort``
+    swallows: tracing silently stops entirely. Constructing a ``TraceStore``
+    against such a DB must migrate it (idempotently) so writes naming the
+    new columns succeed."""
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_PRE_P38_SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+    # Must not raise sqlite3.OperationalError: no column named span_id/...
+    store.record_worker_span(
+        correlation_id="corr-migrate",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        worker_name="evidence-retriever",
+        sub_task_type="RetrieveSubTask",
+        span_id="span-1",
+        parent_span_id="span-0",
+    )
+    store.record_tool_span(
+        correlation_id="corr-migrate",
+        start_ts=1.0,
+        end_ts=2.0,
+        ok=True,
+        tool_name="get_medications",
+        args={},
+        span_id="span-2",
+        parent_span_id="span-0",
+    )
+
+    spans = store.get_spans("corr-migrate")
+    worker_span = next(span for span in spans if span.span_type == SpanType.WORKER)
+    tool_span = next(span for span in spans if span.span_type == SpanType.TOOL)
+    assert worker_span.span_id == "span-1"
+    assert tool_span.span_id == "span-2"
+
+    # Re-constructing against the now-migrated DB must still not raise.
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
 
 

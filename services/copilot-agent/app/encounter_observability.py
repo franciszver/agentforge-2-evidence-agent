@@ -199,7 +199,15 @@ def build_encounter_record(
     total_tokens_out = 0
     tokens_by_model_counts: dict[str, tuple[int, int]] = {}
 
-    for span in spans:
+    # ``get_spans`` returns spans in INSERTION order (its own contract, which
+    # other consumers rely on -- not changed here). On /chat, tool spans are
+    # written inline as they stream while llm spans are batched afterward
+    # (``app.chat._emit_llm_spans``), so insertion order does not match the
+    # real timeline when the two interleave. Sort by ``start_ts`` (Python's
+    # sort is stable, so equal timestamps keep their insertion order) so the
+    # "ordered step sequence" this record promises is actually ordered by
+    # when each step ran, not by when it happened to be written.
+    for span in sorted(spans, key=lambda span: span.start_ts):
         step_kind = _STEP_SPAN_TYPES.get(span.span_type)
         if step_kind is not None:
             steps.append(
