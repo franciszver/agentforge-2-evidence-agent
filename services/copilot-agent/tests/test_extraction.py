@@ -44,6 +44,8 @@ from app.ollama_client import OllamaError
 from app.openemr_client import OpenEmrClient
 from app.planner import PlannerResult, ToolCallTrace
 from app.rendering import Notice, RenderedClaim
+from app.schemas.ingestion import Citation as DocumentIngestionCitation
+from app.schemas.ingestion import DocumentCitation
 from app.schemas.common import (
     AllergySeverity,
     MedicationStatus,
@@ -440,6 +442,96 @@ def test_run_verification_normalizes_vitals_before_checking():
     # the vitals result before building the checker index.
     assert verdict_result.verdict is Verdict.VERIFIED
     assert isinstance(rendered.segments[0], RenderedClaim)
+
+
+class _FakeExtractorWithPatientFacts:
+    """A whole-``ClaimExtractor`` double that also accepts ``patient_facts``
+    (P3.9a) -- ``_FakeExtractor`` above deliberately does NOT, so any call
+    site that passes ``patient_facts`` unconditionally (rather than only when
+    non-empty, mirroring ``retrieved_chunks``'s existing discipline) would
+    break every pre-existing ``_FakeExtractor``-based test in this file."""
+
+    def __init__(self, claims: list[Claim]) -> None:
+        self._claims = claims
+        self.calls: list[dict[str, Any]] = []
+
+    def extract_claims(
+        self, *, answer: str, tools: Any, raw_results: Any, retrieved_chunks: Any = (), patient_facts: Any = ()
+    ) -> list[Claim]:
+        self.calls.append(
+            {
+                "answer": answer,
+                "tools": list(tools),
+                "raw_results": list(raw_results),
+                "patient_facts": list(patient_facts),
+            }
+        )
+        return self._claims
+
+
+def test_run_verification_verifies_a_lab_fact_document_citation_against_the_supplied_patient_facts():
+    """P3.9a (issue #46): a claim citing a patient's own extracted lab fact
+    verifies against a ``DocumentFactIndex`` built from ``patient_facts`` --
+    ``run_verification``'s ONLY source for that index. This is the plumbing
+    proof; patient-scoping itself (never leaking another patient's facts into
+    this list in the first place) is enforced by the CALLER -- see
+    ``tests/test_ingestion.py``'s ``list_citations_for_patient`` isolation
+    tests and ``tests/test_chat_fact_integration.py``'s cross-patient test."""
+    result = _planner_result("Her A1c is 5.4%.", ToolName.GET_MEDICATIONS, {"items": []})
+    fact_citation = DocumentIngestionCitation(
+        source_type="lab_pdf",
+        source_id="doc-a1c-source",
+        page_or_section="page 1",
+        field_or_chunk_id="Hemoglobin A1c#page1-row0",
+        quote_or_value="Hemoglobin A1c: 5.4",
+    )
+    claim = Claim(
+        text="Her A1c is 5.4%.",
+        document_citations=[
+            DocumentCitation(
+                source_type="lab_pdf",
+                source_id="doc-a1c-source",
+                page_or_section="page 1",
+                field_or_chunk_id="Hemoglobin A1c#page1-row0",
+                quote_or_value="Hemoglobin A1c: 5.4",
+            )
+        ],
+    )
+    extractor = _FakeExtractorWithPatientFacts([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, patient_facts=[fact_citation])
+
+    assert extractor.calls[0]["patient_facts"] == [fact_citation]
+    assert verdict_result.verdict is Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], RenderedClaim)
+
+
+def test_run_verification_fails_closed_when_cited_fact_is_not_in_the_supplied_patient_facts():
+    """A ``DocumentCitation`` naming a ``source_id`` absent from
+    ``patient_facts`` (e.g. it belongs to a DIFFERENT patient and was never
+    supplied here) must never verify -- fails closed (BLOCKED), never a
+    false pass. This is the fail-closed backstop the security review checks:
+    even if a caller ever mis-scoped the ``patient_facts`` list, an
+    out-of-scope citation cannot silently verify."""
+    result = _planner_result("Her A1c is 5.4%.", ToolName.GET_MEDICATIONS, {"items": []})
+    claim = Claim(
+        text="Her A1c is 5.4%.",
+        document_citations=[
+            DocumentCitation(
+                source_type="lab_pdf",
+                source_id="someone-elses-source-id",
+                page_or_section="page 1",
+                field_or_chunk_id="Hemoglobin A1c#page1-row0",
+                quote_or_value="Hemoglobin A1c: 5.4",
+            )
+        ],
+    )
+    extractor = _FakeExtractorWithPatientFacts([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, patient_facts=[])
+
+    assert verdict_result.verdict is Verdict.BLOCKED
+    assert isinstance(rendered.segments[0], Notice)
 
 
 # --------------------------------------------------------------------------

@@ -663,3 +663,57 @@ def test_intake_form_page_with_nothing_legible_yields_no_fact_for_that_page(stor
     assert len(result.facts) == 1
     assert result.failed_pages == []
     assert result.pages_total == 2
+
+
+# ---------------------------------------------------------------------------
+# 9. P3.9a: patient-scoped fact lookup (LocalIngestionStore.list_citations_for_patient)
+#
+# Backs /chat's per-patient lab/intake-form DocumentCitation path (issue #46):
+# a live turn needs to look up ONE patient's own extracted-fact citations,
+# scoped strictly by patient_id, to build a app.verification.DocumentFactIndex
+# from them. The critical property under test is patient isolation -- a
+# lookup for patient A must NEVER return a citation stored under patient B,
+# regardless of how many documents either patient has ingested.
+# ---------------------------------------------------------------------------
+
+
+def test_list_citations_for_patient_returns_only_that_patients_citations(store, fake_vlm):
+    result = attach_and_extract(
+        1, _FIXTURE_PATH, "lab_pdf", ollama_client=fake_vlm, document_store=store, fact_store=store
+    )
+
+    citations = store.list_citations_for_patient(1)
+
+    assert len(citations) == 8
+    assert all(citation.source_type == "lab_pdf" for citation in citations)
+    assert all(citation.source_id == result.source_id for citation in citations)
+    assert any("Hemoglobin A1c" in citation.quote_or_value for citation in citations)
+
+
+def test_list_citations_for_patient_never_returns_a_different_patients_citations(store):
+    """The load-bearing security case (issue #46): patient A's /chat turn must
+    never see patient B's extracted facts. Two patients each ingest their own
+    lab report into the SAME store; a lookup for one must return only that
+    one's citations, never the other's."""
+    vlm_a = _FakeVlmOllama([LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)])
+    vlm_b = _FakeVlmOllama([LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)])
+
+    result_a = attach_and_extract(101, _FIXTURE_PATH, "lab_pdf", ollama_client=vlm_a, document_store=store, fact_store=store)
+    result_b = attach_and_extract(202, _FIXTURE_PATH, "lab_pdf", ollama_client=vlm_b, document_store=store, fact_store=store)
+
+    citations_a = store.list_citations_for_patient(101)
+    citations_b = store.list_citations_for_patient(202)
+
+    source_ids_a = {citation.source_id for citation in citations_a}
+    source_ids_b = {citation.source_id for citation in citations_b}
+
+    assert source_ids_a == {result_a.source_id}
+    assert source_ids_b == {result_b.source_id}
+    # No cross-contamination in either direction.
+    assert source_ids_a.isdisjoint(source_ids_b)
+    assert result_b.source_id not in source_ids_a
+    assert result_a.source_id not in source_ids_b
+
+
+def test_list_citations_for_patient_with_no_ingested_documents_returns_empty(store):
+    assert store.list_citations_for_patient(999) == []
