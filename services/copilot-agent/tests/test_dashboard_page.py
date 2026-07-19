@@ -5,6 +5,13 @@ contract test, no browser. The trace store is isolated by the autouse
 ``tests/conftest.py::_isolate_trace_store`` fixture -- every test here reads
 through the SAME ``get_trace_store`` dependency the isolation fixture already
 overrides, so no extra plumbing is needed to avoid touching ``/data``.
+Likewise, the eval-run history is isolated by the autouse
+``tests/conftest.py::_isolate_eval_history`` fixture -- every test reads
+through the SAME ``get_eval_history_provider`` dependency it overrides, so no
+test here ever reads the real, live-growing ``app/data/eval_history.json``.
+Tests that need a SPECIFIC history (empty, multi-point) override
+``get_eval_history_provider`` in the test body, same as the per-test
+``get_trace_store`` overrides below.
 """
 
 from __future__ import annotations

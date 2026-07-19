@@ -63,6 +63,47 @@ def _isolate_trace_store(_isolation_trace_store: object) -> Iterator[None]:
     app.dependency_overrides.pop(get_trace_store, None)
 
 
+@pytest.fixture(scope="session")
+def _isolation_eval_history() -> list[object]:
+    """One fixed in-memory eval-run history for the whole session (see
+    ``_isolate_eval_history``)."""
+    from app.dashboard_eval_history import EvalRunPoint
+
+    return [
+        EvalRunPoint(
+            timestamp="2026-01-01T00:00:00Z",
+            git_sha="isolationfixture",
+            total=1,
+            passed=1,
+            failed=0,
+            xfailed=0,
+            pass_rate=1.0,
+        )
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_eval_history(_isolation_eval_history: list[object]) -> Iterator[None]:
+    """Point ``get_eval_history_provider`` at a fixed in-memory history for
+    EVERY test.
+
+    Autouse so no dashboard test can forget to isolate: the real
+    ``get_eval_history_provider`` reads the committed, live-growing
+    ``app/data/eval_history.json`` -- a future change to that file could flip
+    an unrelated dashboard test that never asked to depend on it (TEST_PLAN
+    Sec 7 hermeticity). Tests that need a SPECIFIC history (empty,
+    multi-point) set their own ``get_eval_history_provider`` override in the
+    test body (same dict key wins); this fixture only supplies a safe
+    default and removes it on teardown.
+    """
+    from app.dashboard import get_eval_history_provider
+    from app.main import app
+
+    app.dependency_overrides[get_eval_history_provider] = lambda: (lambda: _isolation_eval_history)
+    yield
+    app.dependency_overrides.pop(get_eval_history_provider, None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _assert_default_trace_store_untouched() -> Iterator[None]:
     """Session leak guard: prove no test ever invoked the real
