@@ -18,7 +18,6 @@ import httpx
 from fastapi import Depends
 from pydantic import BaseModel
 
-from app.chat import _wants_llama_server
 from app.config import Settings, get_settings
 
 # FHIR CapabilityStatement endpoint: unauthenticated on a stock OpenEMR
@@ -97,10 +96,13 @@ async def check_ollama(settings: Settings, client: httpx.AsyncClient) -> CheckRe
 async def check_llama_server(settings: Settings, client: httpx.AsyncClient) -> CheckResult:
     """Check that the llama-server engine is reachable.
 
-    Only wired into ``compute_readiness`` when ``settings.copilot_llm_engine
-    == "llama_server"`` (see ``_wants_llama_server``) -- Ollama is checked
-    unconditionally regardless of the engine flag, since embeddings and
-    vision-based document-ingestion extraction always use it (see
+    Checked unconditionally by ``compute_readiness`` (P3.10e, issue #73):
+    llama-server is now a core dependency of the default deployment,
+    regardless of ``settings.copilot_llm_engine`` -- even when that flag is
+    set back to "ollama" for rollback, the container is still expected to be
+    running (see the compose overlay), so /ready still probes it. Ollama is
+    also checked unconditionally, since embeddings and vision-based
+    document-ingestion extraction always use it (see
     ``app.config.Settings.copilot_llm_engine``'s docstring).
     """
     url = f"{settings.llama_server_base_url}{LLAMA_SERVER_HEALTH_PATH}"
@@ -175,17 +177,16 @@ async def compute_readiness(
 ) -> ReadinessReport:
     """Aggregate all dependency checks into a single readiness report.
 
-    Ollama and the trace store are checked unconditionally. llama-server is
-    checked only when ``copilot_llm_engine`` actually selects it -- when the
-    engine is "ollama" (default), nothing in the request path ever talks to
-    llama-server, so probing it would report a fake outage for a dependency
-    that isn't in use.
+    Openemr, Ollama, llama-server, and the trace store are all checked
+    unconditionally. llama-server is a core dependency of the default
+    deployment (P3.10e, issue #73) regardless of ``copilot_llm_engine`` --
+    the container is expected to be running whether or not the flag
+    currently routes text-generation traffic to it.
     """
     checks = {
         "openemr": await check_openemr(settings, openemr_client),
         "ollama": await check_ollama(settings, ollama_client),
+        "llama_server": await check_llama_server(settings, llama_server_client),
     }
-    if _wants_llama_server(settings):
-        checks["llama_server"] = await check_llama_server(settings, llama_server_client)
     checks["trace_store"] = check_trace_store(settings.trace_db_path)
     return ReadinessReport(ready=all(result.ok for result in checks.values()), checks=checks)
