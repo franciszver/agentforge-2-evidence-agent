@@ -65,10 +65,10 @@ import logging
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from app.authz import PatientBindingViolation, enforce_patient_binding
-from app.ollama_client import LlmCallStats, OllamaClient
+from app.ollama_client import LlmCallStats
 from app.openemr_client import OpenEmrApiError, OpenEmrClient
 from app.quarantine import QuarantinedSummarizer, quarantine_tool_result
 from app.schemas.common import ToolSchemaModel
@@ -95,6 +95,29 @@ from app.tools.vitals import get_vitals
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TURNS = 6
+
+
+class _PlannerLlmClient(Protocol):
+    """Structural subset of ``OllamaClient``/``LlamaServerClient`` the planner
+    needs (P3.10a, epic #52 step 1): schema-constrained extraction plus plain
+    chat. Narrow on purpose, matching ``app.extraction._Extractor`` and
+    ``app.reranking._Extractor``'s pattern of depending on a Protocol rather
+    than a concrete client class, so either engine can be injected here.
+    ``chat_stream``/``call_stats`` are accessed via ``getattr`` below (both
+    optional capabilities), so they are deliberately not part of this
+    Protocol.
+    """
+
+    def chat(self, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None) -> str: ...
+
+    def extract(
+        self,
+        prompt_or_messages: str | list[dict[str, str]],
+        schema: type[Any],
+        *,
+        options: dict[str, Any] | None = None,
+        images: list[str] | None = None,
+    ) -> Any: ...
 
 # Recognized ``tool_args`` filter keys and how to coerce their string value.
 # Only these keys are ever read from a model-supplied ``tool_args`` map --
@@ -426,7 +449,8 @@ class Planner:
 
     Args:
         ollama_client: Anything exposing ``extract(messages, schema) ->
-            PlannerDecision`` -- ``OllamaClient`` in production, a scripted
+            PlannerDecision`` -- ``OllamaClient`` or ``LlamaServerClient`` in
+            production (see ``app.chat.get_text_llm_client``), a scripted
             fake in hermetic tests.
         openemr_client: Passed through to whichever tool the model selects.
         token: The user's OAuth bearer token, passed through to tools.
@@ -442,7 +466,7 @@ class Planner:
     def __init__(
         self,
         *,
-        ollama_client: OllamaClient,
+        ollama_client: _PlannerLlmClient,
         openemr_client: OpenEmrClient,
         token: str,
         patient_id: int,

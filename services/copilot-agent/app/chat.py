@@ -84,7 +84,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.correlation import get_correlation_id, get_span_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import (
@@ -101,6 +101,7 @@ from app.encounter_observability import build_encounter_record
 from app.ingestion import LocalIngestionStore
 from app.introspection import TokenIntrospector
 from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
+from app.llama_server_client import LlamaServerClient
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
@@ -337,6 +338,21 @@ def get_dev_token_bridge() -> DevTokenBridge:
     return _dev_token_bridge
 
 
+def get_text_llm_client(settings: Settings) -> OllamaClient | LlamaServerClient:
+    """Build the client for the text-generation LLM roles -- planner
+    chat/extract, claim extraction, and the LLM-as-reranker relevance score
+    -- selected by ``settings.copilot_llm_engine`` (P3.10a, epic #52 step 1).
+
+    Embeddings and vision-based document-ingestion extraction are NOT among
+    these roles and always use ``OllamaClient`` regardless of this flag --
+    see ``_build_evidence_workers``, which constructs its own separate,
+    always-Ollama client for those.
+    """
+    if settings.copilot_llm_engine == "llama_server":
+        return LlamaServerClient.from_settings(settings)
+    return OllamaClient.from_settings(settings)
+
+
 def _default_planner_factory(token: str) -> PlannerFactory:
     """Build the production planner factory bound to one real OpenEMR ``token``.
 
@@ -356,7 +372,7 @@ def _default_planner_factory(token: str) -> PlannerFactory:
 
     def factory(patient_id: int) -> PlannerProtocol:
         return Planner(
-            ollama_client=OllamaClient.from_settings(settings),
+            ollama_client=get_text_llm_client(settings),
             openemr_client=OpenEmrClient.from_settings(settings),
             token=token,
             patient_id=patient_id,
@@ -416,7 +432,7 @@ def get_claim_extractor() -> ClaimExtractorLike:
     ``OllamaClient`` from the planner's, underscoring that the extractor
     never shares the planner's tool-selecting context.
     """
-    return ClaimExtractor(ollama_client=OllamaClient.from_settings(get_settings()))
+    return ClaimExtractor(ollama_client=get_text_llm_client(get_settings()))
 
 
 UNKNOWN_USER = "unknown"
@@ -576,15 +592,12 @@ def _no_op_evidence_retriever(query: str) -> list[RerankedChunk]:
 _evidence_workers: tuple[IntakeExtractorWorker, EvidenceRetrieverWorker] | None = None
 
 
-def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWorker]:
-    """The process-wide P3.5 workers backing /chat's evidence-retrieval path
-    (P3.9): built once and reused (mirrors ``get_token_introspector``'s own
-    lazy-singleton pattern) since ``build_retriever_from_corpus`` parses the
-    whole corpus and ``LocalIngestionStore`` is stateless config -- neither
-    needs rebuilding per request. The ``Supervisor`` wrapping these (see
-    ``get_evidence_retriever``) is instead built FRESH per request, so its
-    spans land in THIS request's ``trace_store`` (a per-test tmp_path DB in
-    tests) rather than a stale singleton's.
+def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, EvidenceRetrieverWorker]:
+    """Construct the P3.5 workers backing /chat's evidence-retrieval path
+    (P3.9) from ``settings``. Split out of ``_get_evidence_workers`` (which
+    caches the result in a process-wide singleton) so a wiring test can
+    exercise construction directly, with a specific ``Settings`` instance,
+    without touching that singleton.
 
     The intake-extractor worker is real (not a stub) -- it shares this same
     ``LocalIngestionStore``/``OllamaClient`` wiring ``app.documents`` already
@@ -594,18 +607,38 @@ def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWor
     P3.9 PR description for why that is explicitly deferred to a follow-up
     issue). Constructing a real worker anyway costs nothing (it is never
     invoked) and keeps ``Supervisor`` construction uniform.
+
+    P3.10a (epic #52 step 1): the embedder (dense-vector retrieval,
+    ``nomic-embed-text``) and the intake-extractor worker (vision-based
+    document-ingestion extraction) ALWAYS use ``OllamaClient`` here,
+    regardless of ``settings.copilot_llm_engine`` -- only the reranker's
+    LLM-as-judge relevance score is engine-selectable, via
+    ``get_text_llm_client``.
+    """
+    ollama_client = OllamaClient.from_settings(settings)
+    retriever = build_retriever_from_corpus(embedder=ollama_client)
+    text_llm_client = get_text_llm_client(settings)
+    reranker = Reranker(OllamaRerankScorer(text_llm_client))
+    ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
+    return (
+        IntakeExtractorWorker(ollama_client=ollama_client, document_store=ingestion_store, fact_store=ingestion_store),
+        EvidenceRetrieverWorker(retriever=retriever, reranker=reranker),
+    )
+
+
+def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWorker]:
+    """The process-wide P3.5 workers backing /chat's evidence-retrieval path
+    (P3.9): built once and reused (mirrors ``get_token_introspector``'s own
+    lazy-singleton pattern) since ``build_retriever_from_corpus`` parses the
+    whole corpus and ``LocalIngestionStore`` is stateless config -- neither
+    needs rebuilding per request. The ``Supervisor`` wrapping these (see
+    ``get_evidence_retriever``) is instead built FRESH per request, so its
+    spans land in THIS request's ``trace_store`` (a per-test tmp_path DB in
+    tests) rather than a stale singleton's.
     """
     global _evidence_workers
     if _evidence_workers is None:
-        settings = get_settings()
-        ollama_client = OllamaClient.from_settings(settings)
-        retriever = build_retriever_from_corpus(embedder=ollama_client)
-        reranker = Reranker(OllamaRerankScorer(ollama_client))
-        ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
-        _evidence_workers = (
-            IntakeExtractorWorker(ollama_client=ollama_client, document_store=ingestion_store, fact_store=ingestion_store),
-            EvidenceRetrieverWorker(retriever=retriever, reranker=reranker),
-        )
+        _evidence_workers = _build_evidence_workers(get_settings())
     return _evidence_workers
 
 
