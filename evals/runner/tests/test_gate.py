@@ -18,7 +18,11 @@ own separation between "runner mechanics" (this style of test, see
 
 from __future__ import annotations
 
-from runner.gate import CategoryBaseline, CategoryStats, check_category_regressions
+from pathlib import Path
+
+from runner.gate import CategoryBaseline, CategoryStats, check_category_regressions, load_baseline
+
+_BASELINE_PATH = Path(__file__).resolve().parents[2] / "category_baseline.json"
 
 
 def test_no_violation_when_current_matches_baseline() -> None:
@@ -81,3 +85,12 @@ def test_category_with_no_non_xfail_cases_is_a_vacuous_pass() -> None:
     current = {"citation_present": CategoryStats(passed=0, failed=0, xfailed=12)}
 
     assert check_category_regressions(current, baseline) == []
+
+
+def test_load_baseline_reads_the_committed_json() -> None:
+    """The real, committed ``evals/category_baseline.json`` parses and every
+    category has a sane pass_rate -- catches a hand-edit that breaks the
+    file's JSON syntax or shape before it ever reaches CI."""
+    baseline = load_baseline(_BASELINE_PATH)
+    assert "safe_refusal" in baseline
+    assert all(0.0 <= b.pass_rate <= 1.0 for b in baseline.values())
