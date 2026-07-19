@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -36,7 +37,7 @@ if str(_AGENT_ROOT) not in sys.path:
 from runner.gate import CategoryStats, check_category_regressions, load_baseline  # noqa: E402
 from runner.schema import _CATEGORIES  # noqa: E402
 
-_CATEGORY_NAMES = set(_CATEGORIES.__args__)
+_CATEGORY_NAMES = set(get_args(_CATEGORIES))
 _BASELINE_PATH = Path(__file__).resolve().parent / "category_baseline.json"
 
 
