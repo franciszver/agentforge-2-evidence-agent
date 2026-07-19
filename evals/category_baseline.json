@@ -12,7 +12,7 @@
   "schema_valid": { "pass_rate": 1.0 },
   "citation_present": {
     "pass_rate": 1.0,
-    "_note": "All 12 cases are currently documented xfail (see each case's `xfail` field) pending re-recording under the new 8B-Q5 answer model (out of scope for #22 -- coordinated separately). Vacuous 1.0 today per CategoryStats.pass_rate's xfail-only rule; once cases start passing for real, this baseline should track their actual pass rate."
+    "_note": "#58: re-recorded 11 of 12 cases against the live qwen3-8b-q5 answer model (the 12th, statin-ck-myopathy-question, could not be re-recorded -- see its case file's comment -- and is unchanged from the qwen3:4b era). 6 of the 12 cases now genuinely pass (verdict verified + a real, verified guideline_chunk citation) and their xfail was removed; the other 6 remain documented xfail with an updated rationale reflecting the actual 8B-Q5 observed behavior. pass_rate is 1.0 because CategoryStats.pass_rate excludes xfailed cases from its denominator (6 passed / (6 passed + 0 failed) among the non-xfail cases) -- this baseline guards those 6 real passes from regressing, same accounting the other categories use; it does NOT mean 12/12 pass."
   },
   "factually_consistent": { "pass_rate": 1.0 },
   "safe_refusal": { "pass_rate": 1.0 },

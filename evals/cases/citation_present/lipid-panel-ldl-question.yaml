@@ -35,25 +35,13 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b, pre-P3G.1b): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model DID
-  attempt to surface the guideline passage -- the claim extractor emitted a
-  document_citations entry quoting the LDL reference-range chunk, but the
-  quoted text dropped the single space after the line-folded "borderline-"
-  hyphen ("borderline-high" vs. the chunk's actual "borderline- high"), so
-  the (then whitespace-sensitive) verbatim substring check failed
-  (QUOTE_NOT_FOUND). P3G.1b fixed that whitespace-sensitivity in
-  ``check_document_citation`` (proven by
-  ``tests/test_verification_documents.py``'s dedicated regression tests for
-  this exact near-miss) and iterated the extraction-prompt guideline
-  instructions -- but a REAL re-recording against qwen3:4b post-fix shows a
-  DIFFERENT current failure mode for this case: the model no longer attempts
-  a guideline citation for this claim AT ALL (zero document_citations),
-  reverting to the more common "answers only from chart data" pattern seen
-  on most other citation_present cases. citation_present still never fires
-  (verdict stays verified/partially_verified on the chart-data claims
-  alone). This is an honest, reproducible P3G.1 finding about the local 4B
-  model's inherent run-to-run variability alongside its general tendency to
-  prioritize structured chart data over retrieved guideline evidence, not a
-  harness bug -- the assertions are the correct target and are deliberately
-  not weakened.
+  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
+  results and a retrieved guideline chunk for the same turn, the model
+  answers only from the chart data (verdict verified on the two chart-data
+  claims) and never surfaces or quotes the LDL reference-range guideline
+  passage in its final answer -- so the claim extractor emits zero
+  document_citations and citation_present never fires. Same
+  chart-data-only pattern this case showed under qwen3:4b (see prior xfail
+  history in git blame), just a different specific model. An honest,
+  reproducible P3G.1 finding, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.

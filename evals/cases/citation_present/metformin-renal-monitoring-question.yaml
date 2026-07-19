@@ -30,15 +30,16 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
+  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
+  results and a retrieved guideline chunk for the same turn, the model
   answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  guideline passage in its final answer -- so the claim extractor produces
+  zero guideline_chunk document citations, and citation_present never
+  fires. Separately, the model also asserts several "no recorded X" claims
+  (problems/allergies/labs/vitals/encounters/appointments) that don't all
+  carry a valid source ref, so 2 of 9 extracted claims get stripped and the
+  verdict stays partially_verified rather than verified -- a second,
+  independent reason this case doesn't pass. Same chart-data-only pattern
+  this case showed under qwen3:4b, just a different specific model. An
+  honest, reproducible P3G.1 finding, not a harness bug -- the assertions
+  are the correct target and are deliberately not weakened.
