@@ -18,10 +18,15 @@ retrieved_chunks:
     doc_id: "nsaid-interactions"
     title: "NSAID Drug-Interaction Cautions"
     section: "ACE Inhibitors and ARBs"
-    text: >
-      Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an angiotensin-
-      receptor blocker (e.g. losartan) can blunt the blood-pressure-lowering effect and,
-      more importantly, can reduce renal perfusion.
+    text: |-
+      Combining an NSAID with an ACE inhibitor (e.g. lisinopril) or an
+      angiotensin-receptor blocker (e.g. losartan) can blunt the blood-pressure-
+      lowering effect and, more importantly, can reduce renal perfusion — the
+      combination is sometimes described as part of a "triple whammy" when a
+      diuretic is also present. Caution is generally warranted, especially in
+      older adults, patients with reduced kidney function, or those who are
+      volume-depleted; renal function is often checked if the combination is used
+      for more than a short course.
     rerank_score: 0.9
 assertions:
   - type: verdict

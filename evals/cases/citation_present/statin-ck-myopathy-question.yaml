@@ -18,10 +18,12 @@ retrieved_chunks:
     doc_id: "statin-monitoring"
     title: "Statin Therapy Monitoring"
     section: "Muscle Symptoms and CK"
-    text: >
-      Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not
-      recommended; a CK level is checked if the patient reports new muscle pain,
-      tenderness, or weakness.
+    text: |-
+      Statins carry a known risk of myopathy. Routine creatine kinase (CK)
+      monitoring in an asymptomatic patient is generally not recommended; a CK
+      level is checked if the patient reports new muscle pain, tenderness, or
+      weakness. Persistent, unexplained muscle symptoms with a significantly
+      elevated CK generally warrant holding the statin and reassessing.
     rerank_score: 0.9
 assertions:
   - type: verdict

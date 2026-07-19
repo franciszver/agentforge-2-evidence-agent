@@ -70,6 +70,12 @@
                 "field": "medications",
                 "record_id": "0",
                 "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "none",
+                "field": "symptoms",
+                "record_id": "0",
+                "tool_call_id": "call_0"
               }
             ],
             "text": "Routine creatine kinase testing is not indicated for this patient."

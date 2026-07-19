@@ -161,7 +161,9 @@ claim in the answer:
 (e.g. "0"), as a string.
       - "field": EXACTLY one of the field names listed for that record.
       - "asserted_value": the value the claim asserts for that field, as \
-plain text (e.g. "Lisinopril", "220", "active").
+plain text (e.g. "Lisinopril", "220", "active"). REQUIRED -- never leave \
+this null or blank; a citation with no asserted value cannot be verified \
+and its whole claim will be discarded.
 
 Only cite tool_call_id / record_id / field values that appear in the catalog \
 below -- do not invent ids or field names. Only include claims directly \
@@ -179,19 +181,41 @@ Catalog:
 # app.schemas.ingestion.DocumentCitation also allows, re-validated by
 # app.verification.check_document_citation against a CorpusChunkIndex built
 # from these SAME retrieved chunks (never a paraphrase).
+#
+# P3G.1b (prompt-eng iteration): the original wording below only told the
+# model it MAY cite a guideline passage, purely permissively -- recorded
+# qwen3:4b behavior (the citation_present eval xfails) was to consistently
+# never make that connection unless its own answer prose happened to already
+# restate the guideline's range/target. The trailing paragraph below is an
+# explicit nudge toward making that connection for the specific, common
+# shape this corpus exercises (a lab/vital value + a matching reference
+# range/target/threshold chunk) -- kept as a short, separate, ADDITIVE
+# paragraph (not spliced into the field-list sentence) since this is a
+# length- and phrasing-sensitive small (4B) model: multiple in-place
+# rewordings of the SAME instruction measurably degraded the model's
+# otherwise-reliable "asserted_value" field-filling on the unrelated,
+# pre-existing source_refs citations in the same response (observed via
+# repeated live re-recording -- see this issue's PR description for the
+# full A/B trail), even though the exact same unmodified prompt output also
+# shows genuine run-to-run variance on this small local model. This
+# phrasing is the smallest, most isolated version tried.
 _GUIDELINE_INSTRUCTIONS = """
 You may ALSO cite clinical-guideline passages retrieved for this question, \
 listed below, via "document_citations" (in addition to, or instead of, \
 "source_refs"). Each such citation has:
   - "source_type": exactly "guideline_chunk".
   - "source_id": EXACTLY one of the guideline doc ids below.
-  - "field_or_chunk_id": EXACTLY one of the chunk ids below, for that doc id.
+  - "field_or_chunk_id": EXACTLY one of the chunk ids below, copied in full \
+(e.g. "a1c-targets#target-ranges", not just "target-ranges").
   - "page_or_section": the section title shown for that chunk below.
   - "quote_or_value": a short phrase copied VERBATIM, character-for-character, \
 from that chunk's text below -- never paraphrased, summarized, or invented. \
 Only quote text that is actually present below.
 
 Only cite a doc id / chunk id that is actually listed below -- never invent one.
+
+If a claim states a lab or vital value and a passage below gives its \
+reference range or target, cite that passage too.
 
 Guideline passages:
 {guideline_catalog}

@@ -32,7 +32,7 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": null,
+                "asserted_value": "160-189 mg/dL",
                 "field": "ldl_chol_range_high",
                 "record_id": "0",
                 "tool_call_id": "call_0"
@@ -44,10 +44,10 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": null,
+                "asserted_value": "130-159 mg/dL",
                 "field": "ldl_chol_range_borderline_high",
                 "record_id": "0",
-                "tool_call_id": "call_0"
+                "tool_call_id": "call_:"
               }
             ],
             "text": "Borderline-high LDL cholesterol levels typically refer to 130-159 mg/dL"
@@ -56,7 +56,7 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": null,
+                "asserted_value": "American Heart Association and National Cholesterol Education Program",
                 "field": "guideline_source",
                 "record_id": "0",
                 "tool_call_id": "call_0"

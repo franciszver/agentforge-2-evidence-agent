@@ -22,8 +22,16 @@ retrieved_chunks:
     doc_id: "blood-pressure-categories"
     title: "Blood Pressure Categories and Thresholds"
     section: "Categories"
-    text: >
-      Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or higher.
+    text: |-
+      - Normal: systolic below 120 mmHg AND diastolic below 80 mmHg.
+      - Elevated: systolic 120-129 mmHg AND diastolic below 80 mmHg.
+      - Stage 1 hypertension: systolic 130-139 mmHg OR diastolic 80-89 mmHg.
+      - Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or
+        higher.
+      - Hypertensive crisis: systolic higher than 180 mmHg AND/OR diastolic higher
+        than 120 mmHg — this requires prompt clinical attention, especially if
+        accompanied by symptoms such as chest pain, shortness of breath, or
+        neurologic changes.
     rerank_score: 0.9
 assertions:
   - type: verdict
