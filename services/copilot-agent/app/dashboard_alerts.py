@@ -67,8 +67,9 @@ difference or a value a clinician would notice.
 from __future__ import annotations
 
 import heapq
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Literal
 
 from app.dashboard_eval_history import EvalRunPoint
 from app.dashboard_metrics import DashboardMetrics
