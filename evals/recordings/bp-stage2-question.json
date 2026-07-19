@@ -117,7 +117,7 @@
     {
       "kind": "extract",
       "response": {
-        "reason": "The QUOTE defines stage 2 hypertension as systolic 140 mmHg or higher OR diastolic 90 mmHg or higher, and the CLAIM states a blood pressure reading of 148/94 mmHg (which meets both criteria) falls into stage 2 hypertension.",
+        "reason": "The QUOTE defines stage 2 hypertension as systolic 140 mmHg or higher OR diastolic 90 mmHg or higher, which directly supports the CLAIM that a blood pressure reading of 148/94 mmHg falls into stage 2 hypertension.",
         "verdict": "supported"
       },
       "schema": "SemanticSupportJudgement"

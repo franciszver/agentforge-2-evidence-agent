@@ -33,17 +33,3 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-xfail: >
-  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON): given BOTH the real
-  chart-data lab result and a retrieved guideline chunk for the same turn,
-  this draw's answer stays entirely on the chart data (last A1c value, its
-  date, and that it's above target) and never surfaces or quotes the A1c
-  target-range guideline passage -- so the claim extractor emits zero
-  document_citations and citation_present never fires; the semantic-support
-  judge never runs (nothing to re-judge). verdict is genuinely verified on
-  the three chart-data claims alone. Same chart-data-only pattern several
-  other cases in this category already document under this model, just this
-  case's own draw this time (this case's PRIOR recording, pre-#81, DID
-  surface a citation -- real run-to-run variance, not a regression from the
-  gate itself). An honest, reproducible P3G.1 finding, not a harness bug --
-  the assertions are the correct target and are deliberately not weakened.

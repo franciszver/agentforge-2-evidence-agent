@@ -35,15 +35,13 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #81, qwen3-8b-q5, gate ON -- same result as #58's
-  recording): given BOTH real chart-data tool results and a retrieved
-  guideline chunk for the same turn, the model answers only from the chart
-  data (verdict verified on the two chart-data claims) and never surfaces
-  or quotes the LDL reference-range guideline passage in its final answer
-  -- so the claim extractor emits zero document_citations and
-  citation_present never fires (the semantic-support judge never runs --
-  nothing to re-judge). Same chart-data-only pattern this case showed
-  under qwen3:4b (see prior xfail history in git blame), just a different
-  specific model. An honest,
+  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
+  results and a retrieved guideline chunk for the same turn, the model
+  answers only from the chart data (verdict verified on the two chart-data
+  claims) and never surfaces or quotes the LDL reference-range guideline
+  passage in its final answer -- so the claim extractor emits zero
+  document_citations and citation_present never fires. Same
+  chart-data-only pattern this case showed under qwen3:4b (see prior xfail
+  history in git blame), just a different specific model. An honest,
   reproducible P3G.1 finding, not a harness bug -- the assertions are the
   correct target and are deliberately not weakened.

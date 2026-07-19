@@ -33,13 +33,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient's last A1c was 7.8%, recorded on June 1, 2026. For diabetes management, the target A1c is typically below 7%, so this value is above the target.",
+      "response": "The patient's last A1c was 7.8%, recorded on June 1, 2026. This value is above the typical target range for diabetes management, which is generally below 7%. The result was flagged as high, indicating that the patient's blood sugar control may need further attention.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient's last A1c was 7.8%, recorded on June 1, 2026. For diabetes management, the target A1c is typically below 7%, so this value is above the target.",
+        "answer": "The patient's last A1c was 7.8%, recorded on June 1, 2026. This value is above the typical target range for diabetes management, which is generally below 7%. The result was flagged as high, indicating that the patient's blood sugar control may need further attention.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -79,26 +79,16 @@
             "text": "The A1c was recorded on June 1, 2026."
           },
           {
-            "document_citations": [],
+            "document_citations": [
+              {
+                "field_or_chunk_id": "a1c-targets#target-ranges",
+                "page_or_section": "Target Ranges",
+                "quote_or_value": "- Most non-pregnant adults with diabetes: A1c target generally below 7%.",
+                "source_id": "a1c-targets",
+                "source_type": "guideline_chunk"
+              }
+            ],
             "source_refs": [
-              {
-                "asserted_value": "7.8",
-                "field": "value",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              },
-              {
-                "asserted_value": "%",
-                "field": "unit",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              },
-              {
-                "asserted_value": "high",
-                "field": "abnormal_flag",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              },
               {
                 "asserted_value": "7.8",
                 "field": "value",
@@ -154,11 +144,31 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "The A1c value is above the target range for most non-pregnant adults with diabetes."
+            "text": "The A1c value is above the typical target range for diabetes management, which is generally below 7%."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "high",
+                "field": "abnormal_flag",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The result was flagged as high, indicating that the patient's blood sugar control may need further attention."
           }
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE directly states that the A1c target for most non-pregnant adults with diabetes is generally below 7%, which supports the CLAIM that the A1c value is above this target range.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }
