@@ -284,7 +284,21 @@ class EvalCase(BaseModel):
             "regression to catch. The value is the rationale, surfaced by "
             "the runner as a strict pytest xfail -- the case still runs for "
             "real every time; an unexpected PASS fails the suite loudly so a "
-            "stale xfail can't rot silently (docs/TEST_PLAN.md Sec 5)."
+            "stale xfail can't rot silently (docs/TEST_PLAN.md Sec 5).\n\n"
+            "**Integrity rule for the rationale text (eval-integrity fix, "
+            "post-hoc -- two prior rounds drifted into embellished/inaccurate "
+            "reasons, see git history).** An xfail reason must state ONLY: "
+            "(a) the observed failure mode (what the recorded model/extractor "
+            "actually did against the case's own, corpus-faithful fixture), "
+            "and (b) the resulting CitationStatus/verdict this pipeline run "
+            "produced -- both drawn directly from re-running the recording, "
+            "never inferred or assumed. It must NOT: claim what any OTHER "
+            "case does or doesn't do (no cross-case comparisons); use "
+            "subjective quality language ('genuinely', 'correctly-grounded', "
+            "'verbatim', 'measurably improved', 'answers correctly') unless "
+            "that specific word is checked true against this case's own "
+            "recording; or claim a case 'now passes' anywhere but in that "
+            "case's own file, verified by actually running it. Keep it short."
         ),
     )
 
