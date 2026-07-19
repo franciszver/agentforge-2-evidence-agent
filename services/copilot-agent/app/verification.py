@@ -347,6 +347,17 @@ class CitationStatus(StrEnum):
     UNKNOWN_CHUNK = "unknown_chunk"
     QUOTE_NOT_FOUND = "quote_not_found"
     EMPTY_QUOTE = "empty_quote"
+    # Semantic-support extension (issue #47, app.semantic_support) -- see that
+    # module's docstring. Set ONLY by ``apply_semantic_support`` downgrading an
+    # otherwise-``VALID`` ``DocumentCitationCheckResult`` whose quote is
+    # verbatim-real (provenance holds) but does not, per the LLM-judge,
+    # semantically support the claim's prose. Never produced by
+    # ``check_document_citation``/``check_source_ref`` themselves -- this
+    # module has no LLM call anywhere (see the module docstring's repeated
+    # "NO model call" invariant); the value exists here only so
+    # ``ClaimCheckResult.passed``'s existing AND-aggregation picks it up for
+    # free, with no changes to this module's own checking functions.
+    NOT_SEMANTICALLY_SUPPORTED = "not_semantically_supported"
 
 
 @dataclass(frozen=True)

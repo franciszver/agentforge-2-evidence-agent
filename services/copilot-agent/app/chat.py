@@ -112,6 +112,7 @@ from app.reranking import OllamaRerankScorer, Reranker
 from app.retrieval import build_retriever_from_corpus
 from app.schemas.ingestion import Citation
 from app.schemas.reranking import RerankedChunk
+from app.semantic_support import SemanticSupportJudgeLike
 from app.supervisor import EvidenceRetrieverWorker, IntakeExtractorWorker, RetrieveSubTask, Supervisor
 from app.trace_store import TraceStore, record_span_best_effort
 from app.verdict import VerdictResult, to_trace_record
@@ -721,6 +722,39 @@ def get_evidence_retriever(
     return _retrieve
 
 
+SupportJudgeProvider = Callable[[], SemanticSupportJudgeLike | None]
+
+
+def _no_op_support_judge_provider() -> None:
+    """Flag-OFF default (issue #47): no judge, no extra LLM call --
+    ``run_verification`` treats ``support_judge=None`` as "skip the
+    semantic-support gate entirely," same posture as
+    ``_no_op_evidence_retriever``/``_no_op_patient_fact_provider``."""
+    return None
+
+
+def get_support_judge_provider(settings: Settings = Depends(get_settings)) -> SupportJudgeProvider:
+    """FastAPI dependency: the active semantic-support judge provider for
+    /chat's issue #47 gate. Override in tests.
+
+    Flag ON (``copilot_semantic_support_enabled``): the provider builds the
+    SAME text-generation client selected by ``copilot_llm_engine``
+    (``get_text_llm_client`` -- the production default is
+    ``LlamaServerClient``/Qwen3-8B-Q5), so the judge runs on the same engine
+    as answer generation/claim extraction. A fresh client per call mirrors
+    ``get_claim_extractor``'s own per-request construction.
+
+    Flag OFF (default): ``_no_op_support_judge_provider`` -- ``None`` every
+    time, so ``run_verification`` skips the gate with zero added latency."""
+    if not settings.copilot_semantic_support_enabled:
+        return _no_op_support_judge_provider
+
+    def _provide() -> SemanticSupportJudgeLike:
+        return get_text_llm_client(settings)
+
+    return _provide
+
+
 PatientFactProvider = Callable[[int], Sequence[Citation]]
 
 
@@ -959,6 +993,7 @@ def _stream_chat(
     clock: Clock,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
     patient_fact_provider: PatientFactProvider = _no_op_patient_fact_provider,
+    support_judge_provider: SupportJudgeProvider = _no_op_support_judge_provider,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -1132,7 +1167,11 @@ def _stream_chat(
         # miscited or injection-steered claim never reaches the user as fact.
         verification_start_ts = time.time()
         verdict_result, rendered = run_verification(
-            extractor, result, retrieved_chunks=retrieved_chunks, patient_facts=patient_facts
+            extractor,
+            result,
+            retrieved_chunks=retrieved_chunks,
+            patient_facts=patient_facts,
+            support_judge=support_judge_provider(),
         )
         verification_end_ts = time.time()
         _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
@@ -1238,6 +1277,7 @@ async def chat_endpoint(
     clock: Clock = Depends(get_clock),
     evidence_retriever: EvidenceRetriever = Depends(get_evidence_retriever),
     patient_fact_provider: PatientFactProvider = Depends(get_patient_fact_provider),
+    support_judge_provider: SupportJudgeProvider = Depends(get_support_judge_provider),
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
@@ -1290,6 +1330,7 @@ async def chat_endpoint(
             clock,
             evidence_retriever,
             patient_fact_provider,
+            support_judge_provider,
         ),
         media_type="text/event-stream",
     )
