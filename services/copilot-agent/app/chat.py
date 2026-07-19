@@ -102,6 +102,7 @@ from app.ingestion import LocalIngestionStore
 from app.introspection import TokenIntrospector
 from app.launch_binding import LaunchPatientBinder, LaunchPatientMismatchError
 from app.llama_server_client import LlamaServerClient
+from app.llama_server_embed_client import LlamaServerEmbedClient
 from app.ollama_client import LlmCallStats, OllamaClient
 from app.openemr_auth import IntrospectionResult
 from app.openemr_client import OpenEmrClient
@@ -351,6 +352,15 @@ def _wants_llama_server(settings: Settings) -> bool:
     return settings.copilot_llm_engine == _LLAMA_SERVER_ENGINE
 
 
+def _wants_llama_server_embed(settings: Settings) -> bool:
+    """The single place ``settings.copilot_embed_engine``'s value is compared
+    (P3.10b, epic #52 step 2) -- a DEDICATED flag from ``copilot_llm_engine``:
+    the embed and answer/extract/reranker roles are independently
+    rollback-able, so one flag's value must never be inferred from the
+    other's."""
+    return settings.copilot_embed_engine == _LLAMA_SERVER_ENGINE
+
+
 def get_text_llm_client(settings: Settings) -> OllamaClient | LlamaServerClient:
     """Build the client for the text-generation LLM roles -- planner
     chat/extract, claim extraction, and the LLM-as-reranker relevance score
@@ -593,7 +603,7 @@ EvidenceRetriever = Callable[[str], list[RerankedChunk]]
 
 
 def _no_op_evidence_retriever(query: str) -> list[RerankedChunk]:
-    """Flag-OFF default: no retrieval, no Ollama embedding round trip, no
+    """Flag-OFF default: no retrieval, no embedding round trip, no
     ``worker`` span -- evidence retrieval itself is fully flag-gated. (Per-turn
     encounter logging, P3.8, is always-on regardless of this flag -- see
     ``_log_encounter_record`` -- but it only ever logs non-PHI counts/timings,
@@ -624,15 +634,21 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     see ``get_patient_fact_provider`` -- no worker dispatch needed for a
     plain, patient-scoped disk read.
 
-    P3.10a (epic #52 step 1): the embedder (dense-vector retrieval,
-    ``nomic-embed-text``) and the intake-extractor worker (vision-based
-    document-ingestion extraction) ALWAYS use ``OllamaClient`` here,
-    regardless of ``settings.copilot_llm_engine`` -- only the reranker's
-    LLM-as-judge relevance score is engine-selectable, via
-    ``get_text_llm_client``.
+    P3.10a (epic #52 step 1): the intake-extractor worker (vision-based
+    document-ingestion extraction) ALWAYS uses ``OllamaClient`` here,
+    regardless of either engine flag -- vision has not migrated (that is
+    #52c). The reranker's LLM-as-judge relevance score is selectable via
+    ``settings.copilot_llm_engine`` (``get_text_llm_client``).
+
+    P3.10b (epic #52 step 2): the embedder (dense-vector retrieval,
+    ``nomic-embed-text``) is selectable via its OWN flag,
+    ``settings.copilot_embed_engine`` -- defaulting to
+    ``LlamaServerEmbedClient`` (a second, dedicated llama-server instance
+    running in ``--embedding`` mode) rather than ``OllamaClient``.
     """
     ollama_client = OllamaClient.from_settings(settings)
-    retriever = build_retriever_from_corpus(embedder=ollama_client)
+    embedder = LlamaServerEmbedClient.from_settings(settings) if _wants_llama_server_embed(settings) else ollama_client
+    retriever = build_retriever_from_corpus(embedder=embedder)
     # Reuse the same ollama_client for the reranker in the default case
     # instead of paying for a second httpx.Client/connection pool -- only
     # construct a distinct client when the engine flag actually selects
@@ -687,7 +703,7 @@ def get_evidence_retriever(
     would also hide a raising TEST double's failure from that call site.
 
     Flag OFF (default): ``_no_op_evidence_retriever`` -- no retrieval call, no
-    Ollama embedding round trip, no worker span. Evidence retrieval itself is
+    embedding round trip, no worker span. Evidence retrieval itself is
     flag-gated; per-turn encounter logging (P3.8, non-PHI counts only) is
     always-on regardless of this flag -- see ``_log_encounter_record``.
     """
