@@ -11,13 +11,12 @@ retrieved_chunks:
     doc_id: "anticoagulant-interactions"
     title: "Anticoagulant and Antiplatelet Interaction Cautions"
     section: "Direct Oral Anticoagulants (DOACs)"
-    text: >
+    text: |-
       DOACs (e.g. apixaban, rivaroxaban, dabigatran) have fewer dietary
-      interactions than warfarin but still carry bleeding-risk interactions
-      with NSAIDs, antiplatelet agents, and strong inhibitors of the
-      metabolic/transport pathways involved in their clearance (e.g. certain
-      antifungals, some antiretrovirals) -- these can raise DOAC levels and
-      bleeding risk.
+      interactions than warfarin but still carry bleeding-risk interactions with
+      NSAIDs, antiplatelet agents, and strong inhibitors of the metabolic/
+      transport pathways involved in their clearance (e.g. certain antifungals,
+      some antiretrovirals) — these can raise DOAC levels and bleeding risk.
 assertions:
   - type: verdict
     equals: verified

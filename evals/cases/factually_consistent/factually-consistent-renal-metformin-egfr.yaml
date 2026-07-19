@@ -11,12 +11,12 @@ retrieved_chunks:
     doc_id: "renal-function-monitoring"
     title: "Renal Function Monitoring on Nephrotoxic-Risk Medications"
     section: "Metformin"
-    text: >
-      Metformin is renally cleared, and reduced kidney function raises the
-      risk of drug accumulation and lactic acidosis. eGFR is generally
-      checked at least annually in patients on metformin, more frequently if
-      renal function is borderline or trending down, with dose adjustment or
-      discontinuation considered at defined eGFR thresholds.
+    text: |-
+      Metformin is renally cleared, and reduced kidney function raises the risk
+      of drug accumulation and lactic acidosis. eGFR is generally checked at
+      least annually in patients on metformin, more frequently if renal function
+      is borderline or trending down, with dose adjustment or discontinuation
+      considered at defined eGFR thresholds.
 assertions:
   - type: verdict
     equals: verified

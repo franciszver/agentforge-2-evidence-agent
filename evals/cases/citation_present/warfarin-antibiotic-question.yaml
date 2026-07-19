@@ -18,23 +18,37 @@ retrieved_chunks:
     doc_id: "anticoagulant-interactions"
     title: "Anticoagulant and Antiplatelet Interaction Cautions"
     section: "Warfarin-Specific Cautions"
-    text: >
-      Common interaction cautions include certain antibiotics (e.g. some fluoroquinolones,
-      metronidazole, trimethoprim-sulfamethoxazole) which can potentiate warfarin's
-      effect.
+    text: |-
+      Warfarin's effect is sensitive to many interacting drugs and to vitamin K
+      intake. Common interaction cautions include: NSAIDs and other antiplatelet
+      agents (see `nsaid-interactions`), certain antibiotics (e.g. some
+      fluoroquinolones, metronidazole, trimethoprim-sulfamethoxazole) which can
+      potentiate warfarin's effect, and amiodarone, which can meaningfully raise
+      INR. Any new interacting medication started alongside warfarin generally
+      warrants closer INR monitoring for a period after the change.
     rerank_score: 0.9
 assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-# P3G.1b: previously xfail (see git history) -- the local 4B model, given
-# BOTH real chart-data tool results and a retrieved guideline chunk in one
-# turn, answered only from the chart data and never surfaced the guideline
-# passage. After the P3G.1b verification.py whitespace-tolerance fix and
-# extraction.py prompt-eng iteration (directive guideline-citation
-# instructions + a "copy the chunk id in full" reminder + an explicit
-# "asserted_value is required" reminder), a REAL re-recording against
-# qwen3:4b now genuinely produces a claim carrying a VERIFIED guideline_chunk
-# DocumentCitation (a correct, fully-qualified chunk id and a true verbatim
-# quote of the warfarin-antibiotic caution) alongside the chart-data
-# citation -- this case now passes for real, no assertions weakened.
+# Eval-integrity fix (see git history): this case was previously marked as a
+# genuine PASS on the strength of a DOCTORED retrieved_chunks fixture -- its
+# `text` was a paraphrase/compression of the real corpus section
+# (services/copilot-agent/corpus/anticoagulant-interactions.md
+# #warfarin-specific-cautions) that dropped the "Warfarin's effect is
+# sensitive to many interacting drugs and to vitamin K intake." lead-in and
+# the "...and amiodarone, which can meaningfully raise INR." clause. The
+# fixture above is now the REAL, complete corpus section text; see the
+# xfail reason below for the honest result against it.
+xfail: >
+  OBSERVED (recorded, qwen3:4b) against the real, complete guideline chunk:
+  the model surfaces a guideline_chunk DocumentCitation for this turn, but
+  its extracted quote is a paraphrase/compression of the real corpus
+  section (it drops the "NSAIDs and other antiplatelet agents" clause and
+  the leading/trailing sentences), so it is not a verbatim substring of the
+  real chunk text and fails QUOTE_NOT_FOUND -- verdict stays
+  partially_verified and guideline_citation_present never fires. An honest,
+  reproducible P3G.1 finding about the local 4B model's tendency to
+  compress a retrieved guideline passage rather than quote it verbatim, not
+  a harness bug -- the assertions are the correct target and are
+  deliberately not weakened.

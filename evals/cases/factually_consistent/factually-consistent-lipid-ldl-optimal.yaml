@@ -12,10 +12,16 @@ retrieved_chunks:
     doc_id: "lipid-panel-reference"
     title: "Lipid Panel Reference Ranges and Follow-Up"
     section: "General Reference Categories"
-    text: >
-      LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL;
-      borderline-high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or
-      above.
+    text: |-
+      - Total cholesterol: desirable below 200 mg/dL; borderline-high 200-239
+        mg/dL; high 240 mg/dL or above.
+      - LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL;
+        borderline-high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or
+        above.
+      - HDL cholesterol: low (higher risk) below 40 mg/dL in men or below 50
+        mg/dL in women; higher HDL is generally considered protective.
+      - Triglycerides: normal below 150 mg/dL; borderline-high 150-199 mg/dL;
+        high 200-499 mg/dL; very high 500 mg/dL or above.
 assertions:
   - type: verdict
     equals: verified
