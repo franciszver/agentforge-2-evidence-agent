@@ -136,6 +136,15 @@ class Settings(BaseSettings):
     # (P3.7) reads stored source PDFs from here for the citation overlay.
     copilot_ingestion_base_dir: str = "/data/ingestion"
 
+    # P3.9: when true, POST /chat additionally routes each turn's question
+    # through the P3.5 supervisor's evidence-retriever worker (hybrid
+    # retrieve + rerank over the PUBLIC guideline corpus, app.retrieval /
+    # app.reranking) and offers the retrieved chunks to the claim extractor
+    # as citable evidence -- see app/chat.py's get_evidence_retriever.
+    # Default OFF -- flag off keeps /chat byte-identical to before this
+    # existed (no retrieval call, no extra Ollama embedding round trip).
+    copilot_evidence_retrieval_enabled: bool = False
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""
