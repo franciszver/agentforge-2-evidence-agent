@@ -292,13 +292,22 @@ def _quote_for_row(row: ExtractedLabRow, *, normalized_flag: LabFlagCode | None)
     return quote
 
 
-def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int) -> LabResultFact:
+def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int, row_index: int) -> LabResultFact:
     normalized_flag = _normalize_flag_code(row.abnormal_flag)
+    page_number = page_index + 1
     citation = Citation(
         source_type="lab_pdf",
         source_id=source_id,
-        page_or_section=f"page {page_index + 1}",
-        field_or_chunk_id=row.test,
+        page_or_section=f"page {page_number}",
+        # Issue #40: the test name alone is NOT a unique fact id -- the same
+        # test extracted twice (e.g. a repeat panel across two dated pages)
+        # would otherwise collide on (source_id, field_or_chunk_id) and be
+        # indistinguishable. (page_index, row_index) is unique per row across
+        # the WHOLE document (each page's rows are 0-based per page, and
+        # page_index differs across pages), so appending both makes this id
+        # uniquely identify this one extracted occurrence, never just the
+        # test it names.
+        field_or_chunk_id=f"{row.test}#page{page_number}-row{row_index}",
         quote_or_value=_quote_for_row(row, normalized_flag=normalized_flag),
     )
     return LabResultFact(
@@ -315,7 +324,10 @@ def _to_lab_result_fact(row: ExtractedLabRow, *, source_id: str, page_index: int
 def _assemble_lab_facts(extraction: Any, *, source_id: str, page_index: int) -> list[DocumentFact]:
     """``lab_pdf``'s row-to-fact assembly: one ``LabResultFact`` per row on
     the page (zero, one, or many facts per page)."""
-    return [_to_lab_result_fact(row, source_id=source_id, page_index=page_index) for row in extraction.rows]
+    return [
+        _to_lab_result_fact(row, source_id=source_id, page_index=page_index, row_index=row_index)
+        for row_index, row in enumerate(extraction.rows)
+    ]
 
 
 def _none_if_blank(value: str | None) -> str | None:
@@ -378,13 +390,20 @@ def _to_intake_form_facts(extraction: IntakeFormExtraction, *, source_id: str, p
     page carrying whatever this page had legible (zero facts if the page had
     nothing legible at all -- nothing to attach a citation to)."""
     normalized = _normalize_intake_extraction(extraction)
-    field_or_chunk_id, quote = _quote_and_field_for_intake(normalized)
-    if not field_or_chunk_id:
+    sections_id, quote = _quote_and_field_for_intake(normalized)
+    if not sections_id:
         return []
+    # Issue #40: two different pages can legibly populate the exact same
+    # combination of sections (e.g. both only have a chief_concern), which
+    # would otherwise collide on (source_id, field_or_chunk_id) the same way
+    # a repeat lab test does -- appending the page qualifier makes this id
+    # unique to the one page it was actually read from.
+    page_number = page_index + 1
+    field_or_chunk_id = f"{sections_id}#page{page_number}"
     citation = Citation(
         source_type="intake_form",
         source_id=source_id,
-        page_or_section=f"page {page_index + 1}",
+        page_or_section=f"page {page_number}",
         field_or_chunk_id=field_or_chunk_id,
         quote_or_value=quote,
     )
