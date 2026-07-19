@@ -166,6 +166,13 @@ class LlamaServerClient:
         start_ts = time.time()
         tokens_in: int | None = None
         tokens_out: int | None = None
+        # ``response`` is opened with ``stream=True`` (a held-open connection,
+        # unlike the plain buffered ``.post()`` the other methods use), so it
+        # MUST be explicitly closed -- otherwise an early-stopped iteration
+        # (caller breaks, or this generator is closed/GC'd before exhaustion)
+        # leaks the underlying connection back to the pool. ``finally`` runs
+        # on every exit path, including ``GeneratorExit``.
+        response: httpx.Response | None = None
         try:
             response = self._post(_CHAT_COMPLETIONS_PATH, body, stream=True)
             buffer = ""
@@ -219,6 +226,25 @@ class LlamaServerClient:
                 extra={"model": self._model, "error_type": type(exc).__name__},
             )
             raise
+        except httpx.HTTPError as exc:
+            # A network failure mid-stream (e.g. a dropped connection after
+            # headers were already received) surfaces as an httpx error, not
+            # ``LlamaServerError`` -- ``_post`` only wraps the initial
+            # request/connect, not errors raised while iterating the body.
+            # Caught here for the same stats-accounting/log-safety guarantee
+            # as every other failure path.
+            end_ts = time.time()
+            self.call_stats.append(
+                LlmCallStats(model=self._model, start_ts=start_ts, end_ts=end_ts, ok=False, tokens_in=None, tokens_out=None)
+            )
+            _logger.warning(
+                "llama-server chat stream call failed",
+                extra={"model": self._model, "error_type": type(exc).__name__},
+            )
+            raise LlamaServerError("llama-server stream failed while iterating") from exc
+        finally:
+            if response is not None:
+                response.close()
         self.call_stats.append(
             LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=True, tokens_in=tokens_in, tokens_out=tokens_out)
         )

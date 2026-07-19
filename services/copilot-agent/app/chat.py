@@ -338,6 +338,18 @@ def get_dev_token_bridge() -> DevTokenBridge:
     return _dev_token_bridge
 
 
+_LLAMA_SERVER_ENGINE = "llama_server"
+
+
+def _wants_llama_server(settings: Settings) -> bool:
+    """The single place ``settings.copilot_llm_engine``'s value is compared --
+    both ``get_text_llm_client`` and ``_build_evidence_workers`` call this
+    rather than each running their own ``== "llama_server"`` check, so a
+    future third engine value (or a typo fix) can't drift between the two
+    call sites."""
+    return settings.copilot_llm_engine == _LLAMA_SERVER_ENGINE
+
+
 def get_text_llm_client(settings: Settings) -> OllamaClient | LlamaServerClient:
     """Build the client for the text-generation LLM roles -- planner
     chat/extract, claim extraction, and the LLM-as-reranker relevance score
@@ -348,7 +360,7 @@ def get_text_llm_client(settings: Settings) -> OllamaClient | LlamaServerClient:
     see ``_build_evidence_workers``, which constructs its own separate,
     always-Ollama client for those.
     """
-    if settings.copilot_llm_engine == "llama_server":
+    if _wants_llama_server(settings):
         return LlamaServerClient.from_settings(settings)
     return OllamaClient.from_settings(settings)
 
@@ -621,7 +633,7 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     # instead of paying for a second httpx.Client/connection pool -- only
     # construct a distinct client when the engine flag actually selects
     # llama-server.
-    text_llm_client = ollama_client if settings.copilot_llm_engine != "llama_server" else get_text_llm_client(settings)
+    text_llm_client = get_text_llm_client(settings) if _wants_llama_server(settings) else ollama_client
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
     return (

@@ -42,6 +42,11 @@ def _completion(content: str) -> bytes:
     ).encode()
 
 
+def _sse(*chunks: dict[str, object]) -> bytes:
+    lines = [f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks]
+    return b"".join(lines) + b"data: [DONE]\n\n"
+
+
 # --- chat -------------------------------------------------------------------
 
 
@@ -149,6 +154,56 @@ def test_extract_raises_not_implemented_for_images():
     client = _client(handler)
     with pytest.raises(NotImplementedError):
         client.extract([{"role": "user", "content": "describe"}], _Animal, images=["base64data"])
+
+
+# --- chat_stream --------------------------------------------------------
+
+
+def test_chat_stream_yields_deltas_and_strips_leaked_thinking():
+    body = _sse(
+        {"choices": [{"delta": {"content": "leaked reasoning"}}]},
+        {"choices": [{"delta": {"content": "</think>"}}]},
+        {"choices": [{"delta": {"content": "\n\nhello"}}]},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    deltas = list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+    assert "".join(deltas) == "hello"
+    assert client.call_stats[-1].ok is True
+
+
+def test_chat_stream_closes_the_underlying_response_even_on_early_stop():
+    """Regression test (code-review finding): ``chat_stream`` opens the
+    response with ``stream=True`` (a held-open connection), so it must be
+    closed even when the caller stops iterating before the stream ends --
+    otherwise the connection leaks back to the pool never released."""
+    body = _sse(
+        {"choices": [{"delta": {"content": "hello "}}]},
+        {"choices": [{"delta": {"content": "world"}}]},
+    )
+    closed = {"called": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200, content=body)
+        original_close = response.close
+
+        def _spy_close() -> None:
+            closed["called"] = True
+            original_close()
+
+        response.close = _spy_close  # type: ignore[method-assign]
+        return response
+
+    client = _client(handler)
+    generator = client.chat_stream([{"role": "user", "content": "hi"}])
+    next(generator)  # consume only the first delta
+    generator.close()  # simulate the caller stopping early (or GC)
+
+    assert closed["called"] is True
 
 
 def test_embed_is_not_implemented():
