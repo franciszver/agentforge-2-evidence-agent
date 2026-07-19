@@ -1,0 +1,35 @@
+id: factually-consistent-bp-normal-category
+category: factually_consistent
+failure_mode: >
+  The cited guideline quote must actually support the "normal" blood
+  pressure threshold claimed, not the Stage 1/Stage 2 threshold from the
+  same chunk.
+question: "What blood pressure reading is still considered normal, not even elevated?"
+patient_id: 1
+retrieved_chunks:
+  - chunk_id: "blood-pressure-categories#categories"
+    doc_id: "blood-pressure-categories"
+    title: "Blood Pressure Categories and Thresholds"
+    section: "Categories"
+    text: >
+      Normal: systolic below 120 mmHg AND diastolic below 80 mmHg.
+      Elevated: systolic 120-129 mmHg AND diastolic below 80 mmHg.
+      Stage 1 hypertension: systolic 130-139 mmHg OR diastolic 80-89 mmHg.
+assertions:
+  - type: verdict
+    equals: verified
+  - type: answer_contains
+    phrases: ["120"]
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): with no chart-data tool_data provided (a
+  guideline-only question), the model either declines to answer at all
+  ("outside the scope of patient-specific data retrieval tools") or answers
+  correctly in prose but the claim extractor fabricates a plausible-looking
+  SourceRef pointing at a tool call that never happened, instead of using
+  the provided guideline_chunk document_citations format -- so the claim
+  fails citation re-validation (verdict: blocked) even though a real,
+  verbatim-quotable guideline chunk was available. This is an honest,
+  reproducible P3G.1 finding about the local 4B extraction model, not a
+  harness bug -- the assertion (verdict: verified) is the correct target
+  and is deliberately not weakened.

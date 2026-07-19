@@ -66,7 +66,7 @@ from app.rendering import RenderedAnswer
 from app.verdict import VerdictResult
 
 from runner.ollama_replay import OllamaLike
-from runner.schema import EvalCase, VerdictAssertion
+from runner.schema import EvalCase, GuidelineCitationPresentAssertion, VerdictAssertion
 from runner.tool_stub import build_fake_registry
 
 _EVAL_TOKEN = "eval-harness-token"  # noqa: S105 -- not a credential, a fixed placeholder bearer value
@@ -109,8 +109,12 @@ class CaseResult:
 
 def needs_verification(case: EvalCase) -> bool:
     """Whether this case's assertions require the extraction/verification
-    stage (i.e. it has a ``verdict`` assertion)."""
-    return any(isinstance(assertion, VerdictAssertion) for assertion in case.assertions)
+    stage (i.e. it has a ``verdict`` or, P3G.1, ``guideline_citation_present``
+    assertion -- both need the same ``ClaimExtractor``/``check_claims`` pass)."""
+    return any(
+        isinstance(assertion, (VerdictAssertion, GuidelineCitationPresentAssertion))
+        for assertion in case.assertions
+    )
 
 
 def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
@@ -159,5 +163,9 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         return CaseResult(planner_result=planner_result, verdict_result=None, rendered=None)
 
     extractor = ClaimExtractor(ollama_client=ollama_client)  # type: ignore[arg-type]
-    verdict_result, rendered = run_verification(extractor, planner_result)
+    # P3G.1: the case's canned guideline-corpus evidence (if any), mirroring
+    # the live P3.9 /chat wiring's `evidence_retriever(message)` -> `run_verification`
+    # handoff -- see `runner.schema.RetrievedChunkFixture`.
+    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
+    verdict_result, rendered = run_verification(extractor, planner_result, retrieved_chunks=retrieved_chunks)
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)

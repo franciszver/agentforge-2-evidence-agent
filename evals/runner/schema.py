@@ -27,6 +27,15 @@ list of deterministic assertions to run against the pipeline's result.
   * ``no_phi``                -- none of ``markers`` may appear in the
                                  final answer or the client-facing tool
                                  trace (cross-patient / leaked-secret probes).
+  * ``guideline_citation_present`` -- (P3G.1) at least one rendered,
+                                 surviving claim carries a VERIFIED
+                                 ``guideline_chunk`` ``DocumentCitation`` --
+                                 needs ``retrieved_chunks`` on the case (see
+                                 ``RetrievedChunkFixture``) and, like
+                                 ``verdict``, the extraction/verification
+                                 stage (``runner.pipeline.needs_verification``
+                                 -- widened to also trigger on this
+                                 assertion).
 
 ``verdict`` (and therefore the extraction + verification pipeline stage) is
 only computed for cases that actually use it -- see
@@ -47,6 +56,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.schemas.planner import ToolName
+from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
     AllergiesOutput,
     AppointmentsOutput,
@@ -77,6 +87,34 @@ OUTPUT_SCHEMAS: dict[ToolName, type[BaseModel]] = {
 # -- the P2.8 tool-selection eval this harness absorbs. Not one of the 8
 # behavioral-failure categories (it guards which tool the planner picks, not
 # what it says), kept as a 9th value so the migrated P2.8 cases have a home.
+#
+# P3G.1: 5 additional, ADDITIVE rubric categories for the Phase-2 multimodal
+# surface (`docs/TEST_PLAN.md` -- eval-gate section) -- boolean, machine-
+# checkable, and consumed by P3G.2's PR-blocking gate via this same
+# ``category`` field (a case's schema/replay test is dynamically marked with
+# ``pytest.mark.<category>`` -- see ``evals/test_cases.py`` -- so the gate can
+# select ``-m schema_valid`` etc. across both YAML cases and, for the two
+# categories that are deterministic pytest modules instead of YAML+recording
+# cases, plain test functions carrying the same mark):
+#   * ``schema_valid``           -- document extraction (LabResultFact/
+#                                    IntakeFormFact) returns schema-valid
+#                                    facts, incl. correctly-``None``
+#                                    not-found fields and well-formed
+#                                    ``Citation``/``DocumentCitation`` objects.
+#   * ``citation_present``       -- a guideline-answerable question's answer
+#                                    carries a VERIFIED ``guideline_chunk``
+#                                    ``DocumentCitation``; a lab-value
+#                                    question's answer cites the fact.
+#   * ``factually_consistent``   -- the cited quote actually supports the
+#                                    claim (verbatim match against the raw
+#                                    source); a wrong-value citation must NOT
+#                                    verify.
+#   * ``safe_refusal``           -- cross-patient / out-of-scope / unreadable
+#                                    -document questions are handled honestly
+#                                    (not-found / refusal), never fabricated.
+#   * ``no_phi_in_logs``         -- emitted logs/traces/encounter records
+#                                    never carry a PHI marker threaded through
+#                                    the query/document.
 _CATEGORIES = Literal[
     "hallucination_bait",
     "missing_data",
@@ -87,6 +125,11 @@ _CATEGORIES = Literal[
     "constraint",
     "regression",
     "tool_selection",
+    "schema_valid",
+    "citation_present",
+    "factually_consistent",
+    "safe_refusal",
+    "no_phi_in_logs",
 ]
 
 
@@ -124,6 +167,16 @@ class NoPhiAssertion(_AssertionBase):
     markers: list[str] = Field(min_length=1)
 
 
+class GuidelineCitationPresentAssertion(_AssertionBase):
+    """P3G.1: at least one surviving (rendered, not stripped) claim carries a
+    VERIFIED ``guideline_chunk`` ``DocumentCitation`` -- distinct from
+    ``verdict: verified`` alone, which a claim can satisfy via ordinary
+    ``SourceRef`` chart citations with zero document citations at all. See
+    ``runner.assertions._check_guideline_citation_present``."""
+
+    type: Literal["guideline_citation_present"]
+
+
 Assertion = Annotated[
     Union[
         FirstToolInAssertion,
@@ -132,9 +185,43 @@ Assertion = Annotated[
         VerdictAssertion,
         MustRefuseAssertion,
         NoPhiAssertion,
+        GuidelineCitationPresentAssertion,
     ],
     Field(discriminator="type"),
 ]
+
+
+class RetrievedChunkFixture(BaseModel):
+    """Canned stand-in for one ``RerankedChunk`` (P3G.1) -- the guideline-
+    corpus evidence a case declares as already retrieved+reranked for its
+    question, exactly the way ``tool_data`` cans a structured-tool result.
+    Fed to ``app.extraction.ClaimExtractor.extract_claims``/``run_verification``
+    the same as the live P3.9 ``/chat`` wiring, so a case can exercise
+    guideline-citation grounding without a real retriever/reranker call.
+    Field names mirror ``app.schemas.retrieval.RetrievedChunk``/
+    ``app.schemas.reranking.RerankedChunk`` exactly (``chunk_id`` is the
+    ``<doc_id>#<section-slug>`` id a ``DocumentCitation``'s
+    ``field_or_chunk_id`` must reference to verify)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_id: str = Field(min_length=1)
+    doc_id: str = Field(min_length=1)
+    title: str
+    section: str
+    text: str = Field(min_length=1)
+    rerank_score: float = 1.0
+
+    def to_reranked_chunk(self) -> RerankedChunk:
+        return RerankedChunk(
+            chunk_id=self.chunk_id,
+            doc_id=self.doc_id,
+            title=self.title,
+            section=self.section,
+            text=self.text,
+            scores={"hybrid": self.rerank_score},
+            rerank_score=self.rerank_score,
+        )
 
 
 class EvalCase(BaseModel):
@@ -179,6 +266,15 @@ class EvalCase(BaseModel):
         ),
     )
     tool_data: dict[ToolName, dict[str, Any]] = Field(default_factory=dict)
+    retrieved_chunks: list[RetrievedChunkFixture] = Field(
+        default_factory=list,
+        description=(
+            "P3G.1: canned guideline-corpus evidence for this case's question "
+            "-- see RetrievedChunkFixture. Empty for cases with no guideline-"
+            "citation surface, mirroring a chart-data-only turn that retrieves "
+            "nothing on the live /chat path."
+        ),
+    )
     assertions: list[Assertion] = Field(min_length=1)
     xfail: str | None = Field(
         default=None,

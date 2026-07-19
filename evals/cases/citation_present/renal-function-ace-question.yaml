@@ -1,0 +1,42 @@
+id: renal-function-ace-question
+category: citation_present
+failure_mode: >
+  P3G.1: a guideline-answerable chart question must yield an answer whose clinical claim
+  carries a VERIFIED guideline_chunk DocumentCitation -- a real retrieved chunk, quoted
+  verbatim -- alongside the chart-data citation.
+question: "He just started lisinopril -- when should we recheck his kidney function?"
+patient_id: 1
+tool_data:
+  get_medications:
+    items:
+      - name: "Lisinopril"
+        dose: "10mg"
+        route: "oral"
+        status: "active"
+retrieved_chunks:
+  - chunk_id: "renal-function-monitoring#ace-inhibitors-and-arbs"
+    doc_id: "renal-function-monitoring"
+    title: "Renal Function Monitoring on Nephrotoxic-Risk Medications"
+    section: "ACE Inhibitors and ARBs"
+    text: >
+      A baseline creatinine/eGFR and potassium is typically checked before starting an ACE
+      inhibitor or ARB, with a recheck at roughly 1-2 weeks after starting or up-
+      titrating.
+    rerank_score: 0.9
+assertions:
+  - type: verdict
+    equals: verified
+  - type: guideline_citation_present
+xfail: >
+  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
+  and a retrieved guideline chunk for the same turn, the model consistently
+  answers only from the chart data and never surfaces or quotes the
+  guideline passage in its final answer -- so the claim extractor has no
+  guideline text to cite and produces zero guideline_chunk document
+  citations (verdict stays verified/partially_verified on the chart-data
+  claims alone, but citation_present -- a claim carrying a VERIFIED
+  guideline_chunk citation -- never fires). This is an honest, reproducible
+  P3G.1 finding about the local 4B model's current tendency to prioritize
+  structured chart data over retrieved guideline evidence when both are
+  available in one turn, not a harness bug -- the assertions are the
+  correct target and are deliberately not weakened.
