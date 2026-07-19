@@ -29,6 +29,16 @@ class CategoryStats:
     category where every case is a documented xfail has nothing yet to
     regress, so it is a vacuous pass rather than a 0% failure (see
     ``test_category_with_no_non_xfail_cases_is_a_vacuous_pass``).
+
+    **Known limitation:** pytest's strict ``xfail`` only distinguishes
+    "failed" from "expected to fail" -- it does NOT check that the failure
+    is the SAME one named in the case's ``xfail`` rationale. A case already
+    counted here as ``xfailed`` that starts failing for a completely
+    different, new reason still lands in ``xfailed``, not ``failed`` --
+    this gate's pass_rate math cannot see that swap. Categories with
+    existing xfails (``citation_present``, ``factually_consistent``,
+    ``safe_refusal`` today) rely on a human reading each xfail rationale
+    during review to catch that case, not this gate.
     """
 
     passed: int
