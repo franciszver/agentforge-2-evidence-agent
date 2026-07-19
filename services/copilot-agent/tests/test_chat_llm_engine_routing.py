@@ -61,13 +61,15 @@ def test_claim_extractor_uses_llama_server_when_flagged(monkeypatch):
     assert isinstance(extractor._ollama, LlamaServerClient)
 
 
-def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when_flagged():
+def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when_flagged(tmp_path):
     """The most important regression this migration must not introduce: the
     embedder (dense-vector retrieval, ``nomic-embed-text``) and the
     vision-document-ingestion ``IntakeExtractorWorker`` must stay on
     ``OllamaClient`` even when ``copilot_llm_engine`` selects llama-server --
     only the reranker's LLM-as-judge scorer is engine-selectable."""
-    settings = Settings(_env_file=None, copilot_llm_engine="llama_server")  # type: ignore[call-arg]
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, copilot_llm_engine="llama_server", copilot_ingestion_base_dir=str(tmp_path)
+    )
 
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 
@@ -76,8 +78,8 @@ def test_evidence_workers_keep_embedder_and_intake_extractor_on_ollama_even_when
     assert isinstance(evidence_worker._reranker._scorer._client, LlamaServerClient)
 
 
-def test_evidence_workers_use_ollama_reranker_by_default():
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+def test_evidence_workers_use_ollama_reranker_by_default(tmp_path):
+    settings = Settings(_env_file=None, copilot_ingestion_base_dir=str(tmp_path))  # type: ignore[call-arg]
 
     intake_worker, evidence_worker = _build_evidence_workers(settings)
 
