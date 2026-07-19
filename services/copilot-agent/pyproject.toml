@@ -26,6 +26,9 @@ dev = [
     # scripts/generate_lab_pdf_fixture.py only -- writing the P3.1 lab-PDF
     # test fixture, never imported by app/ code.
     "fpdf2>=2.7",
+    # tests/test_openapi_contract.py only -- validating real responses
+    # against the schemas declared in the pinned OpenAPI spec.
+    "jsonschema>=4.20",
 ]
 
 [tool.pytest.ini_options]

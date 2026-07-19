@@ -16,13 +16,19 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends
+from pydantic import BaseModel
 
+from app.chat import _wants_llama_server
 from app.config import Settings, get_settings
 
 # FHIR CapabilityStatement endpoint: unauthenticated on a stock OpenEMR
 # instance, so it doubles as a lightweight reachability probe.
 OPENEMR_READY_PATH = "/apis/default/fhir/metadata"
 OLLAMA_VERSION_PATH = "/api/version"
+# llama-server (llama.cpp) built-in health endpoint -- see the
+# `llama-server` service's Docker healthcheck in
+# docker/development-easy/docker-compose.copilot.yml.
+LLAMA_SERVER_HEALTH_PATH = "/health"
 HTTP_CHECK_TIMEOUT_SECONDS = 3.0
 
 
@@ -42,6 +48,28 @@ class ReadinessReport:
     checks: dict[str, CheckResult]
 
 
+class ReadyCheckBody(BaseModel):
+    """OpenAPI-facing shape of a single ``GET /ready`` check entry.
+
+    Declared separately from ``CheckResult`` (a plain dataclass): this model
+    exists only so ``app.main``'s ``responses=`` route metadata can document
+    the real ``/ready`` body shape for BOTH the 200 and 503 cases -- the
+    handler still builds the body by hand (it returns a ``JSONResponse``,
+    not this model, since the status code varies), so this is spec-accuracy
+    only and changes no runtime behavior.
+    """
+
+    ok: bool
+    detail: str
+
+
+class ReadyResponseBody(BaseModel):
+    """OpenAPI-facing shape of the full ``GET /ready`` response body."""
+
+    status: str
+    checks: dict[str, ReadyCheckBody]
+
+
 async def check_openemr(settings: Settings, client: httpx.AsyncClient) -> CheckResult:
     """Check that the OpenEMR FHIR capability endpoint is reachable."""
     url = f"{settings.openemr_base_url}{OPENEMR_READY_PATH}"
@@ -57,6 +85,25 @@ async def check_openemr(settings: Settings, client: httpx.AsyncClient) -> CheckR
 async def check_ollama(settings: Settings, client: httpx.AsyncClient) -> CheckResult:
     """Check that the Ollama API is reachable."""
     url = f"{settings.ollama_base_url}{OLLAMA_VERSION_PATH}"
+    try:
+        response = await client.get(url)
+    except httpx.HTTPError:
+        return CheckResult(ok=False, detail="unreachable")
+    if response.is_success:
+        return CheckResult(ok=True, detail="reachable")
+    return CheckResult(ok=False, detail=f"unexpected status {response.status_code}")
+
+
+async def check_llama_server(settings: Settings, client: httpx.AsyncClient) -> CheckResult:
+    """Check that the llama-server engine is reachable.
+
+    Only wired into ``compute_readiness`` when ``settings.copilot_llm_engine
+    == "llama_server"`` (see ``_wants_llama_server``) -- Ollama is checked
+    unconditionally regardless of the engine flag, since embeddings and
+    vision-based document-ingestion extraction always use it (see
+    ``app.config.Settings.copilot_llm_engine``'s docstring).
+    """
+    url = f"{settings.llama_server_base_url}{LLAMA_SERVER_HEALTH_PATH}"
     try:
         response = await client.get(url)
     except httpx.HTTPError:
@@ -112,15 +159,33 @@ async def get_ollama_client(
         yield client
 
 
+async def get_llama_server_client(
+    settings: Settings = Depends(get_settings),
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Production dependency: real llama-server HTTP client, closed after the request."""
+    async with httpx.AsyncClient(timeout=HTTP_CHECK_TIMEOUT_SECONDS) as client:
+        yield client
+
+
 async def compute_readiness(
     settings: Settings = Depends(get_settings),
     openemr_client: httpx.AsyncClient = Depends(get_openemr_client),
     ollama_client: httpx.AsyncClient = Depends(get_ollama_client),
+    llama_server_client: httpx.AsyncClient = Depends(get_llama_server_client),
 ) -> ReadinessReport:
-    """Aggregate all dependency checks into a single readiness report."""
+    """Aggregate all dependency checks into a single readiness report.
+
+    Ollama and the trace store are checked unconditionally. llama-server is
+    checked only when ``copilot_llm_engine`` actually selects it -- when the
+    engine is "ollama" (default), nothing in the request path ever talks to
+    llama-server, so probing it would report a fake outage for a dependency
+    that isn't in use.
+    """
     checks = {
         "openemr": await check_openemr(settings, openemr_client),
         "ollama": await check_ollama(settings, ollama_client),
-        "trace_store": check_trace_store(settings.trace_db_path),
     }
+    if _wants_llama_server(settings):
+        checks["llama_server"] = await check_llama_server(settings, llama_server_client)
+    checks["trace_store"] = check_trace_store(settings.trace_db_path)
     return ReadinessReport(ready=all(result.ok for result in checks.values()), checks=checks)

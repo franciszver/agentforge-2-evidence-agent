@@ -8,7 +8,7 @@ from app.correlation import CorrelationIdMiddleware, configure_logging
 from app.dashboard import dashboard_endpoint
 from app.documents import source_document_endpoint
 from app.feedback import feedback_endpoint
-from app.readiness import ReadinessReport, compute_readiness
+from app.readiness import ReadinessReport, ReadyResponseBody, compute_readiness
 from app.review_page import promote_endpoint, review_queue_endpoint
 
 configure_logging()
@@ -100,7 +100,13 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/ready")
+    @app.get(
+        "/ready",
+        responses={
+            200: {"model": ReadyResponseBody},
+            503: {"model": ReadyResponseBody},
+        },
+    )
     async def ready(report: ReadinessReport = Depends(compute_readiness)) -> JSONResponse:
         body = {
             "status": "ready" if report.ready else "not_ready",
