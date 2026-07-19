@@ -2,37 +2,101 @@
 
 [![copilot-ci](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml/badge.svg?branch=main)](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml)
 
-> **Status: work in progress (scaffold).** This repo *continues*
+> **Status: Stage 4 (hardening + polish).** This repo *continues*
 > [agentforge-1-clinical-copilot](https://github.com/franciszver/agentforge-1-clinical-copilot)
 > at its v1.0 state — created as a **full-history duplicate** (not a GitHub
 > fork). Phase 1's OpenEMR base is [Gauntlet-HQ/openemr-base-clean](https://github.com/Gauntlet-HQ/openemr-base-clean),
 > itself derived from [OpenEMR](https://github.com/openemr/openemr) (GPL v3).
 
-## What Phase 2 adds on top of Phase 1
+## Week 1 vs Week 2
 
-Phase 1 delivered a local, verification-backed clinical co-pilot on OpenEMR
-(Ollama + Qwen, deterministic citation checking, eval harness, observability).
-Phase 2 extends that foundation with:
+This project ran in two stretches, kept visibly separate here rather than
+blended into one undifferentiated feature list.
+
+### Week 1 (Phase 1 baseline, inherited unchanged at v1.0)
+
+A verification-first clinical co-pilot embedded in OpenEMR: a physician asks
+a question about the open chart and gets an answer where **every factual
+claim is deterministically re-checked against the raw record and cited**.
+
+- **Data:** structured OpenEMR data via typed tools (medications, labs,
+  encounters, vitals) — no retrieval, one tool call per planner turn.
+- **Models:** local-only via Ollama (Qwen3-4B planner/extraction).
+- **Trust:** a deterministic verification layer (`verification.py`) rolls
+  every claim up to `verified` / `partially_verified` / `blocked`; a
+  `quarantine.py` containment step keeps untrusted tool-result text from
+  steering the planner's next tool call.
+- **Auth:** full OAuth2 `authorization_code` + PKCE + SMART-launch +
+  introspection flow, **built and proven live end-to-end** (restricted role
+  403 vs admin 200 on the same endpoint) — shipped **flag-gated OFF**
+  (`copilot_per_user_token_enabled`), a deliberate owner choice, dev
+  token-bridge as the default.
+- **Evals:** 31-case suite, category pass/fail, 0.8065 pass rate.
+- Full detail: `docs/ARCHITECTURE.md`, `docs/AUDIT.md` (base-platform
+  security audit), `docs/IMPLEMENTATION_PLAN.md`.
+
+### Week 2 (Phase 2, this repo's own build)
+
+Extends the same trust story to **unstructured source documents** and a
+**public clinical-guideline corpus**, without changing the Week-1 access
+model:
 
 - **Document ingestion** — lab PDFs and intake forms, with **local** vision
-  extraction (no cloud OCR/vision; PHI never leaves the machine).
+  extraction (no cloud OCR/vision; PHI never leaves the machine); a strict
+  "not found" (never a guessed value) contract on any illegible field.
 - **Hybrid RAG** — sparse (BM25) + dense retrieval with a **local** reranker
-  over a small, public clinical-guideline corpus.
-- **Multi-agent graph** — a supervisor plus two workers (intake-extractor,
-  evidence-retriever) with explicit, logged handoffs.
-- **Citation contracts** — machine-readable citations on every clinical claim,
-  with visual PDF bounding-box overlays (click-to-source).
-- **Eval gate** — a 50-case golden set with boolean rubrics wired as a
-  PR-blocking CI gate.
+  over a small, public, non-PHI clinical-guideline corpus.
+- **Supervisor/worker orchestration** — a hand-rolled supervisor (not a
+  third-party graph framework — see `docs/W2_ARCHITECTURE.md` §"Why not
+  LangGraph") delegating to two workers (intake-extractor,
+  evidence-retriever) with explicit, logged handoffs, worker spans parented
+  under the supervisor span.
+- **Citation contracts** — machine-readable citations on every
+  document-sourced clinical claim (`{source_type, source_id,
+  page_or_section, field_or_chunk_id, quote_or_value}`); a page-level
+  click-to-source view backs every citation chip (a pixel bounding-box
+  overlay was deliberately not shipped — see
+  `services/copilot-agent/app/documents.py`'s module docstring for the
+  honest capability call behind that decision).
+- **Single-engine inference migration** — the answer/extraction/reranker LLM
+  moved onto `llama-server` (llama.cpp), Qwen3-8B-Q5_K_M, with a
+  degraded-aware `/ready` endpoint distinguishing "process is up" from "can
+  actually serve a request" per dependency (OpenEMR, Ollama, llama-server,
+  trace store).
+- **Per-patient fact citations** — a bound patient's own already-ingested
+  document facts are surfaced as citable evidence in live `/chat` turns
+  (`DocumentFactIndex`).
+- **Eval gate** — a 50-case golden set (9 Phase-1 categories + 5 new
+  boolean rubrics: `schema_valid`, `citation_present`, `factually_consistent`,
+  `safe_refusal`, `no_phi_in_logs`) wired as a **PR-blocking CI gate** that
+  fails on any category regression.
+- Full detail: `docs/W2_ARCHITECTURE.md` (target architecture, schemas,
+  SLOs, data lineage), `docs/MODEL_AND_HARDWARE_SELECTION.md` (why
+  Qwen3-8B-Q5_K_M, and the measured 6/12 guideline-citation ceiling on
+  8 GB VRAM), `docs/W2_AUDIT.md` (**Stage-4 hardening checklist results**,
+  below).
 
-See the plan in the private planning repo
-(`plans/complete-agentforge-2-evidence-agent.md`) for the full scope, the
-fully-local tooling decisions, and how this inherits Phase 1's as-built state.
+## Stage-4 hardening (P4.1, #25)
 
-**Live operational plan:** the
-[Multimodal Evidence Agent project board](https://github.com/users/franciszver/projects/3)
-tracks all work — stages as milestones, tasks as issues, one issue = one
-branch = one PR.
+`docs/W2_AUDIT.md` runs a hardening checklist — built from Phase 1's own
+security-review conventions (`docs/AUDIT.md`'s finding categories +
+`CLAUDE.md`/`docs/TEST_PLAN.md`'s security-review criteria, since Phase 1
+never shipped one file literally titled "Stage-4 checklist") — against the
+Week-2 surface specifically: ingestion, retrieval/reranking, the extended
+verification layer, the supervisor/workers, the `llama-server` engine and
+its `/ready` check, and per-patient fact citations.
+
+**Result: 7 of 9 categories clean pass, 1 disclosed-by-design tradeoff
+(fail-soft retrieval/fact-lookup on errors), and 1 real coverage gap in an
+already-mitigated prompt-injection boundary — fixed in this PR** with a new
+deterministic regression test proving the existing containment (an explicit
+anti-injection system prompt, a tool-less extraction LLM, and fail-closed
+citation verification) holds against an adversarial document-fact quote.
+The remaining piece — a live-recorded eval case for the same scenario —
+needs eval-schema changes plus dev-GPU recording infra and is tracked as
+follow-up [#70](https://github.com/franciszver/agentforge-2-evidence-agent/issues/70).
+No finding blocks Stage 4; see `docs/W2_AUDIT.md` for the full checklist,
+findings, and remediation notes.
 
 ## AgentForge series
 
@@ -40,7 +104,12 @@ branch = one PR.
 2. **agentforge-2-evidence-agent** — Multimodal Evidence Agent & Document RAG *(this repo)*
 3. agentforge-3-redteam — Adversarial Security & Red-Team Platform
 
+**Live operational plan:** the
+[Multimodal Evidence Agent project board](https://github.com/users/franciszver/projects/3)
+tracks all work — stages as milestones, tasks as issues, one issue = one
+branch = one PR.
+
 ---
 
-*Setup, architecture, and eval results will be documented here as Phase 2 is
-built. Until then, the inherited Phase 1 documentation lives under `docs/`.*
+*Demo assets (`DEMO_SCRIPT.md`) and interview prep land in Stage 5/6; this
+README is updated as those close.*
