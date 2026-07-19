@@ -533,6 +533,51 @@ def test_run_verification_fails_closed_when_cited_fact_is_not_in_the_supplied_pa
     assert isinstance(rendered.segments[0], Notice)
 
 
+def test_run_verification_fails_closed_instead_of_crashing_on_a_malformed_patient_facts_list():
+    """Code-review finding: ``DocumentFactIndex.from_citations`` raises
+    ``ValueError`` on a duplicate ``(source_id, field_or_chunk_id)`` key --
+    should never happen for real ingestion-produced citations, but
+    ``run_verification`` runs mid-SSE-stream (``app.chat._stream_chat`` has
+    already yielded the ``conversation`` frame by this point), so an
+    uncaught raise here would abort an otherwise-working turn. Must degrade
+    to a BLOCKED verdict for the affected claim, never crash the call."""
+    result = _planner_result("Her A1c is 5.4%.", ToolName.GET_MEDICATIONS, {"items": []})
+    duplicate_citation = DocumentIngestionCitation(
+        source_type="lab_pdf",
+        source_id="dup-source",
+        page_or_section="page 1",
+        field_or_chunk_id="same-field-id",
+        quote_or_value="first",
+    )
+    also_duplicate_citation = DocumentIngestionCitation(
+        source_type="lab_pdf",
+        source_id="dup-source",
+        page_or_section="page 1",
+        field_or_chunk_id="same-field-id",
+        quote_or_value="second",
+    )
+    claim = Claim(
+        text="Her A1c is 5.4%.",
+        document_citations=[
+            DocumentCitation(
+                source_type="lab_pdf",
+                source_id="dup-source",
+                page_or_section="page 1",
+                field_or_chunk_id="same-field-id",
+                quote_or_value="first",
+            )
+        ],
+    )
+    extractor = _FakeExtractorWithPatientFacts([claim])
+
+    verdict_result, rendered = run_verification(
+        extractor, result, patient_facts=[duplicate_citation, also_duplicate_citation]
+    )
+
+    assert verdict_result.verdict is Verdict.BLOCKED
+    assert isinstance(rendered.segments[0], Notice)
+
+
 # --------------------------------------------------------------------------
 # 6. apply_recency_notice (#153) -- deterministic, no LLM, no claims needed
 # --------------------------------------------------------------------------
