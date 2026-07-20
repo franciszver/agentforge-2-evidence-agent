@@ -654,6 +654,16 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     # instead of paying for a second httpx.Client/connection pool -- only
     # construct a distinct client when the engine flag actually selects
     # llama-server.
+    # KNOWN GAP (PR #98 review): _EVIDENCE_MIN_RELEVANCE_SCORE's 0.5 floor
+    # was calibrated against app/data/reranker_scores.json, which is
+    # stamped model="qwen3:4b" (Ollama). Default copilot_llm_engine is
+    # "llama_server" (Qwen3-8B-Q5, see llama_server_model above), so the
+    # PRODUCTION reranker scorer below is NOT the model the threshold was
+    # measured against by default -- a future model swap on either side
+    # (fixture regen model, or llama_server_model) can silently invalidate
+    # 0.5 without any test catching it, since the fixture and the flag
+    # default are independently declared. Not fixed here -- see PR #98's
+    # description for the disclosed gap; flagged rather than re-guessed.
     text_llm_client = get_text_llm_client(settings) if _wants_llama_server(settings) else ollama_client
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
@@ -716,8 +726,36 @@ def _filter_by_relevance_score(
     to the /chat evidence-retrieval boundary (this module's ``_retrieve``
     closure below), which is the only caller that wants "fewer, better"
     rather than "exactly top_k, reordered."
+
+    Logs every drop (score + ``chunk_id`` only -- never chunk text/content,
+    matching this module's existing log-safety discipline) so a silent
+    "found nothing" isn't indistinguishable from "found it and threw it
+    away." The all-dropped case (every retrieved chunk fell below
+    ``min_score``, so zero evidence reaches the extractor) is logged at
+    WARNING -- that is the exact silent-failure shape a plain per-drop INFO
+    line would still bury.
     """
-    return [chunk for chunk in chunks if chunk.rerank_score >= min_score]
+    kept = [chunk for chunk in chunks if chunk.rerank_score >= min_score]
+    dropped = [chunk for chunk in chunks if chunk.rerank_score < min_score]
+    if dropped:
+        _logger.info(
+            "evidence relevance filter dropped chunks",
+            extra={
+                "dropped_count": len(dropped),
+                "kept_count": len(kept),
+                "min_score": min_score,
+                "dropped": [
+                    {"chunk_id": chunk.chunk_id, "score": chunk.rerank_score} for chunk in dropped
+                ],
+            },
+        )
+    if chunks and not kept:
+        _logger.warning(
+            "evidence relevance filter dropped all retrieved chunks; "
+            "zero evidence will reach the claim extractor",
+            extra={"dropped_count": len(dropped), "min_score": min_score},
+        )
+    return kept
 
 
 def get_evidence_retriever(
