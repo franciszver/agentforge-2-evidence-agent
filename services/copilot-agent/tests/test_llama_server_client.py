@@ -180,6 +180,104 @@ def test_extract_exhausted_retries_error_carries_finish_reason_and_content_lengt
     assert truncated not in message, "the raw model output must never appear in a LlamaServerError message"
 
 
+# --- retry-prompt feedback (issue #93 fix 2/4) ------------------------------
+
+
+def test_extract_retry_appends_specific_feedback_about_invalid_json():
+    """A retry after invalid JSON must not be a blind re-roll of the exact
+    same prompt -- the next attempt's message list must carry a NEW user
+    turn describing what was wrong, so the model has a genuinely different
+    (better-informed) chance of succeeding."""
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_bodies.append(body)
+        content = "not valid json {{{" if len(captured_bodies) == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(200, content=_completion(content))
+
+    client = _client(handler, max_retries=2)
+    result = client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    assert result.name == "cat"
+    assert len(captured_bodies) == 2
+    first_messages = captured_bodies[0]["messages"]
+    second_messages = captured_bodies[1]["messages"]
+    assert isinstance(first_messages, list)
+    assert isinstance(second_messages, list)
+    assert len(second_messages) == len(first_messages) + 1, (
+        "the retry must add a feedback turn, not resend the identical prompt"
+    )
+    feedback = second_messages[-1]
+    assert feedback["role"] == "user"
+    assert "not valid json" in feedback["content"].lower() or "json" in feedback["content"].lower()
+
+
+def test_extract_retry_feedback_names_the_offending_field_on_schema_violation():
+    """A schema-validation failure (valid JSON, but the wrong shape) must
+    surface the SPECIFIC field path that failed -- not a generic "try
+    again" -- so the retry can actually target the problem."""
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_bodies.append(body)
+        # First attempt: missing the required "legs" field (schema violation,
+        # not a JSON-parse failure). Second attempt: valid.
+        content = json.dumps({"name": "cat"}) if len(captured_bodies) == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(200, content=_completion(content))
+
+    client = _client(handler, max_retries=2)
+    result = client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    assert result.name == "cat"
+    feedback = captured_bodies[1]["messages"][-1]
+    assert feedback["role"] == "user"
+    assert "legs" in feedback["content"]
+
+
+def test_extract_retry_feedback_calls_out_truncation_on_length_finish_reason():
+    """A ``finish_reason: "length"`` failure (truncated mid-generation) gets
+    feedback asking for a MORE CONCISE response next time, distinct from the
+    generic invalid-JSON feedback -- concision is the actual fix for
+    truncation, re-sending the same verbose request is not."""
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_bodies.append(body)
+        if len(captured_bodies) == 1:
+            return httpx.Response(200, content=_completion('{"name": "d', finish_reason="length"))
+        return httpx.Response(200, content=_completion(json.dumps({"name": "dog", "legs": 4})))
+
+    client = _client(handler, max_retries=2)
+    result = client.extract([{"role": "user", "content": "describe a dog"}], _Animal)
+
+    assert result.name == "dog"
+    feedback = captured_bodies[1]["messages"][-1]["content"].lower()
+    assert "concise" in feedback or "cut off" in feedback or "token limit" in feedback
+
+
+def test_extract_never_echoes_raw_model_output_in_retry_feedback():
+    """The retry feedback message must never embed the model's actual
+    (possibly PHI/corpus-bearing) prior output -- only validation metadata,
+    matching this module's existing log-safety discipline."""
+    secret_marker = "PHI-MARKER-do-not-echo"
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_bodies.append(body)
+        content = secret_marker if len(captured_bodies) == 1 else json.dumps({"name": "cat", "legs": 4})
+        return httpx.Response(200, content=_completion(content))
+
+    client = _client(handler, max_retries=2)
+    client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+    feedback = captured_bodies[1]["messages"][-1]["content"]
+    assert secret_marker not in feedback
+
+
 def test_extract_raises_not_implemented_for_images():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=_completion("{}"))

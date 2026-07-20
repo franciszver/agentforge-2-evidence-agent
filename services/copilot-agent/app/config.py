@@ -157,7 +157,16 @@ class Settings(BaseSettings):
     # endpoint still requires the field to be present.
     llama_server_model: str = "qwen3-8b"
     llama_server_api_timeout_seconds: float = 60.0
-    llama_server_extract_max_retries: int = 2
+    # Issue #93 (fix 2/4): raised 2 -> 3. Each attempt is independently
+    # bounded by llama_server_api_timeout_seconds (60s) and _EXTRACT_MAX_TOKENS
+    # (app/llama_server_client.py, ~51s decode headroom) -- a third attempt
+    # only adds wall-clock time on the (already-failing) retry path, it does
+    # not change any single attempt's timeout/token budget. Paired with the
+    # retry-prompt improvement in LlamaServerClient.extract (each retry now
+    # carries specific feedback about what was wrong, not an identical
+    # re-roll), so the extra attempt has a genuinely different chance of
+    # succeeding rather than just re-trying the same failure a third time.
+    llama_server_extract_max_retries: int = 3
 
     # P3.10b (epic #52 step 2): which engine serves dense-vector embeddings
     # (nomic-embed-text) for hybrid guideline-corpus retrieval -- see

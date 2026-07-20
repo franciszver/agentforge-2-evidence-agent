@@ -333,6 +333,9 @@ Q: "What are her last three A1c values, and when?"
 Q: "Does she have any allergies?"
 -> {"action": "call_tool", "tool": "get_allergies", "tool_args": null, "reason": "The allergy list answers this directly.", "final_answer": null}
 
+Q: "What was his last blood pressure reading, and what category does that fall into?"
+-> {"action": "call_tool", "tool": "get_vitals", "tool_args": null, "reason": "The vitals list has the patient's own recorded blood pressure reading, needed before any category can be assigned.", "final_answer": null}
+
 Q: "Which visit was that from?" (asked right after a tool result already named a visit date in this conversation)
 -> {"action": "answer", "tool": null, "tool_args": null, "reason": "The visit date is already present in an earlier tool result.", "final_answer": "That result is from the visit on <date>."}
 
