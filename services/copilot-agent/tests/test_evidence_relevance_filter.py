@@ -4,9 +4,12 @@ evidence chunks /chat hands to the claim extractor (`app/chat.py`'s
 
 Hermetic: exercises the pure filter function directly against hand-built
 ``RerankedChunk`` instances -- no retrieval, no LLM, no corpus. See
-``_EVIDENCE_MIN_RELEVANCE_SCORE``'s docstring in ``app/chat.py`` for why 0.5
-was chosen (the observed gap in ``app/data/reranker_scores.json``'s score
-distribution: real matches score >=0.87, everything else <=0.35).
+``_EVIDENCE_MIN_RELEVANCE_SCORE``'s docstring in ``app/chat.py`` for why 0.75
+was chosen (issue #99: re-measured against qwen3-8b, the model that actually
+scores relevance in production -- every deliberately-planted lexical
+distractor scored <=0.65, every genuine match scored >=0.85). See
+``tests/test_reranker_calibration.py`` for the fixture-backed regression
+check on that gap.
 """
 
 from __future__ import annotations
@@ -29,8 +32,8 @@ def _chunk(chunk_id: str, rerank_score: float) -> RerankedChunk:
     )
 
 
-def test_default_threshold_is_half() -> None:
-    assert _EVIDENCE_MIN_RELEVANCE_SCORE == 0.5
+def test_default_threshold_is_three_quarters() -> None:
+    assert _EVIDENCE_MIN_RELEVANCE_SCORE == 0.75
 
 
 def test_filter_drops_chunks_scoring_below_the_threshold() -> None:

@@ -654,16 +654,18 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     # instead of paying for a second httpx.Client/connection pool -- only
     # construct a distinct client when the engine flag actually selects
     # llama-server.
-    # KNOWN GAP (PR #98 review): _EVIDENCE_MIN_RELEVANCE_SCORE's 0.5 floor
-    # was calibrated against app/data/reranker_scores.json, which is
-    # stamped model="qwen3:4b" (Ollama). Default copilot_llm_engine is
-    # "llama_server" (Qwen3-8B-Q5, see llama_server_model above), so the
-    # PRODUCTION reranker scorer below is NOT the model the threshold was
-    # measured against by default -- a future model swap on either side
-    # (fixture regen model, or llama_server_model) can silently invalidate
-    # 0.5 without any test catching it, since the fixture and the flag
-    # default are independently declared. Not fixed here -- see PR #98's
-    # description for the disclosed gap; flagged rather than re-guessed.
+    # RESOLVED (issue #99): PR #98's 0.5 floor was calibrated only against
+    # app/data/reranker_scores.json (model="qwen3:4b", via Ollama), while
+    # the default copilot_llm_engine is "llama_server" (qwen3-8b, see
+    # llama_server_model above) -- the PRODUCTION reranker scorer below.
+    # scripts/build_reranker_scores.py now supports RERANKER_ENGINE=
+    # llama_server to measure the SAME golden (query, chunk) pairs against
+    # qwen3-8b (recorded in app/data/reranker_scores_qwen3-8b.json). That
+    # measurement raised _EVIDENCE_MIN_RELEVANCE_SCORE from 0.5 to 0.75 --
+    # see its docstring for the numbers. tests/test_reranker_calibration.py
+    # pins the stamped fixture model to settings.llama_server_model so a
+    # future engine/model swap on either side fails loudly instead of
+    # silently invalidating the floor again.
     text_llm_client = get_text_llm_client(settings) if _wants_llama_server(settings) else ollama_client
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
@@ -696,21 +698,42 @@ _EVIDENCE_RETRIEVAL_TOP_K = 3
 # merely survived into the top-``_EVIDENCE_RETRIEVAL_TOP_K`` never adds
 # extraction-time token pressure or citation-attachment noise for no benefit.
 #
-# 0.5 was chosen by inspecting the actual score distribution recorded in
-# ``app/data/reranker_scores.json`` (5 golden queries, real Ollama pointwise
-# relevance scores) rather than guessed: every query's genuinely-relevant
-# chunk(s) score >=0.87, and every remaining candidate falls straight through
-# a gap to <=0.35 (0.35, 0.21, or 0.0) -- there is no query where a real match
-# sits in the 0.35-0.87 band. E.g. "What blood pressure counts as stage 2
-# hypertension?" -> [0.99, 0.0, 0.0, ...]: today's unconditional top_k=3 hands
-# the extractor two zero-relevance chunks alongside the one that matters.
-# 0.5 sits squarely in that empty gap, so it cleanly separates "the model
-# actually needs this" from "hybrid retrieval's tail" without being close
-# enough to either cluster to be sensitive to the exact float. ``top_k``
-# itself is left at 3 (not reduced) -- it remains the ceiling on the pool;
-# this floor is what actually shrinks what reaches the extractor on the
-# (common) case where fewer than ``top_k`` candidates are truly relevant.
-_EVIDENCE_MIN_RELEVANCE_SCORE = 0.5
+# 0.5 was originally chosen (PR #98) by inspecting the score distribution
+# recorded in ``app/data/reranker_scores.json`` (5 golden queries, real
+# Ollama qwen3:4b pointwise relevance scores): every genuinely-relevant
+# chunk scored >=0.87, everything else <=0.35 -- a clean gap with 0.5
+# sitting in the middle of it.
+#
+# Issue #99: that fixture is NOT the model that actually scores relevance in
+# production -- ``copilot_llm_engine`` defaults to "llama_server" (qwen3-8b,
+# see ``llama_server_model`` in ``app/config.py``), not Ollama's qwen3:4b.
+# Re-measuring the SAME golden (query, chunk) pairs against qwen3-8b
+# (``RERANKER_ENGINE=llama_server scripts/build_reranker_scores.py``,
+# recorded in ``app/data/reranker_scores_qwen3-8b.json``) showed the 0.5
+# floor does NOT hold for the production model: qwen3-8b gives partial
+# credit far more liberally than qwen3:4b, and critically, TWO of the five
+# deliberately-planted lexical distractors (``scripts/reranker_golden_
+# distractors.py`` -- chunks a hybrid stage ranks high but that do not
+# actually answer the query) scored ABOVE 0.5:
+#   * "Can I give ibuprofen with lisinopril?" distractor
+#     (renal-function-monitoring#ace-inhibitors-and-arbs) scored 0.65
+#     (was 0.21 under qwen3:4b).
+#   * "Does warfarin interact with antibiotics?" distractor
+#     (statin-monitoring#interaction-caution-cyp3a4-inhibitors) scored 0.62
+#     (was 0.0 under qwen3:4b).
+# A 0.5 floor would have let both distractors reach the claim extractor as
+# "relevant" in production -- exactly the failure mode this filter exists to
+# prevent. Across all 5 golden queries, qwen3-8b's genuinely-relevant chunks
+# scored 0.85-0.95 and every deliberately-planted distractor scored <=0.65,
+# a real (if narrower) gap between 0.65 and 0.85. 0.75 sits in that gap with
+# margin on both sides, so it excludes every measured distractor while
+# keeping every measured genuine match -- see
+# ``tests/test_reranker_calibration.py`` for the regression check pinning
+# this invariant to the fixture. ``top_k`` itself is left at 3 (not
+# reduced) -- it remains the ceiling on the pool; this floor is what
+# actually shrinks what reaches the extractor on the (common) case where
+# fewer than ``top_k`` candidates are truly relevant.
+_EVIDENCE_MIN_RELEVANCE_SCORE = 0.75
 
 
 def _filter_by_relevance_score(
