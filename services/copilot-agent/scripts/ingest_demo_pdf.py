@@ -21,6 +21,13 @@ around this call and the ``OLLAMA_MODEL`` override):
     docker exec -e OLLAMA_MODEL=qwen2.5vl:7b -w /app development-easy-agent-1 \\
         python /data/repo_ingest/ingest_demo_pdf.py <patient_id> <pdf_path>
 
+The ``app.*`` imports below resolve via the ``copilot-agent`` package
+installed into the image's site-packages (the ``Dockerfile``'s ``pip
+install .``), not via this script's own location or the ``-w /app``
+working directory -- this script can therefore be copied to and run from
+anywhere writable in the container (it lives under ``/data/repo_ingest``
+above, not ``/app``) with no ``PYTHONPATH``/``sys.path`` setup of its own.
+
 **Idempotent.** Checks ``LocalIngestionStore.list_citations_for_patient``
 for an existing ``lab_pdf`` citation belonging to ``patient_id`` and skips
 the (re-)ingest call if one is already present.
