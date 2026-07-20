@@ -30,16 +30,36 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model
-  answers only from the chart data and never surfaces or quotes the
-  guideline passage in its final answer -- so the claim extractor produces
-  zero guideline_chunk document citations, and citation_present never
-  fires. Separately, the model also asserts several "no recorded X" claims
-  (problems/allergies/labs/vitals/encounters/appointments) that don't all
-  carry a valid source ref, so 2 of 9 extracted claims get stripped and the
-  verdict stays partially_verified rather than verified -- a second,
-  independent reason this case doesn't pass. Same chart-data-only pattern
-  this case showed under qwen3:4b, just a different specific model. An
-  honest, reproducible P3G.1 finding, not a harness bug -- the assertions
-  are the correct target and are deliberately not weakened.
+  RE-OBSERVED (issue #116, live re-verification against current main, 10
+  fresh draws through `evals.runner.pipeline.run_case`, production
+  `LlamaServerClient`, no replay): the ORIGINAL chart-data-only rationale
+  previously documented here does not reproduce -- the model's final-answer
+  prose reliably restates the guideline's content ("eGFR is generally
+  checked at least annually...") in every draw. But this is a DIFFERENT,
+  still-failing mechanism, not eval-recording staleness: the claim
+  extractor never attaches a real `DocumentCitation` for the guideline
+  quote in any of the 10 draws. Instead, for both guideline-derived claims
+  it emits several (5-10) DUPLICATE copies of the completely unrelated
+  chart-data `SourceRef` already used for the medication-name claim
+  (`tool_call_id=call_0, record_id=0, field=name, asserted_value=Metformin`)
+  -- not the `#85`-style misrouted-chunk-id shape `_coerce_misrouted_
+  guideline_refs` targets (there is no reconstructable `<doc_id>#<section>`
+  pair in these refs at all, so the coercion correctly no-ops). Because
+  those duplicated medication refs are trivially valid (real chart data)
+  and `check_claim` only ANDs citation validity with no content-relevance
+  check on ordinary `SourceRef`s, the claim survives re-validation and the
+  overall verdict reaches `verified` (10/10) despite carrying ZERO actual
+  guideline citation -- `guideline_citation_present` correctly fails every
+  time. A live re-verification test (`evals/test_cases.py::
+  test_case_replay`) confirms this: replaying the recording below fails
+  exactly on `guideline_citation_present`, not `verdict`. This also
+  corrects issue #109's own spike finding for this case (recorded as "clean
+  guideline DocumentCitation, verified 3/3" in
+  `docs/MODEL_AND_HARDWARE_SELECTION.md`'s issue #109 table) -- that
+  characterization did not survive a larger, more careful sample that
+  checked `result.rendered.segments` directly rather than trusting the
+  overall verdict alone; see `docs/MODEL_AND_HARDWARE_SELECTION.md`, "Issue
+  #116 follow-up" for the full data and a filed follow-up issue on the
+  extraction-misattribution mechanism itself. An honest, reproducible
+  P3G.1 finding -- the assertions are the correct target and are
+  deliberately not weakened.
