@@ -29,34 +29,39 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-# #58 could NOT re-record this case against qwen3-8b-q5: under the
-# llama_server engine, the model's claim extraction call for this turn
-# deterministically emits a claim with an empty `source_refs` list ("There
-# are no recent lab results available for CK levels."), which fails
+# RESOLVED (issue #106 spot-check): #58's blocker below no longer applies.
+# `app.llama_server_client.LlamaServerError` now extends `LLMEngineError`
+# (see 2483e3b "extract_claims must degrade to [] under llama_server
+# engine"), which `app.extraction.ClaimExtractor.extract_claims`'s except
+# clause already catches -- confirmed live, 4/4 fresh draws via
+# `evals/runner/record.py` against the real llama_server-engine qwen3-8b-q5
+# stack completed and recorded cleanly, no uncaught exception. This case is
+# now re-recorded against the CURRENT model/engine (qwen3-8b-q5,
+# llama_server) below, replacing the stale qwen3:4b-era recording #58 left
+# in place. Original blocker, kept for history: under the llama_server
+# engine, the model's claim extraction call for this turn used to
+# deterministically emit a claim with an empty `source_refs` list ("There
+# are no recent lab results available for CK levels."), which failed
 # VerifiedAnswer's "every claim needs >=1 SourceRef or DocumentCitation"
 # validator both retry attempts (temperature=0, byte-identical output each
-# time) -- `app.llama_server_client.LlamaServerClient.extract` then raises
-# `LlamaServerError` after exhausting retries. `app.extraction.extract_claims`
-# only catches `app.ollama_client.OllamaError` (not `LlamaServerError`, a
-# separate exception hierarchy), so the exception propagates uncaught and
-# the eval harness's `RecordingOllamaClient` never gets a completed call to
-# save -- no recording can be produced for this case under this engine at
-# all. This looks like a real production gap (the llama_server engine
-# migration's `extract_claims` except clause doesn't cover its own client's
-# error type), reported for a follow-up issue; out of #58's scope since
-# fixing it means touching services/copilot-agent/app/extraction.py
-# (product runtime code), which #58 explicitly disallows. This case's
-# recording/xfail below are UNCHANGED from the qwen3:4b era pending that fix.
+# time) -- `LlamaServerClient.extract` then raised `LlamaServerError` after
+# exhausting retries, and since it wasn't an `OllamaError` subclass at the
+# time, it propagated uncaught and no recording could be produced at all.
 xfail: >
-  OBSERVED (recorded, qwen3:4b): given BOTH real chart-data tool results
-  and a retrieved guideline chunk for the same turn, the model consistently
-  answers only from the chart data and never surfaces or quotes the
+  RE-OBSERVED (issue #106, live re-verification against current main,
+  qwen3-8b-q5 / llama_server engine): re-recorded 4/4 times via
+  `evals/runner/record.py` (production `LlamaServerClient`, no replay).
+  The `#85` citation-routing bug does not apply -- the model never attempts
+  a guideline citation of any shape here. Same pattern as its qwen3:4b-era
+  predecessor, now confirmed live on the current production model: given
+  BOTH real chart-data tool results and a retrieved guideline chunk for the
+  same turn, the model consistently answers only from the chart data and
+  never surfaces or quotes the `statin-monitoring#muscle-symptoms-and-ck`
   guideline passage in its final answer -- so the claim extractor has no
   guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays verified/partially_verified on the chart-data
-  claims alone, but citation_present -- a claim carrying a VERIFIED
-  guideline_chunk citation -- never fires). This is an honest, reproducible
-  P3G.1 finding about the local 4B model's current tendency to prioritize
+  citations (verdict stays `partially_verified` on the chart-data claims
+  alone 4/4 times; `citation_present` never fires). An honest, reproducible
+  P3G.1 finding about the current production model's tendency to prioritize
   structured chart data over retrieved guideline evidence when both are
   available in one turn, not a harness bug -- the assertions are the
   correct target and are deliberately not weakened.
