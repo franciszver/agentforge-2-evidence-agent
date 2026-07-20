@@ -54,7 +54,7 @@ services:
   # to be gated behind the `llama` compose profile so a plain `docker
   # compose ... up` defaulted to ollama with no extra startup cost. That
   # profile gate is now REMOVED -- 8B-Q5 is the intended default answer
-  # model (the 6/12 verified-citation flagship capability must be live out
+  # model (the 5/12 verified-citation flagship capability must be live out
   # of the box), so a plain `docker compose -f docker-compose.yml -f
   # docker-compose.copilot.yml up` now provisions and serves it
   # unconditionally. Deliberate tradeoff accepted: default startup gains a
