@@ -5,9 +5,10 @@ a local llama.cpp ``llama-server``, epic #52).
 All HTTP is served by ``httpx.MockTransport``; no real network or GPU is
 touched. Mirrors ``tests/test_ollama_client.py``'s structure and asserts on
 the specific behaviors already vetted in the throwaway measurement harness's
-``LlamaServerClient`` (see the P3.10a issue body): a hard ``max_tokens: 1536``
-cap on every call, JSON-schema-constrained ``response_format`` on ``extract``,
-and defensive ``<think>``-leak stripping.
+``LlamaServerClient`` (see the P3.10a issue body): a hard ``max_tokens`` cap
+on every call (1536 on chat/chat_stream, a larger dedicated cap on extract --
+see P5.3, issue #85), JSON-schema-constrained ``response_format`` on
+``extract``, and defensive ``<think>``-leak stripping.
 """
 
 from __future__ import annotations
@@ -36,9 +37,13 @@ def _client(handler, **kwargs) -> LlamaServerClient:
     )
 
 
-def _completion(content: str) -> bytes:
+def _completion(content: str, *, finish_reason: str = "stop") -> bytes:
     return json.dumps(
-        {"choices": [{"message": {"role": "assistant", "content": content}}]}
+        {
+            "choices": [
+                {"message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}
+            ]
+        }
     ).encode()
 
 
@@ -84,7 +89,11 @@ def test_chat_strips_leaked_thinking_preamble_from_content():
 # --- extract ------------------------------------------------------------
 
 
-def test_extract_sends_strict_json_schema_response_format_and_max_tokens_cap():
+def test_extract_sends_strict_json_schema_response_format_and_its_own_larger_max_tokens_cap():
+    """extract() gets a LARGER max_tokens cap than chat()/chat_stream() (P5.3,
+    issue #85) -- see ``_EXTRACT_MAX_TOKENS``'s module-level docstring for the
+    sizing rationale. ``chat()``'s cap stays 1536 (see the ``test_chat_*``
+    tests above), unchanged from the original runaway-generation measurement."""
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -100,7 +109,8 @@ def test_extract_sends_strict_json_schema_response_format_and_max_tokens_cap():
 
     body = captured["body"]
     assert isinstance(body, dict)
-    assert body["max_tokens"] == 1536
+    assert body["max_tokens"] == 2560
+    assert body["max_tokens"] > 1536, "extract() must use a LARGER cap than chat()'s 1536"
     response_format = body["response_format"]
     assert response_format["type"] == "json_schema"
     json_schema = response_format["json_schema"]
@@ -145,6 +155,29 @@ def test_extract_raises_after_exhausting_retries():
     client = _client(handler, max_retries=2)
     with pytest.raises(LlamaServerError):
         client.extract([{"role": "user", "content": "describe a cat"}], _Animal)
+
+
+def test_extract_exhausted_retries_error_carries_finish_reason_and_content_length():
+    """P5.3 (issue #85): a validation failure's ``LlamaServerError`` message
+    carries non-PHI diagnostic signal (``finish_reason``, truncated-content
+    length) so this failure class is diagnosable from logs without a live
+    re-probe. ``finish_reason: "length"`` here simulates llama.cpp's own
+    truncation signal (hit ``max_tokens`` mid-generation) -- the mechanism
+    this issue's token-budget fix targets; the message text is log-safe
+    (never the raw model output itself, only its length)."""
+    truncated = '{"name": "d'  # deliberately invalid/incomplete JSON
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_completion(truncated, finish_reason="length"))
+
+    client = _client(handler, max_retries=2)
+    with pytest.raises(LlamaServerError) as exc_info:
+        client.extract([{"role": "user", "content": "describe a dog"}], _Animal)
+
+    message = str(exc_info.value)
+    assert "length" in message
+    assert str(len(truncated)) in message
+    assert truncated not in message, "the raw model output must never appear in a LlamaServerError message"
 
 
 def test_extract_raises_not_implemented_for_images():
