@@ -101,6 +101,28 @@ docs PR (issue #100) is a measurement/re-recording pass, not a demo-content
 pass, so picking and validating a replacement citation moment is out of
 scope here and left as an explicit follow-up.
 
+**Update (issue #85): the citation-attachment bug named above is fixed, but
+`bp-stage2-question` still does not verify.** Issue #85 isolated and fixed
+the root cause of the "zero `document_citations`" symptom: `app.extraction
+.ClaimExtractor` was silently dropping the model's guideline citation
+because the model puts it in `source_refs` (reconstructing the chunk's own
+id across `tool_call_id`/`record_id`) rather than `document_citations` —
+now reclassified correctly before verification. Live re-verification
+confirms this case's guideline citation now genuinely reaches the
+semantic-support judge (it never did before, since the malformed citation
+always failed provenance first) — and the judge correctly downgrades it
+`not_semantically_supported`: the model's own final-answer text calls
+148/94 mmHg "elevated blood pressure," but the retrieved guideline's own
+thresholds put that reading in "Stage 2 hypertension." This is a DIFFERENT
+defect (the planner composes its free-text answer before evidence
+retrieval ever runs, so it never sees the guideline thresholds it
+describes) — a planner answer-composition gap, not a claim/citation-
+assembly gap, and out of issue #85's scope. See
+`docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Claim-extraction citation routing
+bug fixed (issue #85)" section for the full mechanism. Net effect for this
+beat: still not demo-ready as a "look, it verified" moment, but for a
+narrower, better-understood reason than before.
+
 **Honesty note on what "citation overlay" means here.** The module's
 citation UI (`copilot-chat.js`) renders every claim's citation chips inline
 in the chat — clicking one expands the section/page and the exact quoted
@@ -350,22 +372,44 @@ not reliably reproduce a verified citation either — see below and
    "normal range" claim did not do so in this run. That remaining gap
    (retrieval finds the right evidence; the answer doesn't get cited with
    it) is unresolved and worth a follow-up issue — see "Dry-run findings."
-6. **Update (issue #100) — the fallback below no longer works either, do
-   not use it.** This step originally suggested narrating
-   `evals/recordings/bp-stage2-question.json` as unit-level proof the
-   citation-verification machinery works, even when the live chat didn't
-   reproduce it. Issue #100 re-verified that recording against fresh live
-   draws (10/10) and found it shows the SAME chart-data-only failure the
-   live chat shows above — the old recording was itself a stale, lucky
-   historical draw, not a representative one, and has been replaced with a
-   recording that honestly reflects current typical behavior (now `xfail`,
-   see `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Live re-verification"
-   section). There is currently no `citation_present` eval case, live or
+6. **Update (issue #100) — the recording-narration fallback did not work
+   either, and is now superseded by issue #85's finding.** This step
+   originally suggested narrating `evals/recordings/bp-stage2-question.json`
+   as unit-level proof the citation-verification machinery works, even when
+   the live chat didn't reproduce it. Issue #100 re-verified that recording
+   against fresh live draws (10/10) and found it showed zero
+   `document_citations` every time, apparently the SAME chart-data-only
+   failure the live chat shows above.
+7. **Update (issue #85) — that "zero citations" diagnosis was itself
+   imprecise; the real bug is fixed, but the case still doesn't verify, for
+   a different reason.** Issue #85 traced the actual mechanism: the model
+   DOES attempt to cite the guideline chunk every time, but
+   `app.extraction.ClaimExtractor` was putting the citation in the wrong
+   field (`source_refs` instead of `document_citations`), where it silently
+   failed provenance and dragged the whole claim down with it — which is
+   why it looked identical to "never tries." That routing bug is now fixed:
+   a genuine, provenance-valid `document_citations` entry attaches to this
+   claim (confirmed via 6/6 fresh live draws through
+   `evals/runner/pipeline.run_case`). But the case's recording (re-captured
+   under the fix) still ends `partially_verified`, `xfail`, because the
+   semantic-support judge now correctly downgrades that same citation:
+   148/94 mmHg is "Stage 2 hypertension" per the guideline's own
+   thresholds, but the model's final-answer text calls it "elevated blood
+   pressure" — a category-name mismatch in the planner's own answer, not a
+   citation-assembly defect (the planner composes its answer before
+   evidence retrieval ever runs, so it never sees the guideline text it's
+   describing). See `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Claim-
+   extraction citation routing bug fixed (issue #85)" section for the full
+   detail. There is still no `citation_present` eval case, live or
    recorded, that reliably demonstrates a verified guideline citation on
    this hardware tier. Until a follow-up (see "Real gaps found, NOT fixed
-   in this PR") identifies a case that does, presenters should either skip
-   the citation-overlay claim entirely for this beat or narrate it as a
-   known current limitation rather than a proof point.
+   in this PR") closes the planner-composition gap or identifies a case
+   unaffected by it, presenters should either skip the citation-overlay
+   claim entirely for this beat or narrate it as a known current
+   limitation rather than a proof point — but it can now be narrated more
+   precisely: "the system genuinely finds and cites the right guideline
+   passage; what it doesn't yet do live is get the category label in its
+   own answer right before checking that citation against it."
 
 ### Beat 3 — Graceful failure on an unreadable field (Phil Belford) — **measured mid-tier (RTX 3060 12 GB desktop): 22.5s**
 
@@ -529,16 +573,33 @@ Nothing below is guessed at; each item names how it was checked.
   either find/construct a case that reliably verifies live on this hardware
   tier, or rescript beat 2 around the honest current limitation instead of
   a "look, it verified" moment.
-- **Live claim-extraction doesn't attach the guideline citation it could.**
-  Even with both bugs above fixed, and even though a direct retrieval call
-  proves the right chunk is found, the live `/chat` answer for beat 2's
-  question shows `document_citations: []` — no guideline citation gets
-  attached to the categorization claim. Root cause not isolated in this
-  pass (candidates: claim-extraction prompt/matching threshold, ordering
-  of retrieval vs. extraction, or something else in
-  `app/verification.py`'s document-citation matching) — worth a dedicated
-  follow-up issue with its own investigation budget rather than more
-  guessing inside a docs PR.
+- **Live claim-extraction doesn't attach the guideline citation it could —
+  RESOLVED (issue #85).** Root cause isolated and fixed:
+  `app.extraction.ClaimExtractor` was putting the model's guideline
+  citation in `source_refs` (mis-shaped, reconstructing the chunk's own id
+  across `tool_call_id`/`record_id`) instead of `document_citations`,
+  where it silently failed provenance and dragged the whole claim down
+  with it. The extractor now recognizes this shape and reclassifies it
+  correctly before verification — a genuine, provenance-valid
+  `document_citations` entry now attaches (confirmed 6/6 on fresh live
+  draws). See `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Claim-extraction
+  citation routing bug fixed (issue #85)" section for the full mechanism.
+- **New gap found by issue #85's fix: the planner's own answer text
+  mislabels the BP category, so the now-attached citation still fails
+  semantic support.** With the routing bug fixed, `bp-stage2-question`'s
+  citation reaches the semantic-support judge for the first time and is
+  correctly downgraded `not_semantically_supported`: the planner's
+  free-text answer calls 148/94 mmHg "elevated blood pressure," but the
+  retrieved guideline's own thresholds put that reading in "Stage 2
+  hypertension." Root cause: `app.chat`'s `evidence_retriever()` call runs
+  strictly AFTER `planner.run()` composes the final answer text (P3.9's
+  documented design — retrieval is post-hoc citation evidence, not
+  answer-composition input), so the planner never sees the guideline
+  thresholds it's describing and falls back on its own (here, imprecise)
+  medical knowledge. Fixing this would mean feeding retrieved guideline
+  text into the planner's own answer-composition step, not just the
+  post-hoc citation step — a real architecture change, out of scope for a
+  citation-assembly fix. Worth a dedicated follow-up issue.
 - **No `/chat`-reachable path from a question to ingested per-patient
   document facts.** `app.chat.get_patient_fact_provider` only feeds the
   post-answer verification step, not the planner's tool-calling loop that
