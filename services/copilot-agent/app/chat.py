@@ -157,9 +157,14 @@ class PlannerProtocol(Protocol):
 
     ``app.planner.Planner`` satisfies this; hermetic tests inject a scripted
     fake instead.
+
+    ``guideline_excerpts`` (#105): optional retrieved guideline-corpus chunk
+    text, fed into answer composition -- see ``app.planner.Planner.run``'s
+    docstring. Defaulted so a test double that ignores it (every existing
+    fake planner) stays valid.
     """
 
-    def run(self, question: str) -> PlannerResult: ...
+    def run(self, question: str, guideline_excerpts: Sequence[str] | None = None) -> PlannerResult: ...
 
 
 TokenValidator = Callable[[str], None]
@@ -1149,11 +1154,40 @@ def _stream_chat(
             conversation.patient_name,
             roster_provider=_roster_provider,
         )
+
+        # #105: guideline-corpus retrieval now runs BEFORE the planner
+        # composes its answer (moved from after -- see the module docstring's
+        # "answer" frame note and app.planner's #105 comment for the full
+        # mechanism). Previously the planner wrote its answer purely from
+        # tool results / its own priors, and a citation was bolted onto that
+        # prose after the fact by the claim extractor -- letting the answer's
+        # category language (e.g. "elevated blood pressure") drift from the
+        # guideline text it ended up citing (e.g. "Stage 2 hypertension").
+        # Feeding the retrieved text into the planner's OWN answer-
+        # composition call lets it use the guideline's own category name.
+        #
+        # This is the same fail-soft retrieval call that used to run later in
+        # this function (a retrieval/rerank failure must never break an
+        # otherwise-working chat turn over chart data unrelated to the
+        # guideline corpus); only its POSITION changed, unconditionally, same
+        # as before -- including on a cross-patient refusal, where the
+        # guideline_excerpts built from it below simply goes unused (the
+        # planner never runs in that branch). Retrieval stays unconditional
+        # rather than skipped for that branch so this change doesn't also
+        # alter P3.8 encounter-observability's retrieval_hit_count / worker
+        # span for a refusal turn -- out of scope for this ordering fix.
+        try:
+            retrieved_chunks = evidence_retriever(message)
+        except Exception as exc:
+            _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
+            retrieved_chunks = []
+        guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
+
         if cross_patient_reference_detected:
             result = cross_patient_refusal_result()
         elif run_streaming is not None:
             result = None
-            for event in run_streaming(message):
+            for event in run_streaming(message, guideline_excerpts):
                 if isinstance(event, ToolDispatched):
                     yield _tool_call_frame(trace_store, correlation_id, event.trace)
                 elif isinstance(event, ReasoningDelta):
@@ -1168,7 +1202,7 @@ def _stream_chat(
             if result is None:
                 raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
         else:
-            result = planner.run(message)
+            result = planner.run(message, guideline_excerpts)
         assert result is not None  # mypy: the elif branch's loop widens result
         # Deterministic cross-patient subject-check (#194, follow-up to
         # #121): a small model can verbally attribute the bound patient's
@@ -1233,16 +1267,10 @@ def _stream_chat(
         # ALONGSIDE the tool-result catalog -- additive; a chart-data-only
         # question that retrieves nothing verifies exactly as before.
         #
-        # Fail-soft: a retrieval/rerank failure (RetrievalError, RerankError,
-        # or anything else) must never break an otherwise-working chat turn
-        # over chart data that has nothing to do with the guideline corpus.
-        # Logged by TYPE ONLY -- NEVER str(exc), which both error types embed
-        # the query text in (see this module's forward security constraint).
-        try:
-            retrieved_chunks = evidence_retriever(message)
-        except Exception as exc:
-            _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
-            retrieved_chunks = []
+        # #105: ``retrieved_chunks`` was already computed ABOVE, before the
+        # planner ran (see that comment for why) -- reused here rather than
+        # retrieved a second time, so this ordering change costs exactly one
+        # retrieval call per turn, same as before, just earlier.
 
         # P3.9a (issue #46): this turn's bound patient's own extracted
         # lab/intake-form fact citations (flag-gated -- see

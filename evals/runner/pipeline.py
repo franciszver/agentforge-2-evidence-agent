@@ -165,6 +165,17 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # "switch to <Name>" signal the same way ``case.patient_name`` feeds the
     # "patient <Name>" signal; already fully in-memory (no I/O), so no
     # laziness concern here unlike the live app.chat wiring.
+    # #105: the case's canned guideline-corpus evidence (if any) is threaded
+    # into the planner's OWN answer-composition call below, mirroring the
+    # live P3.9 `/chat` wiring's #105 fix (`app.chat._stream_chat` now
+    # retrieves BEFORE calling the planner, not after) -- computed here,
+    # before the planner runs, rather than down in the verification branch
+    # below (its pre-#105 position), so `planner.run` can see it. Cheap:
+    # pure in-memory fixture parsing, no I/O, so computing it even for a
+    # cross-patient-refusal case (where it goes unused) costs nothing.
+    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
+    guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
+
     if detect_foreign_patient_reference(
         case.question,
         case.patient_id,
@@ -181,7 +192,7 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
             patient_id=case.patient_id,
             registry=registry,
         )
-        planner_result = planner.run(case.question)
+        planner_result = planner.run(case.question, guideline_excerpts)
         # apply_subject_check runs BEFORE apply_recency_notice -- see
         # app.chat's wiring comment for why (it must only ever scan the
         # model's own prose, never text a later deterministic step appends).
@@ -200,10 +211,10 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         return CaseResult(planner_result=planner_result, verdict_result=None, rendered=None)
 
     extractor = ClaimExtractor(ollama_client=ollama_client)  # type: ignore[arg-type]
-    # P3G.1: the case's canned guideline-corpus evidence (if any), mirroring
-    # the live P3.9 /chat wiring's `evidence_retriever(message)` -> `run_verification`
-    # handoff -- see `runner.schema.RetrievedChunkFixture`.
-    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
+    # P3G.1 / #105: `retrieved_chunks` was already computed ABOVE (before the
+    # planner ran) -- reused here for `run_verification`'s citation-attachment
+    # pass, exactly as before; only WHEN it was computed changed, not what it
+    # feeds. See `runner.schema.RetrievedChunkFixture`.
     # Issue #81: the SAME client already driving the planner/extractor also
     # satisfies `SemanticSupportJudgeLike` (both are duck-typed against one
     # `.extract` call -- see `app.semantic_support.SemanticSupportJudgeLike`),

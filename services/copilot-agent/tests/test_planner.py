@@ -18,7 +18,7 @@ import httpx
 
 from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
-from app.planner import _FEW_SHOT_EXAMPLES, Planner, ToolSpec
+from app.planner import _FEW_SHOT_EXAMPLES, _FINAL_REASON_PROMPT, Planner, ToolSpec
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
@@ -584,3 +584,56 @@ def test_resolve_patient_roster_returns_empty_list_on_api_error(make_openemr_cli
     )
 
     assert planner.resolve_patient_roster() == []
+
+
+# --- issue #105: guideline-corpus retrieval feeds answer composition --------
+#
+# Root cause: `Planner.run`/`run_streaming` never saw retrieved guideline
+# text at all before this fix -- retrieval only ran AFTER the planner had
+# already composed its final answer (see `app.chat._stream_chat`'s pre-#105
+# ordering), so the model reached for its own general-knowledge category
+# language (e.g. "elevated blood pressure") instead of the guideline's own
+# category name (e.g. "Stage 2 hypertension") -- a genuine, verbatim
+# citation ended up attached to prose that used the wrong category name for
+# what it cited. The fix threads retrieved guideline chunk TEXT into the
+# free-text reasoning call that composes the answer (`_finalize_answer_
+# streaming`), as an extra `guideline_excerpts` parameter on `run`/
+# `run_streaming`.
+
+
+def test_finalize_answer_includes_guideline_excerpts_in_the_reasoning_call():
+    """When `guideline_excerpts` is passed to `run`, the free-text reasoning
+    call (the "chat" half of the two-call finalize) must receive that text --
+    so the model can use the guideline's own category language when
+    composing the answer, instead of finding out about it only after the
+    fact via a bolted-on citation."""
+    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry={})
+
+    guideline_text = (
+        "Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or higher."
+    )
+    planner.run("What category is 148/94 mmHg?", guideline_excerpts=[guideline_text])
+
+    assert ollama.chat_calls, "expected the reasoning (chat) call to have run"
+    reasoning_messages = ollama.chat_calls[-1]
+    joined = " ".join(message["content"] for message in reasoning_messages)
+    assert guideline_text in joined, (
+        "the retrieved guideline excerpt must reach the reasoning call that "
+        "composes the answer, not just post-hoc citation attachment"
+    )
+
+
+def test_finalize_answer_omits_guideline_context_block_when_no_excerpts_given():
+    """No guideline_excerpts (the default, e.g. a chart-data-only question)
+    must be a complete no-op -- the reasoning call's prompt stays exactly
+    what it was before #105."""
+    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry={})
+
+    planner.run("What meds is she on?")
+
+    reasoning_messages = ollama.chat_calls[-1]
+    assert reasoning_messages[-1]["content"] == _FINAL_REASON_PROMPT

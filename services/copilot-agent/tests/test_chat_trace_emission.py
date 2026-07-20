@@ -80,7 +80,7 @@ class _FailingPlanner:
     """A planner double that always raises -- drives the ``_stream_chat``
     error path (request span recorded ``ok=False``, exception re-raised)."""
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
         raise RuntimeError("boom")
 
 

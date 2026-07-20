@@ -231,7 +231,7 @@ class _SpyPlanner:
         self._answer = answer
         self.questions: list[str] = []
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
         self.questions.append(question)
         return PlannerResult(answer=self._answer, trace=[], raw_results=[])
 
