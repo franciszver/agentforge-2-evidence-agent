@@ -1166,21 +1166,21 @@ def _stream_chat(
         # Feeding the retrieved text into the planner's OWN answer-
         # composition call lets it use the guideline's own category name.
         #
-        # This is the same fail-soft retrieval call that used to run later
-        # in this function (a retrieval/rerank failure must never break an
+        # This is the same fail-soft retrieval call that used to run later in
+        # this function (a retrieval/rerank failure must never break an
         # otherwise-working chat turn over chart data unrelated to the
-        # guideline corpus); only its POSITION changed. Skipped entirely for
-        # a cross-patient refusal -- the planner never runs in that branch,
-        # so there is nothing to feed guideline context into, and paying the
-        # retrieval round trip for an answer that's about to be replaced by
-        # a fixed refusal string would be pure latency for no benefit.
-        retrieved_chunks: list[RerankedChunk] = []
-        if not cross_patient_reference_detected:
-            try:
-                retrieved_chunks = evidence_retriever(message)
-            except Exception as exc:
-                _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
-                retrieved_chunks = []
+        # guideline corpus); only its POSITION changed, unconditionally, same
+        # as before -- including on a cross-patient refusal, where the
+        # guideline_excerpts built from it below simply goes unused (the
+        # planner never runs in that branch). Retrieval stays unconditional
+        # rather than skipped for that branch so this change doesn't also
+        # alter P3.8 encounter-observability's retrieval_hit_count / worker
+        # span for a refusal turn -- out of scope for this ordering fix.
+        try:
+            retrieved_chunks = evidence_retriever(message)
+        except Exception as exc:
+            _logger.warning("evidence retrieval failed", extra={"error_type": type(exc).__name__})
+            retrieved_chunks = []
         guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
 
         if cross_patient_reference_detected:
