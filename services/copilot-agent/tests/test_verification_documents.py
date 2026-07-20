@@ -498,6 +498,64 @@ def test_mixed_citation_claim_one_document_citation_invalid_fails_whole_claim():
     assert len(result.citation_results) == 2
 
 
+# ---------------------------------------------------------------------------
+# Regression guard (issue #115): a fabricated chart-data ``source_ref``
+# bundled alongside a genuinely VALID ``document_citations`` entry must still
+# fail the whole claim -- reproduces, hermetically, the exact shape observed
+# live on `dual-antiplatelet-question`/`hypertension-lifestyle-followup-
+# question` (see `docs/MODEL_AND_HARDWARE_SELECTION.md`, "Issue #115
+# findings"): the claim extraction model, asked to cite a guideline chunk it
+# already quotes verbatim in a real ``document_citations`` entry, ALSO
+# attaches a second, syntactically well-formed but entirely fabricated
+# ``source_ref`` -- a real-looking ``tool_call_id`` (``call_0``, matching
+# ``_REAL_TOOL_CALL_ID_RE``, so issue #85's misrouted-guideline-ref coercion
+# correctly does NOT touch it) paired with a ``field`` that never appears in
+# ANY real tool-result catalog entry for the conversation at all (the call in
+# question returned zero records). This is deliberately NOT "fixed" by a
+# narrow coercion the way #85 was: unlike #85's reconstructable
+# ``<doc_id>#<section>`` shape, there is no reconstructable structure here to
+# safely recover FROM -- the ref does not encode a retrievable chunk id, just
+# a plausible-looking but nonexistent field name. Accepting it (even only
+# when a valid document citation happens to sit alongside it on the same
+# claim) would mean trusting an LLM-asserted citation the checker cannot
+# independently confirm against any real source -- exactly the fabrication
+# this module's "no fabrication" invariant exists to catch. This test proves
+# the checker already, correctly, fails closed here with NO code change
+# required.
+# ---------------------------------------------------------------------------
+
+
+def test_fabricated_source_ref_alongside_valid_document_citation_still_fails_the_claim():
+    # `call_0` is a REAL tool call (e.g. `get_problems`) that returned zero
+    # records this turn -- exactly the live shape: `get_medications` was
+    # never dispatched at all, so no real "medications"/"clinical_guidelines"
+    # field exists anywhere in this conversation's raw results.
+    index = _index({"items": []})
+    corpus_index = _corpus_index(_FakeChunk(_RAW_CHUNK_ID, _RAW_CHUNK_TEXT))
+    claim = Claim(
+        text="Thiazides are first-line therapy for most patients.",
+        source_refs=[
+            SourceRef(
+                tool_call_id="call_0",
+                record_id="1",
+                field="clinical_guidelines",
+                asserted_value="First-Line Treatment",
+            )
+        ],
+        document_citations=[_chunk_citation()],
+    )
+
+    result = check_claim(claim, index, corpus_index=corpus_index)
+
+    assert result.passed is False
+    # Both citations still reported (never short-circuited) -- the document
+    # citation genuinely verifies; only the fabricated source_ref fails.
+    assert len(result.citation_results) == 2
+    source_ref_result, document_result = result.citation_results
+    assert document_result.status is CitationStatus.VALID
+    assert source_ref_result.status is CitationStatus.UNKNOWN_RECORD
+
+
 def test_claim_with_only_document_citations_all_valid_passes():
     fact_index = _fact_index(_RAW_LAB_CITATION)
     claim = Claim(
