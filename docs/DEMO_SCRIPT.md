@@ -197,7 +197,7 @@ three beats were measured against.
    docker exec development-easy-agent-1 mkdir -p /data/repo_ingest/fixtures
    docker cp ../../services/copilot-agent/tests/fixtures/lab_report_synthetic.pdf \
      development-easy-agent-1:/data/repo_ingest/fixtures/lab_report_synthetic.pdf
-   docker cp scripts/ingest_demo_pdf.py \
+   docker cp ../../services/copilot-agent/scripts/ingest_demo_pdf.py \
      development-easy-agent-1:/data/repo_ingest/ingest_demo_pdf.py
    docker exec -e OLLAMA_MODEL=qwen2.5vl:7b -w /app development-easy-agent-1 \
      python /data/repo_ingest/ingest_demo_pdf.py 1 /data/repo_ingest/fixtures/lab_report_synthetic.pdf

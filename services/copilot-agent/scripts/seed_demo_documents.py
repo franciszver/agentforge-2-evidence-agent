@@ -57,7 +57,13 @@ only reachable from the host, not from inside ``agent``). This module is
 still correct wherever ``OLLAMA_BASE_URL`` genuinely is host-reachable
 (e.g. a different network topology, or a future dev-stack change that
 publishes a host port for ``ollama``) -- it is the topology assumption that
-was wrong, not this function.
+was wrong, not this function. Also host-only for a second, independent
+reason: this module's ``_LAB_PDF_FIXTURE`` resolves under ``tests/``, and
+``.dockerignore`` excludes ``tests/`` from every built image -- even with
+network access to ``ollama`` from inside a container, this exact module
+could never find its own fixture there. ``scripts/ingest_demo_pdf.py``
+sidesteps this too: the fixture is `docker cp`'d in explicitly (setup step
+5), not read from the image.
 """
 
 from __future__ import annotations
