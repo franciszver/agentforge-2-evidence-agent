@@ -584,7 +584,16 @@ def run_verification(
     verdict_result = compute_verdict(claim_results, allergy_conflicts, interactions)
     _logger.info(
         "verification computed",
-        extra={"verdict": verdict_result.verdict.value, "claim_count": len(claim_results)},
+        extra={
+            "verdict": verdict_result.verdict.value,
+            "claim_count": len(claim_results),
+            # (issue #93, Option C) non-PHI: counts only, never claim text
+            # or patient data. Surfaces per-turn how many claims failed
+            # re-validation (including the now-parseable zero-citation
+            # case, app.schemas.verification.Claim's docstring) without
+            # needing to correlate against a separate trace-store lookup.
+            "stripped_claim_count": verdict_result.stripped_claim_count,
+        },
     )
     return verdict_result, rendered
 
