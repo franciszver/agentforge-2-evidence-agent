@@ -16,7 +16,7 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "Since there are no scheduled appointments, we should check the most recent encounter to determine the next step.",
+        "reason": "Since there are no scheduled appointments, we need to determine the next step for follow-up based on his condition and the standard of care.",
         "tool": "get_encounters",
         "tool_args": null
       },
@@ -25,27 +25,9 @@
     {
       "kind": "extract",
       "response": {
-        "action": "call_tool",
-        "final_answer": null,
-        "reason": "No encounters or appointments found, so we need to check the patient's summary for any general information or next steps.",
-        "tool": "get_patient_summary",
-        "tool_args": null
-      },
-      "schema": "PlannerDecision"
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "summary": "The patient's first name is Eval and the last name is Patient."
-      },
-      "schema": "QuarantineSummary"
-    },
-    {
-      "kind": "extract",
-      "response": {
         "action": "answer",
-        "final_answer": "Since there are no scheduled appointments and no recent encounters, it would be appropriate to schedule a follow-up appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
-        "reason": "The patient's summary indicates no medications, allergies, or problems, and no recent labs, vitals, encounters, or appointments. The next step would be to schedule a follow-up appointment.",
+        "final_answer": "Given his elevated blood pressure and the need to monitor lifestyle changes, it is recommended to schedule a follow-up appointment within 2-4 weeks.",
+        "reason": "There are no recent encounters or scheduled appointments. It is recommended to schedule a follow-up appointment within 2-4 weeks to monitor his blood pressure and assess the effectiveness of lifestyle changes.",
         "tool": null,
         "tool_args": null
       },
@@ -53,13 +35,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient, Eval Patient, has no scheduled appointments, no encounters, and no recorded medications, allergies, problems, labs, or vitals. Since there is no recent encounter or appointment, there is no specific follow-up date provided in the data. The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
+      "response": "Since there are no scheduled appointments and no recent encounters, it is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor his blood pressure and assess the effectiveness of the lifestyle changes. The clinician should determine the appropriate time based on the patient's current condition and standard care guidelines.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient, Eval Patient, has no scheduled appointments, no encounters, and no recorded medications, allergies, problems, labs, or vitals. Since there is no recent encounter or appointment, there is no specific follow-up date provided in the data. The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes.",
+        "answer": "Since there are no scheduled appointments and no recent encounters, it is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor his blood pressure and assess the effectiveness of the lifestyle changes. The clinician should determine the appropriate time based on the patient's current condition and standard care guidelines.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -72,117 +54,47 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "0",
-                "field": "appointment_count",
+                "asserted_value": "4-6 weeks",
+                "field": "follow_up_interval",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_0"
               }
             ],
-            "text": "The patient, Eval Patient, has no scheduled appointments."
+            "text": "It is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor blood pressure."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "0",
-                "field": "encounter_count",
+                "asserted_value": "assess effectiveness of lifestyle changes",
+                "field": "follow_up_purpose",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_0"
               }
             ],
-            "text": "The patient, Eval Patient, has no encounters."
+            "text": "The follow-up appointment should also assess the effectiveness of the lifestyle changes."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "0",
-                "field": "medication_count",
+                "asserted_value": "based on patient's current condition and standard care guidelines",
+                "field": "follow_up_guidance",
                 "record_id": "0",
-                "tool_call_id": "call_2"
-              }
-            ],
-            "text": "The patient, Eval Patient, has no recorded medications."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
+                "tool_call_id": "call_0"
+              },
               {
-                "asserted_value": "0",
-                "field": "allergy_count",
+                "asserted_value": "3-6 months",
+                "field": "follow_up_cadence",
                 "record_id": "0",
-                "tool_call_id": "call_2"
+                "tool_call_id": "call_0"
               }
             ],
-            "text": "The patient, Eval Patient, has no recorded allergies."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
-              {
-                "asserted_value": "0",
-                "field": "problem_count",
-                "record_id": "0",
-                "tool_call_id": "call_2"
-              }
-            ],
-            "text": "The patient, Eval Patient, has no recorded problems."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
-              {
-                "asserted_value": "0",
-                "field": "recent_lab_count",
-                "record_id": "0",
-                "tool_call_id": "call_2"
-              }
-            ],
-            "text": "The patient, Eval Patient, has no recent labs recorded."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
-              {
-                "asserted_value": "0",
-                "field": "vital_count",
-                "record_id": "0",
-                "tool_call_id": "call_2"
-              }
-            ],
-            "text": "The patient, Eval Patient, has no recorded vitals."
-          },
-          {
-            "document_citations": [
-              {
-                "field_or_chunk_id": "hypertension-lifestyle#follow-up-cadence",
-                "page_or_section": "Follow-Up Cadence",
-                "quote_or_value": "Elevated blood pressure or Stage 1 hypertension managed with lifestyle alone: recheck at roughly 3-6 months to assess response before deciding whether to add pharmacotherapy.",
-                "source_id": "hypertension-lifestyle",
-                "source_type": "guideline_chunk"
-              }
-            ],
-            "source_refs": [
-              {
-                "asserted_value": "0",
-                "field": "appointment_count",
-                "record_id": "0",
-                "tool_call_id": "call_2"
-              }
-            ],
-            "text": "The clinician should consider scheduling a new appointment to monitor his blood pressure and assess the effectiveness of the lifestyle changes."
+            "text": "The clinician should determine the appropriate time for the follow-up based on the patient's current condition and standard care guidelines."
           }
         ]
       },
       "schema": "VerifiedAnswer"
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "reason": "The QUOTE suggests rechecking blood pressure after 3-6 months to assess response to lifestyle changes, which supports the CLAIM that a new appointment should be scheduled to monitor blood pressure and assess lifestyle changes.",
-        "verdict": "supported"
-      },
-      "schema": "SemanticSupportJudgement"
     }
   ]
 }
