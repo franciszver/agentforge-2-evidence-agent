@@ -99,6 +99,43 @@ _CHAT_MAX_TOKENS = 1536
 _EXTRACT_MAX_TOKENS = 2560
 
 
+def _retry_feedback_message(exc: Exception, finish_reason: str | None) -> str:
+    """Issue #93 (fix 2/4): a SPECIFIC, actionable feedback message describing
+    what went wrong with the previous ``extract`` attempt, appended as a new
+    ``user`` turn before the next retry (see :meth:`LlamaServerClient.extract`).
+
+    Deliberately generic to the *shape* of the failure (truncation / schema
+    violation / invalid JSON), not to any particular schema's field
+    semantics -- this client has no notion of what ``Claim``/``PlannerDecision``
+    mean, only what pydantic/JSON told it went wrong. Never echoes the
+    model's actual (possibly PHI/corpus-bearing) prior output -- only
+    validation metadata (field paths, finish_reason), matching this module's
+    existing log-safety discipline (see module docstring, ``LlamaServerError``).
+    """
+    if finish_reason == "length":
+        return (
+            "Your previous response was cut off before it finished -- it ran past the "
+            "token limit before completing valid JSON. Respond again with the SAME "
+            "schema, but be more concise: keep every quoted value/summary short and "
+            "complete rather than verbose, so the whole response fits."
+        )
+    if isinstance(exc, ValidationError):
+        field_paths = sorted({".".join(str(part) for part in error["loc"]) for error in exc.errors()})
+        fields = ", ".join(field_paths) if field_paths else "one or more fields"
+        return (
+            "Your previous response did not match the required schema -- the problem "
+            f"field(s): {fields}. Respond again with valid JSON that matches the schema "
+            "exactly: every required field must be present and of the correct type, and "
+            "every claim must carry at least one citation if it asserts a specific "
+            "fact from the provided data."
+        )
+    return (
+        "Your previous response was not valid JSON. Respond again with ONLY valid JSON "
+        "matching the schema -- no extra prose, no markdown code fences, no commentary "
+        "before or after the JSON object."
+    )
+
+
 class LlamaServerError(LLMEngineError):
     """Raised when a llama-server request or constrained extraction fails.
 
@@ -307,20 +344,30 @@ class LlamaServerClient:
         _logger.info("llama-server extract call", extra={"model": self._model, "schema": schema.__name__})
         messages = self._normalize_messages(prompt_or_messages)
         json_schema = schema.model_json_schema()
-        body = self._build_body(
-            messages,
-            stream=False,
-            options=options,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": True},
-            },
-            max_tokens=_EXTRACT_MAX_TOKENS,
-        )
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": True},
+        }
 
+        # Issue #93 (fix 2/4): ``retry_messages`` starts as a copy of the
+        # caller's original messages and grows by one feedback ``user``
+        # turn per failed attempt (see ``_retry_feedback_message`` below) --
+        # so attempt 2+ is not a blind re-roll of attempt 1's exact prompt,
+        # it tells the model SPECIFICALLY what was wrong (invalid JSON /
+        # schema-validation failure naming the offending field path /
+        # truncated output) and asks for a fix, giving each retry a genuinely
+        # different (and better-informed) chance to succeed.
+        retry_messages = list(messages)
         last_finish_reason: str | None = None
         last_content_len: int | None = None
         for attempt in range(1, self._max_retries + 1):
+            body = self._build_body(
+                retry_messages,
+                stream=False,
+                options=options,
+                response_format=response_format,
+                max_tokens=_EXTRACT_MAX_TOKENS,
+            )
             start_ts = time.time()
             try:
                 response = self._post(_CHAT_COMPLETIONS_PATH, body)
@@ -372,6 +419,10 @@ class LlamaServerClient:
                         "content_len": content_len,
                     },
                 )
+                if will_retry:
+                    retry_messages = retry_messages + [
+                        {"role": "user", "content": _retry_feedback_message(exc, finish_reason)}
+                    ]
                 continue
             self.call_stats.append(
                 LlmCallStats(model=self._model, start_ts=start_ts, end_ts=time.time(), ok=True, tokens_in=tokens_in, tokens_out=tokens_out)

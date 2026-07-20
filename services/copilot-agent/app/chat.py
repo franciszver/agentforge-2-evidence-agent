@@ -654,6 +654,16 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     # instead of paying for a second httpx.Client/connection pool -- only
     # construct a distinct client when the engine flag actually selects
     # llama-server.
+    # KNOWN GAP (PR #98 review): _EVIDENCE_MIN_RELEVANCE_SCORE's 0.5 floor
+    # was calibrated against app/data/reranker_scores.json, which is
+    # stamped model="qwen3:4b" (Ollama). Default copilot_llm_engine is
+    # "llama_server" (Qwen3-8B-Q5, see llama_server_model above), so the
+    # PRODUCTION reranker scorer below is NOT the model the threshold was
+    # measured against by default -- a future model swap on either side
+    # (fixture regen model, or llama_server_model) can silently invalidate
+    # 0.5 without any test catching it, since the fixture and the flag
+    # default are independently declared. Not fixed here -- see PR #98's
+    # description for the disclosed gap; flagged rather than re-guessed.
     text_llm_client = get_text_llm_client(settings) if _wants_llama_server(settings) else ollama_client
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
@@ -680,6 +690,72 @@ def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWor
 
 
 _EVIDENCE_RETRIEVAL_TOP_K = 3
+
+# Issue #93 (fix 1/4): a relevance-score floor applied to the reranked pool
+# BEFORE it is handed to the claim extractor, so a weak/irrelevant chunk that
+# merely survived into the top-``_EVIDENCE_RETRIEVAL_TOP_K`` never adds
+# extraction-time token pressure or citation-attachment noise for no benefit.
+#
+# 0.5 was chosen by inspecting the actual score distribution recorded in
+# ``app/data/reranker_scores.json`` (5 golden queries, real Ollama pointwise
+# relevance scores) rather than guessed: every query's genuinely-relevant
+# chunk(s) score >=0.87, and every remaining candidate falls straight through
+# a gap to <=0.35 (0.35, 0.21, or 0.0) -- there is no query where a real match
+# sits in the 0.35-0.87 band. E.g. "What blood pressure counts as stage 2
+# hypertension?" -> [0.99, 0.0, 0.0, ...]: today's unconditional top_k=3 hands
+# the extractor two zero-relevance chunks alongside the one that matters.
+# 0.5 sits squarely in that empty gap, so it cleanly separates "the model
+# actually needs this" from "hybrid retrieval's tail" without being close
+# enough to either cluster to be sensitive to the exact float. ``top_k``
+# itself is left at 3 (not reduced) -- it remains the ceiling on the pool;
+# this floor is what actually shrinks what reaches the extractor on the
+# (common) case where fewer than ``top_k`` candidates are truly relevant.
+_EVIDENCE_MIN_RELEVANCE_SCORE = 0.5
+
+
+def _filter_by_relevance_score(
+    chunks: list[RerankedChunk], min_score: float = _EVIDENCE_MIN_RELEVANCE_SCORE
+) -> list[RerankedChunk]:
+    """Drop reranked chunks scoring below ``min_score`` (see
+    ``_EVIDENCE_MIN_RELEVANCE_SCORE`` for the threshold rationale).
+
+    Deliberately NOT folded into ``app.reranking.Reranker.rerank`` itself --
+    that primitive's own tests (``tests/test_reranking.py``) assert exact
+    ``top_k`` counts and demoted-not-dropped distractor ordering, both of
+    which a hard default filter there would break. This filter is specific
+    to the /chat evidence-retrieval boundary (this module's ``_retrieve``
+    closure below), which is the only caller that wants "fewer, better"
+    rather than "exactly top_k, reordered."
+
+    Logs every drop (score + ``chunk_id`` only -- never chunk text/content,
+    matching this module's existing log-safety discipline) so a silent
+    "found nothing" isn't indistinguishable from "found it and threw it
+    away." The all-dropped case (every retrieved chunk fell below
+    ``min_score``, so zero evidence reaches the extractor) is logged at
+    WARNING -- that is the exact silent-failure shape a plain per-drop INFO
+    line would still bury.
+    """
+    kept = [chunk for chunk in chunks if chunk.rerank_score >= min_score]
+    dropped = [chunk for chunk in chunks if chunk.rerank_score < min_score]
+    if dropped:
+        _logger.info(
+            "evidence relevance filter dropped chunks",
+            extra={
+                "dropped_count": len(dropped),
+                "kept_count": len(kept),
+                "min_score": min_score,
+                "dropped": [
+                    {"chunk_id": chunk.chunk_id, "score": chunk.rerank_score} for chunk in dropped
+                ],
+            },
+        )
+    if chunks and not kept:
+        _logger.warning(
+            "evidence relevance filter dropped all retrieved chunks; "
+            "zero evidence will reach the claim extractor",
+            extra={"dropped_count": len(dropped), "min_score": min_score},
+        )
+    return kept
 
 
 def get_evidence_retriever(
@@ -717,7 +793,7 @@ def get_evidence_retriever(
     def _retrieve(query: str) -> list[RerankedChunk]:
         result = supervisor.handle(RetrieveSubTask(query=query, k=_EVIDENCE_RETRIEVAL_TOP_K))
         chunks: list[RerankedChunk] = result.payload
-        return chunks
+        return _filter_by_relevance_score(chunks)
 
     return _retrieve
 
