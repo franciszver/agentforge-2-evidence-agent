@@ -203,6 +203,68 @@ equality against the extracted (not re-inferred) value — so the "partial
 grounding is not grounding" rule applies identically to both citation
 shapes.
 
+### Pixel bbox citation grounding: page-level fallback confirmed permanent (issue #42)
+
+P3.7 (the citation-overlay feature, `app/documents.py`) chose page-level
+source navigation (open the real source PDF at the cited page, show the
+citation's literal quote) over drawing a pixel bounding box on the source
+image, based on a single ad hoc probe: qwen2.5vl:7b's bbox grounding was
+accurate on a clean vector render of the lab-report fixture but drifted
+onto the wrong table column/row once scan-realistic rotation + noise +
+JPEG were applied. Issue #42 asked whether that one-fixture finding held
+up against a larger, more rigorous evidence base before treating it as
+permanent.
+
+**Expanded measurement (P3.9c).** 16 fixture variants — the lab-report and
+intake-form fixtures' first pages, degraded along 11 realistic-scan axes
+(rotation 0.5°/1.2°/2.0°/-1.5°, Gaussian noise, salt-and-pepper noise, JPEG
+q30, brightness/contrast shift, Gaussian blur, a photocopier toner-fade
+band, and the original rotation+noise+JPEG combo), each rendered at the
+same scale `app/ingestion.py` uses (pypdfium2, `scale=2.0`) — were sent to
+qwen2.5vl:7b via the same Ollama `/api/chat` surface `OllamaClient` uses,
+with the same schema-constrained-decoding mechanism `OllamaClient.extract()`
+uses in production (not free-form chat, which produces malformed JSON on
+this model often enough to itself be a confound). 60 field-level bbox
+requests were scored against ground-truth pixel locations computed
+analytically from the fixture-generation layout (row/column geometry is
+known at PDF-draw time; a verified point-transform carries each
+ground-truth box through rotation).
+
+Results, by document:
+
+| Document | Layout | Field-level bbox requests | Center-in-truth-box rate | Mean IoU | Max IoU |
+|---|---|---|---|---|---|
+| Lab report (6-column table) | dense, narrow columns | 48 (4 fields × 12 variants) | 6/48 = **12%** (statistically indistinguishable from chance; **0/4 = 0% even on the undegraded clean render**) | 0.005 | 0.068 |
+| Intake form (2-column label:value) | simple, wide columns | 12 (3 fields × 4 variants) | 12/12 = **100%**, unaffected by degradation | 0.048 | 0.147 |
+
+The table-layout finding is *worse* than P3.7's original one-fixture result:
+grounding fails even on the clean render, not just under degradation — the
+model consistently anchors the returned box's left edge on the **Test**
+(label) column rather than the **Value** column it was asked for,
+independent of scan noise. The simple two-column form does reliably locate
+the right *row* (center-in-truth-box holds across every degradation
+variant tested), but every returned box is far too small relative to the
+true cell (max IoU 0.147) — even the "correct" case would render a
+visibly wrong-shaped, wrong-proportioned rectangle, not a truthful tight
+box around the value.
+
+**Verdict: (b), confirmed as the permanent honest choice.** The expanded
+evidence does not merely fail to overturn P3.7's finding — it strengthens
+it into a documented, repeatable pattern (column-anchoring drift on
+multi-column layouts, undersized boxes even where row-location succeeds)
+across 4x the document/variant coverage of the original probe. Per the
+project's no-fabrication thesis ("never draw a box at guessed
+coordinates"), pixel-bbox citation grounding on qwen2.5vl:7b is not
+implemented; the page-level fallback (`app/documents.py`'s
+`GET /documents/{source_id}` + the module UI's cited-page navigation) is
+confirmed as the permanent design for document citation grounding, not a
+placeholder awaiting a follow-up. The measurement methodology (fixture
+degradation + ground-truth transform + scored bbox probe) is committed at
+`services/copilot-agent/scripts/measure_bbox_grounding.py` so a future
+recommended-tier VLM swap (§"Recommended-tier revisit" below) can be
+re-scored against the same fixture set and thresholds rather than starting
+from scratch.
+
 ### Migration Notes
 
 No changes are expected to any Week-1 (Phase 1) database table or schema.
