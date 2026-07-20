@@ -34,6 +34,41 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
+  UPDATED (issue #115, supersedes the #100 rationale below -- that rationale
+  is stale). Fresh live re-verification (`evals/runner/pipeline.run_case`
+  against the real `llama-server` container, 6+ deterministic draws,
+  `temperature=0` so every draw is byte-identical, not merely consistent)
+  shows this case's `xfail` reason is NOT "never quotes the guideline
+  verbatim" -- it reliably DOES: 3 of 5 extracted claims carry a real,
+  verbatim `document_citations` entry quoting
+  `anticoagulant-interactions#dual-antiplatelet-therapy` that passes
+  provenance re-validation (`DocumentCitationCheckResult: valid`), every
+  draw. The case still fails to verify (`blocked`, NONE_VERIFIED) because
+  the claim extractor ALSO attaches a second, FABRICATED `source_ref`
+  alongside each of those valid document citations
+  (`tool_call_id='call_0', record_id='1', field='clinical_guidelines',
+  asserted_value='Dual Antiplatelet Therapy'`) -- `field='clinical_guidelines'`
+  never appears in any real tool-result catalog entry this turn, and
+  `check_claim`'s AND-across-citations rule fails the whole claim over this
+  one extra bogus ref even though the paired document citation is genuine.
+  Separately and more fundamentally: this question states the patient's
+  medications directly ("She's on both aspirin and clopidogrel"), so the
+  planner never dispatches `get_medications` at all (trace is
+  `[get_problems, get_allergies]`, both empty) -- the extractor then
+  fabricates an entirely separate `source_ref`
+  (`tool_call_id='call_0', field='medications'`) for the "currently taking
+  both aspirin and clopidogrel" claim, citing a call/field that holds no
+  such data anywhere in the conversation. Both fabrication shapes are
+  reproduced deterministically (not a routing/mislabeling defect with a
+  reconstructable structure like issue #85's) -- see issue #115 and
+  `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Issue #115 findings" section
+  for the full trace and why this was judged NOT safely fixable via a
+  narrow coercion (the checker's `unknown_record` rejection here is
+  correct, fail-closed behavior, not a bug to route around). This case
+  remains `xfail`; the recording has been refreshed to this exact,
+  currently-reproducible draw.
+
+  --- Original #100 rationale (superseded above, kept for history) ---
   OBSERVED (issue #100, live re-verification against current main post
   PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
   non-xfail cases, but that pass reflected one stable, frozen recording from
