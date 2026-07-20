@@ -271,6 +271,14 @@ def test_schema_valid_document_citation_rejects_unknown_source_type() -> None:
         )
 
 
-def test_schema_valid_claim_requires_at_least_one_citation() -> None:
-    with pytest.raises(ValidationError):
-        Claim(text="Her A1c is 5.4%.", source_refs=[], document_citations=[])
+def test_schema_valid_claim_allows_zero_citations_at_construction() -> None:
+    # (issue #93, Option C) A zero-citation Claim no longer fails schema
+    # validation at construction/parse time -- see
+    # app.schemas.verification's module docstring. The "claim needs >=1
+    # citation to be considered valid" bar is unchanged, but enforcement
+    # moved to app.verification.check_claim/render_answer, scoped to just
+    # the one offending claim rather than the whole VerifiedAnswer, so one
+    # uncitable claim can no longer discard co-occurring valid claims.
+    claim = Claim(text="Her A1c is 5.4%.", source_refs=[], document_citations=[])
+
+    assert claim.has_citation is False

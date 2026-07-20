@@ -412,10 +412,17 @@ class ClaimCheckResult:
     @property
     def passed(self) -> bool:
         # ``all([])`` is vacuously True -- guard against a degenerate claim
-        # (zero citations) reaching this checker ever counting as verified.
-        # A real ``Claim`` can't have zero refs (P3.1's min_length=1), but
-        # nothing stops a caller from bypassing validation (e.g.
-        # ``Claim.model_construct``), so this checker fails closed anyway.
+        # (zero citations) ever counting as verified. This is THE
+        # enforcement point for "a claim needs >=1 citation" (issue #93,
+        # Option C): ``app.schemas.verification.Claim`` deliberately no
+        # longer raises on a zero-citation claim at parse time (that used to
+        # make one uncitable claim poison every co-occurring claim in the
+        # same ``VerifiedAnswer`` -- Pydantic validates list-of-models
+        # all-or-nothing), so a real ``Claim`` reaching this checker CAN have
+        # zero refs. It fails here instead, scoped to just that claim --
+        # ``app.rendering.render_answer`` strips it to a notice without
+        # touching its siblings, exactly like a claim whose citations fail
+        # re-validation for any other reason.
         return bool(self.citation_results) and all(result.passed for result in self.citation_results)
 
 
