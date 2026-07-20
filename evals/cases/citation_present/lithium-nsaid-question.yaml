@@ -27,31 +27,17 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-xfail: >
-  RE-OBSERVED (issue #106, live re-verification against current main post the
-  #85 citation-routing fix / PR #104): re-run live 11 additional times
-  through the real pipeline (`evals/runner/pipeline.run_case` and
-  `evals/runner/record.py`, production `LlamaServerClient`, no replay). The
-  `#85` routing bug does NOT apply here -- inspecting the extractor's
-  pre-coercion output directly shows the model emits a correctly-shaped
-  `document_citations` entry for `nsaid-interactions#lithium` on its own,
-  never the misrouted `source_refs` shape `_coerce_misrouted_guideline_refs`
-  targets. This is a real improvement over issue #100's original finding
-  (citation survived only 4/8 draws): the guideline citation now reliably
-  reaches `document_citations` and passes provenance re-validation 11/11
-  times. The case still never reaches `verified`, for the SAME specific
-  reason as `a1c-target-question`'s re-observation above: the model's
-  answer restates the interaction caution across two separate claims (e.g.
-  "...requires caution, as ibuprofen can increase the risk of lithium
-  toxicity." and "It is important to monitor the patient closely for signs
-  of lithium toxicity..."), both citing the SAME
-  `nsaid-interactions#lithium` chunk -- the semantic-support judge validates
-  the first occurrence but deterministically downgrades the second
-  (monitoring-advice) restatement to `not_semantically_supported` (11/11
-  draws), stripping that claim and keeping the verdict at
-  `partially_verified`. A claim-splitting / semantic-support-judge-
-  consistency issue, not a citation-routing or planner-answer-composition
-  (#105) issue -- documented as a new, separate follow-up rather than fixed
-  here (out of #106's scope). The recording has been re-captured against
-  current main with this (now fully deterministic) draw -- see
-  docs/MODEL_AND_HARDWARE_SELECTION.md for the updated baseline discussion.
+# issue #108 FIXED (live re-verification against current main): the
+# semantic-support judge previously scored the model's two restatements of
+# the same lithium/NSAID interaction caution (both citing the identical
+# `nsaid-interactions#lithium` quote) inconsistently -- validating the
+# first, deterministically downgrading the second (monitoring-advice)
+# restatement, 11/11 prior draws. `app.semantic_support.apply_semantic_support`
+# now groups DocumentCitation results by exact evidence identity
+# (source_type, source_id, field_or_chunk_id, quote_or_value) and judges
+# each distinct identity ONCE, so duplicate claims citing identical
+# evidence can never disagree. Re-run live 8 times through the real
+# pipeline (`evals/runner/pipeline.run_case`, production
+# `LlamaServerClient`, no replay) post-fix: 8/8 draws reach `verified`. The
+# committed recording below captures a typical (now-passing) `verified`
+# draw.
