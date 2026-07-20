@@ -8,7 +8,7 @@
  *
  * @package   OpenEMR\Modules\ClinicalCopilot
  * @link      https://www.open-emr.org
- * @author    Francisco de Guzman <ciscodg@gmail.com>
+ * @author    Francisco de Guzman <franciszver@outlook.com>
  * @copyright Copyright (c) 2026 Francisco de Guzman
  * @license   https://github.com/openemr/openemr/blob/master/LICENSE GNU General Public License 3
  */
