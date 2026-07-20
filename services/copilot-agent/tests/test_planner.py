@@ -18,7 +18,7 @@ import httpx
 
 from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
-from app.planner import Planner, ToolSpec
+from app.planner import _FEW_SHOT_EXAMPLES, Planner, ToolSpec
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
@@ -283,6 +283,22 @@ def test_system_prompt_sent_to_ollama_includes_no_think_and_every_registered_too
     assert "/no_think" in system_message
     assert ToolName.GET_MEDICATIONS.value in system_message
     assert str(BOUND_PATIENT_ID) in system_message
+
+
+def test_few_shot_examples_include_a_vitals_domain_example():
+    """Issue #93 (fix 4/4, mitigation): before this fix, every OTHER
+    domain tool (medications, encounters, labs, allergies) had a dedicated
+    few-shot example demonstrating when to call it, but vitals had none --
+    a plausible contributor to the observed live nondeterminism where an
+    identical vitals-needing question (e.g. the bp-stage2-question eval
+    case's "What was his last blood pressure reading...") sometimes skipped
+    ``get_vitals`` and sometimes did not. This does not PROVE the mechanism
+    (that would require live GPU-level tracing -- see the PR body's honest
+    accounting of what is confirmed vs. hypothesis); it pins the mitigation
+    actually shipped: a concrete vitals example is present, in the same
+    ``call_tool`` -> ``get_vitals`` shape as every other domain example."""
+    assert '"tool": "get_vitals"' in _FEW_SHOT_EXAMPLES
+    assert "blood pressure" in _FEW_SHOT_EXAMPLES.lower()
 
 
 # --- verifier-only raw channel + safety boundary (P3.2 / #130) -----------------
