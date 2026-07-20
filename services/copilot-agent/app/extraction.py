@@ -82,7 +82,8 @@ from app.check_drug_interactions import check_drug_interactions
 from app.ollama_client import LLMEngineError, LlmCallStats
 from app.planner import PlannerResult
 from app.rendering import RenderedAnswer, render_answer
-from app.schemas.ingestion import Citation
+from app.schemas.common import SourceRef
+from app.schemas.ingestion import Citation, DocumentCitation
 from app.schemas.planner import ToolName
 from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
@@ -378,7 +379,7 @@ class ClaimExtractor:
             extracted = self._ollama.extract(messages, VerifiedAnswer)
         except LLMEngineError:
             return []
-        return list(extracted.claims)
+        return _coerce_misrouted_guideline_refs(list(extracted.claims), retrieved_chunks)
 
 
 def _records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -423,6 +424,77 @@ def _build_guideline_catalog(chunks: Sequence[RerankedChunk]) -> str:
         lines.append(f'{chunk.chunk_id} (source_id="{chunk.doc_id}"): "{chunk.title}" / {chunk.section}')
         lines.append(f"  text: {chunk.text}")
     return "\n".join(lines)
+
+
+# Real tool_call_ids are always exactly this shape (CacheIndex.from_raw_
+# results' positional convention -- see app.verification's module docstring,
+# decision 2), so it can never collide with a corpus doc_id. Used below to
+# make the coercion's "this ref was never a real tool citation" check
+# airtight rather than merely "no chunk happened to match" -- belt and
+# suspenders alongside the exact-chunk-id match itself.
+_REAL_TOOL_CALL_ID_RE = re.compile(r"^call_\d+$")
+
+
+def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[RerankedChunk]) -> list[Claim]:
+    """Reclassify a ``source_ref`` that is actually a misrouted guideline
+    citation into a proper ``DocumentCitation`` (issue #85 root cause).
+
+    **Observed live, deterministically** (see issue #85's PR description for
+    the full live-run trace): qwen3-8b, asked to cite a retrieved guideline
+    chunk via ``_GUIDELINE_INSTRUCTIONS``' ``document_citations`` shape,
+    instead sometimes reconstructs the chunk's OWN ``<doc_id>#<section-
+    slug>`` id (``app.schemas.retrieval.RetrievedChunk.chunk_id``'s
+    documented format) across TWO ``source_refs`` fields --
+    ``tool_call_id="<doc_id>"`` + ``record_id="<section-slug>"`` -- with
+    ``field="text"`` and the verbatim quote as ``asserted_value``, rather
+    than emitting one ``document_citations`` entry. ``check_source_ref``
+    correctly fails this ``UNKNOWN_TOOL_CALL`` (no real tool call has that
+    id) -- but ``check_claim`` ANDs across every citation on a claim, so this
+    ONE malformed ref drags the WHOLE claim down with it, including any
+    valid chart-data citations bundled in the same claim. The guideline
+    quote itself is genuine and verbatim; it simply never reaches
+    ``document_citations`` where it could verify.
+
+    Narrowly scoped to avoid ever touching a genuine tool citation: real
+    ``tool_call_id``s are always ``call_<i>`` (``_REAL_TOOL_CALL_ID_RE``),
+    which can never equal a corpus ``doc_id``, AND the reconstructed id must
+    exactly match a chunk THIS turn actually retrieved (never invented, never
+    a stale/different turn's chunk) -- so a genuine tool ref is never at risk
+    of reclassification, and a hallucinated doc_id/section that doesn't
+    match any retrieved chunk is left as-is (still fails ``UNKNOWN_TOOL_CALL``
+    exactly as before, same fail-closed behavior for a real hallucination).
+    A no-op (returns ``claims`` unchanged) when ``chunks`` is empty."""
+    if not chunks:
+        return claims
+    chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+
+    coerced: list[Claim] = []
+    for claim in claims:
+        kept_refs: list[SourceRef] = []
+        new_document_citations = list(claim.document_citations)
+        changed = False
+        for ref in claim.source_refs:
+            if _REAL_TOOL_CALL_ID_RE.match(ref.tool_call_id):
+                kept_refs.append(ref)
+                continue
+            chunk = chunk_by_id.get(f"{ref.tool_call_id}#{ref.record_id}")
+            if chunk is None or not ref.asserted_value or not ref.asserted_value.strip():
+                kept_refs.append(ref)
+                continue
+            new_document_citations.append(
+                DocumentCitation(
+                    source_type="guideline_chunk",
+                    source_id=chunk.doc_id,
+                    page_or_section=chunk.section,
+                    field_or_chunk_id=chunk.chunk_id,
+                    quote_or_value=ref.asserted_value,
+                )
+            )
+            changed = True
+        if changed:
+            claim = claim.model_copy(update={"source_refs": kept_refs, "document_citations": new_document_citations})
+        coerced.append(claim)
+    return coerced
 
 
 def _build_fact_catalog(citations: Sequence[Citation]) -> str:
