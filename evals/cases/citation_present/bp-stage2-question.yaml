@@ -37,3 +37,20 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+xfail: >
+  OBSERVED (issue #100, live re-verification against current main post
+  PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
+  non-xfail cases, but that pass reflected one stable, frozen recording from
+  an earlier draw -- it was never re-checked against a FRESH live draw. Ten
+  independent fresh live runs through the real pipeline
+  (`evals/runner/pipeline.run_case`, production `LlamaServerClient`, no
+  replay) landed on `partially_verified` with zero `document_citations`
+  10/10 times, deterministically: the model answers only from the
+  `get_vitals` chart data (148/94 mmHg, correctly categorized as elevated)
+  and never surfaces or quotes the retrieved blood-pressure-categories
+  guideline chunk in its final answer -- the same chart-data-only pattern
+  already documented for several sibling xfail'd cases in this category
+  (see e.g. `lipid-panel-ldl-question`). The recording has been re-captured
+  against current main to honestly reflect this typical outcome rather than
+  the stale lucky draw it replaced -- see docs/MODEL_AND_HARDWARE_SELECTION.md
+  for the updated baseline discussion.

@@ -33,3 +33,17 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+xfail: >
+  OBSERVED (issue #100, live re-verification against current main post
+  PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
+  non-xfail cases, but that pass reflected one stable, frozen recording from
+  an earlier draw. Eight independent fresh live runs through the real
+  pipeline (`evals/runner/pipeline.run_case`, production `LlamaServerClient`,
+  no replay) landed on `blocked` (NONE_VERIFIED, fail-closed) with zero
+  `document_citations` 8/8 times, deterministically: the model discusses
+  the aspirin/clopidogrel combination in general terms but never quotes the
+  retrieved dual-antiplatelet-therapy guideline chunk verbatim, so no claim
+  has anything to verify against. The recording has been re-captured against
+  current main to honestly reflect this typical outcome rather than the
+  stale lucky draw it replaced -- see docs/MODEL_AND_HARDWARE_SELECTION.md
+  for the updated baseline discussion.
