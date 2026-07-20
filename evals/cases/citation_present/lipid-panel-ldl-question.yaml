@@ -35,13 +35,31 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model
-  answers only from the chart data (verdict verified on the two chart-data
-  claims) and never surfaces or quotes the LDL reference-range guideline
-  passage in its final answer -- so the claim extractor emits zero
-  document_citations and citation_present never fires. Same
-  chart-data-only pattern this case showed under qwen3:4b (see prior xfail
-  history in git blame), just a different specific model. An honest,
-  reproducible P3G.1 finding, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  OBSERVED (re-recorded #113, qwen3-8b via llama-server): the prior
+  "chart-data-only" rationale (re-recorded #58) is STALE -- it does not
+  reproduce. Fresh live re-verification (10 draws, evals.runner.pipeline.
+  run_case, production LlamaServerClient, no replay; extraction is
+  temperature=0 and every draw was byte-identical) shows the model DOES
+  surface and quote the LDL reference-range guideline passage verbatim in
+  its final answer every time ("...according to the clinical guideline").
+  The claim extractor also attempts a citation for it every time -- but
+  misroutes it as a source_ref (tool_call_id="lipid-panel-reference",
+  record_id="lipid-panel-reference", field="text") instead of emitting a
+  proper document_citations entry. This is a NEW variant of the #85-lineage
+  SourceRef-misrouting defect: #85's existing coercion
+  (_coerce_misrouted_guideline_refs in app/extraction.py) only reconstructs
+  a chunk id from tool_call_id="<doc_id>" + record_id="<section-slug>", but
+  here the model puts the doc_id in BOTH fields (no section slug), so the
+  reconstructed id ("lipid-panel-reference#lipid-panel-reference") never
+  matches the real chunk id
+  ("lipid-panel-reference#general-reference-categories") and the ref is
+  correctly left failing UNKNOWN_TOOL_CALL. check_claim's AND-aggregation
+  then fails the whole "considered high" claim despite the guideline quote
+  being genuine and verbatim (not fabricated, unlike #115's finding for
+  other cases) -- so citation_present never fires, 10/10 draws
+  partially_verified. Filed as a new tracked defect, issue #125, rather
+  than fixed here -- issue #113 itself is scoped to the relevance-floor
+  question, and this extraction-layer coercion gap is a distinct concern
+  from that. citation_present remains 3/12; this case does not qualify to
+  un-xfail. The assertions are the correct target and are deliberately not
+  weakened.
