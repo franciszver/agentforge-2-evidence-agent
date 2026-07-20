@@ -55,6 +55,27 @@ A claim's ``SourceRef`` citations and any citation that had already failed
 provenance are passed through completely unchanged -- this function only
 ever downgrades a citation from ``VALID``, never upgrades one, and never
 re-checks a result that already failed for a different reason.
+
+**Duplicate-claim consistency (issue #108).** The model sometimes restates
+one guideline-backed fact as two (or more) separate claims in the same
+answer -- e.g. "...above the target range..." and "...is not at target." --
+that both cite the exact same evidence: an identical ``DocumentCitation``
+(same ``source_type``/``source_id``/``field_or_chunk_id``/``quote_or_value``,
+byte-for-byte, not a fuzzy paraphrase match). Judging each claim's citation
+with its own independent LLM call risked exactly the failure observed live:
+the two calls disagreeing purely from call-to-call variance on the
+paraphrased wording, downgrading one restatement while passing the other,
+even though both cite identical, already-provenance-verified evidence. Since
+the evidence is provably identical (not just similar), ``apply_semantic_support``
+groups every currently-``VALID`` ``DocumentCitation`` across ALL passing
+claims by that identity, judges each DISTINCT identity ONCE (against the
+union of the claim texts that cite it), and applies that single verdict to
+every claim sharing it -- so duplicates can never land on different verdicts,
+and (as a side effect) fewer judge calls are made when duplication occurs.
+Citations with distinct identities (even if from the same source document)
+are judged independently exactly as before -- this is an exact-identity
+dedup, never a semantic/near-duplicate merge, which would risk conflating
+unrelated claims that happen to cite the same source loosely.
 """
 
 from __future__ import annotations
@@ -66,6 +87,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from app.ollama_client import LLMEngineError
+from app.schemas.ingestion import DocumentCitation
 from app.verification import (
     AnyCitationCheckResult,
     CitationStatus,
@@ -156,10 +178,39 @@ def judge_support(claim_text: str, quote: str, judge: SemanticSupportJudgeLike) 
     return judgement.verdict is SupportVerdict.SUPPORTED
 
 
-def _maybe_downgrade(
-    citation_result: AnyCitationCheckResult, claim_text: str, judge: SemanticSupportJudgeLike
+# Identity key for grouping duplicate ``DocumentCitation``s across claims
+# (issue #108): the exact evidence span, byte-for-byte -- never a
+# fuzzy/paraphrase match. Two citations sharing this key cite the SAME
+# guideline/document text, verbatim.
+_CitationIdentity = tuple[str, str, str, str]
+
+
+def _citation_identity(document_citation: DocumentCitation) -> _CitationIdentity:
+    return (
+        document_citation.source_type,
+        document_citation.source_id,
+        document_citation.field_or_chunk_id,
+        document_citation.quote_or_value,
+    )
+
+
+def _combined_claim_text(claim_texts: Sequence[str]) -> str:
+    """Join the distinct claim texts that cite one identical evidence span
+    into a single combined text for one shared judge call -- de-duplicating
+    exact repeats (order-preserving) so a claim triplicated verbatim doesn't
+    change the prompt shape from a claim duplicated once."""
+    seen: dict[str, None] = {}
+    for text in claim_texts:
+        seen.setdefault(text, None)
+    return " ".join(seen)
+
+
+def _apply_cached_verdict(
+    citation_result: AnyCitationCheckResult,
+    verdicts: dict[_CitationIdentity, bool],
 ) -> AnyCitationCheckResult:
-    """Re-judge one already-``VALID`` citation result; downgrade to
+    """Apply the (already-computed) shared verdict for one already-``VALID``
+    citation result's evidence identity; downgrade to
     ``NOT_SEMANTICALLY_SUPPORTED`` on anything but an affirmative verdict.
     Passes through unchanged (a) any ``CitationCheckResult`` -- SourceRefs are
     out of scope, see module docstring -- and (b) any result that isn't
@@ -168,7 +219,7 @@ def _maybe_downgrade(
         return citation_result
     if citation_result.status is not CitationStatus.VALID:
         return citation_result
-    if judge_support(claim_text, citation_result.document_citation.quote_or_value, judge):
+    if verdicts[_citation_identity(citation_result.document_citation)]:
         return citation_result
     return DocumentCitationCheckResult(
         document_citation=citation_result.document_citation,
@@ -188,15 +239,38 @@ def apply_semantic_support(
     re-judging a citation that already failed for a different reason would
     only ever obscure why it failed. Order-preserving, one-to-one with
     ``claim_results``, same shape ``app.verification.check_claims`` already
-    guarantees."""
+    guarantees.
+
+    Two passes (issue #108): first, every currently-``VALID``
+    ``DocumentCitation`` across ALL passing claims is grouped by its exact
+    evidence identity (``_citation_identity``) and judged EXACTLY ONCE per
+    distinct identity, against the combined text of every claim that cites
+    it -- so claims restating the identical fact from the identical evidence
+    can never be judged inconsistently. Second, that single verdict per
+    identity is applied back to every citation result sharing it."""
+    citation_texts: dict[_CitationIdentity, list[str]] = {}
+    for claim_result in claim_results:
+        if not claim_result.passed:
+            continue
+        for citation_result in claim_result.citation_results:
+            if not isinstance(citation_result, DocumentCitationCheckResult):
+                continue
+            if citation_result.status is not CitationStatus.VALID:
+                continue
+            key = _citation_identity(citation_result.document_citation)
+            citation_texts.setdefault(key, []).append(claim_result.claim.text)
+
+    verdicts: dict[_CitationIdentity, bool] = {
+        key: judge_support(_combined_claim_text(texts), key[3], judge) for key, texts in citation_texts.items()
+    }
+
     results: list[ClaimCheckResult] = []
     for claim_result in claim_results:
         if not claim_result.passed:
             results.append(claim_result)
             continue
         downgraded_citations = [
-            _maybe_downgrade(citation_result, claim_result.claim.text, judge)
-            for citation_result in claim_result.citation_results
+            _apply_cached_verdict(citation_result, verdicts) for citation_result in claim_result.citation_results
         ]
         results.append(ClaimCheckResult(claim=claim_result.claim, citation_results=downgraded_citations))
     return results

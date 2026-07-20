@@ -33,31 +33,20 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-xfail: >
-  RE-OBSERVED (issue #106, live re-verification against current main post the
-  #85 citation-routing fix / PR #104): re-run live 6 additional times through
-  the real pipeline (`evals/runner/pipeline.run_case` and
-  `evals/runner/record.py`, production `LlamaServerClient`, no replay). The
-  `#85` routing bug does NOT apply here -- inspecting the extractor's
-  pre-coercion output directly shows the model emits a correctly-shaped
-  `document_citations` entry for `a1c-targets#target-ranges` on its own, never
-  the misrouted `source_refs` shape `_coerce_misrouted_guideline_refs`
-  targets. The guideline citation now reliably reaches `document_citations`
-  and passes provenance re-validation 6/6 times (an improvement over issue
-  #100's original finding of "surfaced in every run" but not always framed
-  this precisely). The case still does not reach `verified`, for a DIFFERENT,
-  more specific reason than #100 originally described: the model's answer
-  restates the same target-range fact as two separate claims (e.g. "...above
-  the target range..." and "...is not at target."), both citing the SAME
-  `a1c-targets#target-ranges` chunk -- and the semantic-support judge is
-  inconsistent across the two, correctly validating one occurrence but
-  downgrading the other (typically the terser restatement) to
-  `not_semantically_supported`, which strips that claim and keeps the overall
-  verdict at `partially_verified` (5/6 draws; 1/6 avoided the duplicate
-  restatement entirely and reached `verified`). This is a claim-splitting /
-  semantic-support-judge-consistency issue, not a citation-routing or
-  planner-answer-composition (#105) issue -- documented as a new, separate
-  follow-up rather than fixed here (out of #106's scope, which is specifically
-  the #85 routing-bug shape). The recording has been re-captured against
-  current main with a typical (non-passing) draw -- see
-  docs/MODEL_AND_HARDWARE_SELECTION.md for the updated baseline discussion.
+# issue #108 FIXED (live re-verification against current main): the
+# semantic-support judge previously scored the model's two paraphrased
+# restatements of the same target-range fact (both citing the identical
+# `a1c-targets#target-ranges` quote) inconsistently -- validating one,
+# downgrading the other. `app.semantic_support.apply_semantic_support` now
+# groups DocumentCitation results by exact evidence identity (source_type,
+# source_id, field_or_chunk_id, quote_or_value) and judges each distinct
+# identity ONCE, so duplicate claims citing identical evidence can never
+# disagree. Re-run live 8 times through the real pipeline
+# (`evals/runner/pipeline.run_case`, production `LlamaServerClient`, no
+# replay) post-fix: 7/8 draws reach `verified`. The 1/8 miss is a DIFFERENT,
+# pre-existing mechanism (unrelated to #108): that one draw's answer never
+# attempted the guideline citation at all (chart-data-only, zero
+# `document_citations`) -- the same planner/extraction variance
+# `docs/MODEL_AND_HARDWARE_SELECTION.md` already discloses for this
+# hardware tier, not a judge-consistency defect. The committed recording
+# below captures a typical (now-passing) `verified` draw.
