@@ -62,42 +62,44 @@ fixture set (`docs/TEST_PLAN.md` §7's canonical-patient table):
 | Beat | Patient | pubpid | Why this patient |
 |---|---|---|---|
 | 1. Changed-value RAG moment | Susan Underwood | `2` | `multi-encounter` fixture — a seeded, more recent encounter/SOAP note on top of the demo dataset's single 2014 encounter, purpose-built for the UC1 "what changed" story (`docs/TEST_PLAN.md` §7). |
-| 2. Citation-overlay moment | Phil Belford | `1` | `allergy-conflict` fixture. Also the patient the genuinely-passing `bp-stage2-question` citation_present eval case is written against (`evals/cases/citation_present/bp-stage2-question.yaml`, `patient_id: 1`) — see "Why bp-stage2" below. |
+| 2. Citation-overlay moment | Phil Belford | `1` | `allergy-conflict` fixture. Also the patient the `bp-stage2-question` citation_present eval case is written against (`evals/cases/citation_present/bp-stage2-question.yaml`, `patient_id: 1`) — see "Why bp-stage2" below. **Note (issue #100):** this case is no longer non-`xfail` — see below. |
 | 3. Graceful-failure moment | Phil Belford | `1` | Reuses the same patient once the demo lab-report PDF (`services/copilot-agent/tests/fixtures/lab_report_synthetic.pdf`) is ingested for him — no need to juggle a fourth patient. |
 
 ### Why `bp-stage2-question` for the citation-overlay moment
 
-The `citation_present` eval category is the ONE category re-recorded under
-the semantic-support gate ON (issue #81); the committed production baseline
-is **5/12** (`docs/MODEL_AND_HARDWARE_SELECTION.md`). Not all 12 cases in
-`evals/cases/citation_present/` genuinely pass — 7 are `xfail` (documented,
-reproducible model behavior, see `docs/TEST_PLAN.md` §5 "Honest xfails, not
-gamed cases"). Verified directly by replaying the suite locally
-(`cd evals && python -m pytest test_cases.py -k "<case ids>"`) rather than
-assumed from file listings:
+**Update (issue #100): the premise below is now historical, not current —
+kept for context on how this beat was originally chosen, but do not use the
+"genuinely passing" framing when presenting.** The `citation_present` eval
+category was re-recorded under the semantic-support gate ON (issue #81), and
+at that time the committed production baseline was **5/12**
+(`docs/MODEL_AND_HARDWARE_SELECTION.md`), including `bp-stage2-question` as
+one of the 5 non-`xfail` cases. Issue #100 later re-verified that baseline
+against fresh LIVE draws of the real pipeline (not the frozen recording) and
+found it did not reproduce: `bp-stage2-question` failed to cite the
+guideline text in 10/10 fresh live runs, and the same was true for the other
+4 cases in that 5. All 5, including `bp-stage2-question`, are now honestly
+marked `xfail` — see `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Live
+re-verification (issue #100)" section. The honest current total is **0 of
+12** `citation_present` cases genuinely passing, live or on replay.
 
-**Genuinely passing (non-`xfail`) `citation_present` cases — 5 of 12:**
+`bp-stage2-question` was originally chosen as the demo moment because its
+*then-committed* recording (`evals/recordings/bp-stage2-question.json`)
+showed the model producing a document citation whose quoted guideline text
+("Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or
+higher") the P3G.1 semantic-support judge independently ruled `"supported"`.
+That recording has since been replaced (issue #100) with a fresh live draw
+that reflects the model's actual current, typical behavior — a
+`partially_verified` verdict with zero document citations, the same
+chart-data-only pattern described below in "What actually happens live."
+The case is still written against `patient_id: 1` (Phil Belford), which is
+why beats 2 and 3 still share a patient — that part of the reasoning is
+unaffected.
 
-- `a1c-target-question`
-- `bp-stage2-question`
-- `dual-antiplatelet-question`
-- `hypertension-lifestyle-followup-question`
-- `lithium-nsaid-question`
-
-**`xfail` (documented failure, do NOT use for a "look, it verified" demo
-moment) — 7 of 12:** `lipid-panel-ldl-question`, `metformin-renal-monitoring-question`,
-`nsaid-ace-inhibitor-question`, `renal-function-ace-question`,
-`statin-ck-myopathy-question`, `statin-liver-monitoring-question`,
-`warfarin-antibiotic-question`.
-
-`bp-stage2-question` is the chosen demo moment: its recording
-(`evals/recordings/bp-stage2-question.json`) shows the model producing a
-document citation whose quoted guideline text ("Stage 2 hypertension:
-systolic 140 mmHg or higher OR diastolic 90 mmHg or higher") the P3G.1
-semantic-support judge independently rules `"supported"` — a real,
-non-fabricated citation, not a scripted-looking one. It is also written
-against `patient_id: 1` (Phil Belford), which keeps beats 2 and 3 on the
-same patient, one less context switch for the presenter.
+**This beat needs a new demo case or a scripted narration change before the
+next live demo** — see "Real gaps found, NOT fixed in this PR" below. This
+docs PR (issue #100) is a measurement/re-recording pass, not a demo-content
+pass, so picking and validating a replacement citation moment is out of
+scope here and left as an explicit follow-up.
 
 **Honesty note on what "citation overlay" means here.** The module's
 citation UI (`copilot-chat.js`) renders every claim's citation chips inline
@@ -296,10 +298,12 @@ could trigger live end-to-end.
 **Originally scripted:** ask about his last BP reading, expect 148/94 mmHg
 categorized as Stage 2 hypertension with a verified `guideline_chunk`
 citation quoting `evals/cases/citation_present/bp-stage2-question.yaml`'s
-corpus text — the one `citation_present` eval case proven to genuinely
-verify under the semantic-support gate (see "Why `bp-stage2-question`"
-above; that reasoning is still accurate for the *eval*, just not
-reproducible live, see below).
+corpus text — at the time this was scripted, the one `citation_present` eval
+case that verified under the semantic-support gate on its committed
+recording (see "Why `bp-stage2-question`" above). **Update (issue #100):**
+that recording has since been re-verified against fresh live draws and does
+not reliably reproduce a verified citation either — see below and
+`docs/MODEL_AND_HARDWARE_SELECTION.md`.
 
 **What actually happens live:**
 1. Switch to Phil Belford's patient dashboard, open the Co-Pilot panel.
@@ -346,12 +350,22 @@ reproducible live, see below).
    "normal range" claim did not do so in this run. That remaining gap
    (retrieval finds the right evidence; the answer doesn't get cited with
    it) is unresolved and worth a follow-up issue — see "Dry-run findings."
-6. **What to show instead, honestly, for now:** narrate the real,
-   verified-passing eval recording (`evals/recordings/bp-stage2-question.json`)
-   as the evidence for "this project's citation-verification machinery
-   catches a real Stage 2 reading and cites the exact guideline passage,
-   proven at the unit level" — rather than clicking a live citation chip
-   that, as of this dry run, isn't there for this specific live query.
+6. **Update (issue #100) — the fallback below no longer works either, do
+   not use it.** This step originally suggested narrating
+   `evals/recordings/bp-stage2-question.json` as unit-level proof the
+   citation-verification machinery works, even when the live chat didn't
+   reproduce it. Issue #100 re-verified that recording against fresh live
+   draws (10/10) and found it shows the SAME chart-data-only failure the
+   live chat shows above — the old recording was itself a stale, lucky
+   historical draw, not a representative one, and has been replaced with a
+   recording that honestly reflects current typical behavior (now `xfail`,
+   see `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Live re-verification"
+   section). There is currently no `citation_present` eval case, live or
+   recorded, that reliably demonstrates a verified guideline citation on
+   this hardware tier. Until a follow-up (see "Real gaps found, NOT fixed
+   in this PR") identifies a case that does, presenters should either skip
+   the citation-overlay claim entirely for this beat or narrate it as a
+   known current limitation rather than a proof point.
 
 ### Beat 3 — Graceful failure on an unreadable field (Phil Belford) — **measured mid-tier (RTX 3060 12 GB desktop): 22.5s**
 
@@ -505,6 +519,16 @@ Nothing below is guessed at; each item names how it was checked.
 
 ### Real gaps found, NOT fixed in this PR (follow-up needed)
 
+- **No demo-ready `citation_present` case exists any more (issue #100).**
+  `bp-stage2-question` was this script's chosen citation-overlay proof case;
+  issue #100's live re-verification found it (and the other 4 cases in the
+  then-committed 5/12 baseline) does not reliably reproduce a verified
+  guideline citation on a fresh live draw, and all 5 are now honestly
+  `xfail`. Beat 2 currently has no live-demoable or recording-level fallback
+  proof of a genuinely verified guideline citation. Needs its own follow-up:
+  either find/construct a case that reliably verifies live on this hardware
+  tier, or rescript beat 2 around the honest current limitation instead of
+  a "look, it verified" moment.
 - **Live claim-extraction doesn't attach the guideline citation it could.**
   Even with both bugs above fixed, and even though a direct retrieval call
   proves the right chunk is found, the live `/chat` answer for beat 2's

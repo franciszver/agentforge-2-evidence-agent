@@ -27,3 +27,19 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
+xfail: >
+  OBSERVED (issue #100, live re-verification against current main post
+  PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
+  non-xfail cases, but that pass reflected one stable, frozen recording from
+  an earlier draw. Eight independent fresh live runs through the real
+  pipeline (`evals/runner/pipeline.run_case`, production `LlamaServerClient`,
+  no replay) never once landed on `verified` -- all 8 landed on
+  `partially_verified`, and the retrieved `nsaid-interactions#lithium`
+  guideline chunk was actually quoted and survived to a VERIFIED citation in
+  only half of them (4/8); the other half never surfaced it at all. Even in
+  the runs where the citation is present, a co-occurring claim fails
+  verification often enough to keep the case below the strict `verified`
+  bar every time. Not reliably passing at current live-draw rates -- the
+  recording has been re-captured against current main with a typical
+  (non-passing) draw rather than the stale lucky draw it replaced -- see
+  docs/MODEL_AND_HARDWARE_SELECTION.md for the updated baseline discussion.
