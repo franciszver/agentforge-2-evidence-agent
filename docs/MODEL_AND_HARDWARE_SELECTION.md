@@ -40,6 +40,90 @@ Once 8B-Q5 was selected, its real citation reliability was measured the way ever
 
 This is a stable, reproducible number — not a single lucky draw — precisely because it is measured against fixed, already-committed answers rather than a fresh re-draw. The one case the gate is responsible for downgrading (`statin-liver-monitoring-question`) is the exact case issue #47 named; the other 6 non-passing cases reflect the same pre-existing citation-retrieval unreliability this document has documented since the exploratory sweep.
 
+## Measured mid-tier addendum (RTX 3060 12GB desktop)
+
+**This section is measured mid-tier evidence, not a minimum-spec update.** Every
+number below carries the label **measured mid-tier (RTX 3060 12 GB desktop)**
+and must never be blended with the RTX 5060 Laptop 8 GB numbers above — same
+convention `docs/W2_ARCHITECTURE.md` uses for its own recommended-tier VLM
+figures (stated directional/measured separately, never averaged into the
+minimum-spec baseline). The hardware was a separate desktop-class machine
+(12 GB VRAM, 128 GB system RAM); no local file paths or operator-machine
+details are reproduced here beyond that.
+
+**Fresh draw vs. stable recording, again.** The committed 5/12 baseline above
+is a re-judge of stable, already-committed answer recordings — deliberately
+insulated from planner/extraction variance so it is a reproducible number the
+P3G.2 gate can guard. Every number in this addendum is instead a **fresh
+single draw** of the full pipeline (planner → extraction → provenance →
+semantic-support judge) on the desktop, run once per case with no re-rolls.
+The two measurement styles answer different questions and are not
+apples-to-apples with each other, exactly as already disclosed for the 14B
+run below.
+
+### Results table
+
+| Model / config | Params / quant | citation_present | Mean latency | Extraction errors | VRAM / RAM |
+|---|---|---|---|---|---|
+| Qwen3-8B-Q5_K_M (pre-fix, 4 fresh draws) | 8B, Q5_K_M | **2/12** (identical on all 4 draws) | 26.0–30.8 s | 2–3 / 12 | 7.6 GB VRAM |
+| Qwen3-14B-Q4_K_M | 14B, Q4_K_M | 4/12 | 33.3 s | 2 / 12 | 10.7 GB VRAM |
+| Qwen3-30B-A3B (`--n-cpu-moe 32`) | 30B MoE, Q5_K_M | 3/12 | 57.6 s | 2 / 12 | 9.9 GB VRAM |
+| Qwen3.6-35B-A3B (`--n-cpu-moe 30`) | 35B MoE, Q5_K_M | 5/12 | 81.9 s | 3 / 12 | 10.3 GB VRAM |
+| gpt-oss-120b (`--n-cpu-moe 32`) | 120B MoE, Q8_K_XL | 5/12 | 220.6 s | **0 / 12** | 10.5 GB VRAM + ~60 GB CPU RAM |
+| Qwen3-8B-Q5_K_M (post-fix, 1 fresh draw) | 8B, Q5_K_M | **4/12** | 25.6 s | 0 / 12 | 7.6 GB VRAM |
+
+All rows use the same 12 `citation_present` eval cases, the same tightened
+verified-citation bar (provenance AND semantic support), and the same engine
+self-judging pattern as the committed baseline's methodology.
+
+### The determinism finding
+
+Four independent fresh draws of the production 8B-Q5 model, back-to-back on
+this desktop (temp 0, `--parallel 1`, no sampling stochasticity), landed on
+**exactly 2/12 every time** — the same 2 cases passed and the same 2–3 cases
+hard-errored on extraction in each draw. This is a materially different
+finding from the 1/12–6/12 scatter this document already discloses for
+fresh full-pipeline re-draws on the laptop, and it is stated separately
+rather than folded into that variance language: on this hardware/config,
+repeat draws were not noisy, they were flatly reproducible at a number
+*below* the committed 5/12 (which, as already explained above, is a
+stable-recording re-judge, not a fresh draw — the two were never measuring
+the same thing).
+
+After PR #94/#95 merged a pipeline fix (`LlamaServerClient`'s
+claim-extraction call given its own 2560-token budget, separate from chat's
+1536-token budget, fixing a real truncation bug), one further fresh 8B-Q5
+draw scored **4/12 at 25.6 s mean — faster and better than every pre-fix
+draw**. The causal story behind that jump is not yet fully closed: 4 cases
+changed outcome between the pre-fix and post-fix draws (3 improved, 1
+regressed), where only 1 case had been predicted to flip from the
+token-budget diagnosis alone. Issue #93 (planner tool-call nondeterminism, a
+separate uncitable-claim-handling behavior) remains open and may explain
+further movement in these numbers.
+
+### Honest verdict
+
+**No model swap tested here beat the pipeline-fixed 8B-Q5 result.** The
+single most effective intervention measured this session was a bug fix, not
+a bigger model — 14B, 30B-A3B, 35B-A3B, and gpt-oss-120b all either scored
+lower or cost dramatically more latency (up to 9x) than the post-fix 8B-Q5's
+4/12 at 25.6 s, and none reach the committed baseline's 5/12 without paying
+a latency penalty that disqualifies them for interactive use. gpt-oss-120b
+is the one model with zero extraction errors in this series, but its 220.6 s
+mean is 7–8x over the latency envelope this project targets, disqualifying
+it despite that reliability signal. The 30B-A3B result (3/12, 57.6 s, same
+extraction-error signature as its original laptop rejection) reproduces the
+prior rejection's failure mode on materially better hardware — this is
+**confirmatory evidence for that decision**, not new information
+contradicting it (see "The ladder actually tested" above).
+
+This addendum is not a final verdict on model selection: issue #93 is open,
+and these numbers may move again once it resolves. It also does not cover
+the VLM/document-ingestion path — a separate Q8_0 vision-fabrication retest
+(issue #90) is out of scope here and, if its result isn't already reflected
+in `docs/W2_ARCHITECTURE.md`'s vision-tier section, is a follow-up for that
+document, not this one.
+
 ## The two engine-level levers that decide what fits
 
 **q8_0 KV-cache quantization + flash-attn (llama.cpp).** This is the enabling configuration for the chosen model. Without KV-cache quantization, an 8B model's key/value cache at a 16k context window does not fit alongside the model weights inside 8 GB of VRAM; q8_0 quantizes the cache to roughly a quarter of its FP16 footprint, and flash-attn keeps the attention computation itself memory-efficient at that context length. Together they're what lets Qwen3-8B-Q5_K_M run **fully GPU-resident** at 6.63 GB / 8 GB — no CPU offload, no swap latency.
