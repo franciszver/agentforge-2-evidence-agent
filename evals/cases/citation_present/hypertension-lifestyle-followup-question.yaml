@@ -35,6 +35,37 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
+  UPDATED (issue #115, supersedes the #100 rationale below -- that rationale
+  is stale). Fresh live re-verification (`evals/runner/pipeline.run_case`
+  against the real `llama-server` container, 3+ deterministic draws,
+  `temperature=0` so every draw is byte-identical) shows this case's `xfail`
+  reason is NOT "never quotes the guideline verbatim" -- it reliably DOES:
+  the final claim ("If there is no improvement or if the blood pressure
+  remains elevated, pharmacotherapy may be considered.") carries a real,
+  verbatim `document_citations` entry quoting
+  `hypertension-lifestyle#follow-up-cadence` that passes provenance
+  re-validation (`DocumentCitationCheckResult: valid`), every draw. The case
+  still fails to verify (`blocked`, NONE_VERIFIED) because every OTHER
+  extracted claim -- and that same guideline-cited claim's two extra
+  `source_ref`s -- are FABRICATED chart-data citations: the question states
+  the patient's blood pressure and lifestyle-change plan directly ("His
+  blood pressure was elevated at his last visit and we're trying lifestyle
+  changes"), so the planner never dispatches `get_vitals` at all (trace is
+  `[get_appointments, get_encounters]`, both empty). The extractor then
+  invents `source_ref`s citing fields that appear in NO real tool-result
+  catalog entry this turn at all -- `field='blood_pressure'`,
+  `field='treatment_plan'`, `field='next_appointment'`,
+  `field='scheduled_appointments'`, `field='recent_encounters'` --
+  reliably reproduced, not a routing/mislabeling defect with a
+  reconstructable structure like issue #85's. See issue #115 and
+  `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Issue #115 findings" section
+  for the full trace and why this was judged NOT safely fixable via a
+  narrow coercion (the checker's `unknown_record` rejection here is
+  correct, fail-closed behavior, not a bug to route around). This case
+  remains `xfail`; the recording has been refreshed to this exact,
+  currently-reproducible draw.
+
+  --- Original #100 rationale (superseded above, kept for history) ---
   OBSERVED (issue #100, live re-verification against current main post
   PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
   non-xfail cases, but that pass reflected one stable, frozen recording from

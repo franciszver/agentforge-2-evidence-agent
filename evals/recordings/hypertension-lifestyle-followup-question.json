@@ -35,13 +35,13 @@
     },
     {
       "kind": "chat",
-      "response": "Since there are no scheduled appointments and no recent encounters, it is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor his blood pressure and assess the effectiveness of the lifestyle changes. The clinician should determine the appropriate time based on the patient's current condition and standard care guidelines.",
+      "response": "Based on the information provided, the patient's blood pressure was elevated at his last visit, and lifestyle changes are being pursued. Since there are no scheduled appointments and no recent encounters, the next step is to schedule a follow-up appointment in 3-6 months to assess the response to lifestyle changes. If there is no improvement or if the blood pressure remains elevated, pharmacotherapy may be considered.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "Since there are no scheduled appointments and no recent encounters, it is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor his blood pressure and assess the effectiveness of the lifestyle changes. The clinician should determine the appropriate time based on the patient's current condition and standard care guidelines.",
+        "answer": "Based on the information provided, the patient's blood pressure was elevated at his last visit, and lifestyle changes are being pursued. Since there are no scheduled appointments and no recent encounters, the next step is to schedule a follow-up appointment in 3-6 months to assess the response to lifestyle changes. If there is no improvement or if the blood pressure remains elevated, pharmacotherapy may be considered.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -54,43 +54,87 @@
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "4-6 weeks",
-                "field": "follow_up_interval",
+                "asserted_value": "elevated",
+                "field": "blood_pressure",
                 "record_id": "0",
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "It is recommended to schedule a follow-up appointment within the next 4-6 weeks to monitor blood pressure."
+            "text": "The patient's blood pressure was elevated at his last visit."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "assess effectiveness of lifestyle changes",
-                "field": "follow_up_purpose",
+                "asserted_value": "lifestyle changes",
+                "field": "treatment_plan",
                 "record_id": "0",
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "The follow-up appointment should also assess the effectiveness of the lifestyle changes."
+            "text": "Lifestyle changes are being pursued for the patient."
           },
           {
             "document_citations": [],
             "source_refs": [
               {
-                "asserted_value": "based on patient's current condition and standard care guidelines",
-                "field": "follow_up_guidance",
+                "asserted_value": "none",
+                "field": "scheduled_appointments",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "There are no scheduled appointments for the patient."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "none",
+                "field": "recent_encounters",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "There are no recent encounters for the patient."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "3-6 months",
+                "field": "next_appointment",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "A follow-up appointment is scheduled in 3-6 months to assess the response to lifestyle changes."
+          },
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "hypertension-lifestyle#follow-up-cadence",
+                "page_or_section": "Follow-Up Cadence",
+                "quote_or_value": "recheck at roughly 3-6 months to assess response before deciding whether to add pharmacotherapy.",
+                "source_id": "hypertension-lifestyle",
+                "source_type": "guideline_chunk"
+              }
+            ],
+            "source_refs": [
+              {
+                "asserted_value": "pharmacotherapy",
+                "field": "treatment_plan",
                 "record_id": "0",
                 "tool_call_id": "call_0"
               },
               {
-                "asserted_value": "3-6 months",
-                "field": "follow_up_cadence",
+                "asserted_value": "elevated",
+                "field": "blood_pressure",
                 "record_id": "0",
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "The clinician should determine the appropriate time for the follow-up based on the patient's current condition and standard care guidelines."
+            "text": "If there is no improvement or if the blood pressure remains elevated, pharmacotherapy may be considered."
           }
         ]
       },
