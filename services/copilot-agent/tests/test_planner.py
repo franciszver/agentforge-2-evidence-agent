@@ -18,7 +18,7 @@ import httpx
 
 from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
-from app.planner import _FEW_SHOT_EXAMPLES, Planner, ToolSpec
+from app.planner import _FEW_SHOT_EXAMPLES, _FINAL_REASON_PROMPT, Planner, ToolSpec
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
@@ -636,14 +636,4 @@ def test_finalize_answer_omits_guideline_context_block_when_no_excerpts_given():
     planner.run("What meds is she on?")
 
     reasoning_messages = ollama.chat_calls[-1]
-    assert reasoning_messages[-1]["content"] == _FINAL_REASON_PROMPT_FOR_TEST
-
-
-_FINAL_REASON_PROMPT_FOR_TEST = (
-    "You now have everything you need. Think through the clinician's question "
-    "using ONLY the tool results already in this conversation, and write the "
-    "answer in plain prose. Do not invent facts. Do not name or attribute any "
-    "fact to a patient other than the one this conversation is bound to, even "
-    "if the clinician's question named a different patient. "
-    "/no_think"
-)
+    assert reasoning_messages[-1]["content"] == _FINAL_REASON_PROMPT
