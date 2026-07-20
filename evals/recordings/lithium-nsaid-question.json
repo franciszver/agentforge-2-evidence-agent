@@ -53,13 +53,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient is currently taking lithium carbonate at a dose of 300mg orally. There are no recorded allergies, and no active medical problems. Using ibuprofen for back pain while on lithium requires caution, as ibuprofen can increase the risk of lithium toxicity. It is important to monitor the patient closely for signs of lithium toxicity, such as tremors, confusion, or increased thirst, and to consider alternative pain management options if necessary. Consultation with a pharmacist or healthcare provider is recommended to ensure the safety of this medication combination.",
+      "response": "The patient is currently taking lithium. Using ibuprofen for back pain may reduce renal lithium clearance, which can raise lithium levels toward toxicity. Therefore, if ibuprofen is necessary, closer monitoring of lithium levels is recommended.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient is currently taking lithium carbonate at a dose of 300mg orally. There are no recorded allergies, and no active medical problems. Using ibuprofen for back pain while on lithium requires caution, as ibuprofen can increase the risk of lithium toxicity. It is important to monitor the patient closely for signs of lithium toxicity, such as tremors, confusion, or increased thirst, and to consider alternative pain management options if necessary. Consultation with a pharmacist or healthcare provider is recommended to ensure the safety of this medication combination.",
+        "answer": "The patient is currently taking lithium. Using ibuprofen for back pain may reduce renal lithium clearance, which can raise lithium levels toward toxicity. Therefore, if ibuprofen is necessary, closer monitoring of lithium levels is recommended.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -78,25 +78,13 @@
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "300mg",
-                "field": "dose",
-                "record_id": "0",
-                "tool_call_id": "call_1"
-              },
-              {
-                "asserted_value": "oral",
-                "field": "route",
-                "record_id": "0",
-                "tool_call_id": "call_1"
-              },
-              {
                 "asserted_value": "active",
                 "field": "status",
                 "record_id": "0",
                 "tool_call_id": "call_1"
               }
             ],
-            "text": "The patient is currently taking lithium carbonate at a dose of 300mg orally."
+            "text": "The patient is currently taking lithium."
           },
           {
             "document_citations": [
@@ -116,14 +104,26 @@
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "300mg",
-                "field": "dose",
+                "asserted_value": "active",
+                "field": "status",
                 "record_id": "0",
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "oral",
-                "field": "route",
+                "asserted_value": "Lithium Carbonate",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              },
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_1"
+              },
+              {
+                "asserted_value": "Lithium Carbonate",
+                "field": "name",
                 "record_id": "0",
                 "tool_call_id": "call_1"
               },
@@ -134,7 +134,7 @@
                 "tool_call_id": "call_1"
               }
             ],
-            "text": "Using ibuprofen for back pain while on lithium requires caution, as ibuprofen can increase the risk of lithium toxicity."
+            "text": "Using ibuprofen for back pain may reduce renal lithium clearance, which can raise lithium levels toward toxicity."
           },
           {
             "document_citations": [
@@ -154,37 +154,11 @@
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "300mg",
-                "field": "dose",
-                "record_id": "0",
-                "tool_call_id": "call_1"
-              },
-              {
-                "asserted_value": "oral",
-                "field": "route",
-                "record_id": "0",
-                "tool_call_id": "call_1"
-              },
-              {
                 "asserted_value": "active",
                 "field": "status",
                 "record_id": "0",
                 "tool_call_id": "call_1"
-              }
-            ],
-            "text": "It is important to monitor the patient closely for signs of lithium toxicity, such as tremors, confusion, or increased thirst."
-          },
-          {
-            "document_citations": [
-              {
-                "field_or_chunk_id": "nsaid-interactions#lithium",
-                "page_or_section": "NSAID Drug-Interaction Cautions",
-                "quote_or_value": "NSAIDs can reduce renal lithium clearance, raising lithium levels toward toxicity; this combination generally calls for closer lithium-level monitoring if it cannot be avoided.",
-                "source_id": "nsaid-interactions",
-                "source_type": "guideline_chunk"
-              }
-            ],
-            "source_refs": [
+              },
               {
                 "asserted_value": "Lithium Carbonate",
                 "field": "name",
@@ -192,14 +166,14 @@
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "300mg",
-                "field": "dose",
+                "asserted_value": "active",
+                "field": "status",
                 "record_id": "0",
                 "tool_call_id": "call_1"
               },
               {
-                "asserted_value": "oral",
-                "field": "route",
+                "asserted_value": "Lithium Carbonate",
+                "field": "name",
                 "record_id": "0",
                 "tool_call_id": "call_1"
               },
@@ -210,7 +184,7 @@
                 "tool_call_id": "call_1"
               }
             ],
-            "text": "Consultation with a pharmacist or healthcare provider is recommended to ensure the safety of this medication combination."
+            "text": "Therefore, if ibuprofen is necessary, closer monitoring of lithium levels is recommended."
           }
         ]
       },
@@ -219,23 +193,7 @@
     {
       "kind": "extract",
       "response": {
-        "reason": "The QUOTE directly addresses the interaction between NSAIDs (which include ibuprofen) and lithium, stating that NSAIDs can reduce renal lithium clearance and raise lithium levels toward toxicity, which supports the CLAIM about the need for caution when using ibuprofen with\u9502.",
-        "verdict": "supported"
-      },
-      "schema": "SemanticSupportJudgement"
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "reason": "The QUOTE discusses the interaction between NSAIDs and lithium levels, but does not mention monitoring for signs of lithium toxicity like tremors, confusion, or increased thirst.",
-        "verdict": "not_supported"
-      },
-      "schema": "SemanticSupportJudgement"
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "reason": "The QUOTE indicates that combining NSAIDs with lithium requires closer monitoring, which implies the need for consultation with a healthcare provider to ensure safety, supporting the CLAIM.",
+        "reason": "The QUOTE directly supports the CLAIM by stating that NSAIDs (which include ibuprofen) can reduce renal lithium clearance and raise lithium levels, thus recommending closer monitoring if the combination cannot be avoided.",
         "verdict": "supported"
       },
       "schema": "SemanticSupportJudgement"

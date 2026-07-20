@@ -227,3 +227,76 @@ def test_order_preserving_across_multiple_claims():
     assert results[0].passed is True
     assert results[1].claim.text == "claim B"
     assert results[1].passed is False
+
+
+# ---------------------------------------------------------------------------
+# issue #108: duplicate claims citing IDENTICAL evidence must get one
+# consistent verdict, not two independently-judged (and potentially
+# disagreeing) ones.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_claims_citing_identical_evidence_get_one_consistent_verdict():
+    """The model sometimes restates one guideline-backed fact as two
+    separate claims (e.g. "...above the target range..." / "...is not at
+    target.") that both cite the exact same DocumentCitation -- identical
+    ``source_type``/``source_id``/``field_or_chunk_id``/``quote_or_value``,
+    byte-for-byte. Judging each claim's citation independently risks an
+    inconsistent verdict across the two purely from LLM call-to-call
+    variance on the paraphrased wording -- observed live as one restatement
+    passing while the other is downgraded to ``not_semantically_supported``,
+    which strips that claim and holds the whole answer at
+    ``partially_verified`` even though both claims cite the identical,
+    already-provenance-verified evidence. The fix judges identical evidence
+    ONCE and applies that single verdict everywhere it is cited, so
+    duplicates can never land on different verdicts."""
+    same_quote = "A1c target generally below 7%."
+    claim_a = _claim_result(_valid_doc_result(same_quote), text="A1c is above the target range.")
+    claim_b = _claim_result(_valid_doc_result(same_quote), text="A1c is not at target.")
+    # Only ONE response scripted: a second independent call would raise
+    # IndexError, proving the fix collapses the two into a single judge call.
+    judge = _ScriptedJudge([_supported()])
+
+    results = apply_semantic_support([claim_a, claim_b], judge)
+
+    assert len(judge.calls) == 1
+    assert results[0].passed is True
+    assert results[1].passed is True
+    assert results[0].citation_results[0].status is CitationStatus.VALID
+    assert results[1].citation_results[0].status is CitationStatus.VALID
+
+
+def test_duplicate_claims_citing_identical_evidence_both_fail_together():
+    """The consistency guarantee cuts both ways: if the single shared
+    judgement comes back unsupported, EVERY claim citing that identical
+    evidence is downgraded together -- never a mix of one passing, one
+    failing, for the same byte-identical citation."""
+    same_quote = "A1c target generally below 7%."
+    claim_a = _claim_result(_valid_doc_result(same_quote), text="A1c is above the target range.")
+    claim_b = _claim_result(_valid_doc_result(same_quote), text="A1c is not at target.")
+    judge = _ScriptedJudge([_not_supported()])
+
+    results = apply_semantic_support([claim_a, claim_b], judge)
+
+    assert len(judge.calls) == 1
+    assert results[0].passed is False
+    assert results[1].passed is False
+    assert results[0].citation_results[0].status is CitationStatus.NOT_SEMANTICALLY_SUPPORTED
+    assert results[1].citation_results[0].status is CitationStatus.NOT_SEMANTICALLY_SUPPORTED
+
+
+def test_distinct_citations_are_not_conflated_by_dedup():
+    """The dedup key is the citation's full identity (source_type,
+    source_id, field_or_chunk_id, quote_or_value) -- two claims citing
+    DIFFERENT quotes (even from the same source document) are judged
+    independently, exactly as before. Guards against an over-broad dedup
+    (e.g. keying on source_id alone) silently merging unrelated citations."""
+    claim_a = _claim_result(_valid_doc_result("quote A"), text="claim A")
+    claim_b = _claim_result(_valid_doc_result("quote B"), text="claim B")
+    judge = _ScriptedJudge([_supported(), _not_supported()])
+
+    results = apply_semantic_support([claim_a, claim_b], judge)
+
+    assert len(judge.calls) == 2
+    assert results[0].passed is True
+    assert results[1].passed is False
