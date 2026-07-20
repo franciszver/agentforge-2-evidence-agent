@@ -11,6 +11,16 @@ dependencies = [
     "httpx>=0.27",
     # PDF page rendering for document ingestion (P3.1, app/ingestion.py).
     "pypdfium2>=4",
+    # app/ingestion.py's render_pdf_pages_to_png calls pypdfium2's
+    # PdfBitmap.to_pil(), which lazy-imports PIL at call time -- undeclared
+    # here, it was only ever present in this project's dev/test venvs as an
+    # indirect dep of dev extras' fpdf2 (see below), never in the production
+    # image (`pip install .` with no extras). ModuleNotFoundError on the
+    # FIRST real ingestion call in any container built from this
+    # pyproject.toml -- found live during the P5.1 demo dry run (issue #27)
+    # when seed_demo_documents.py's ingestion path was run for the first
+    # time against a real built image, not the dev/test venv.
+    "pillow>=10",
     # YAML front-matter parsing (corpus docs, app/retrieval.py) and
     # app/review_queue.py's pre-existing (previously undeclared) use.
     "pyyaml>=6",
