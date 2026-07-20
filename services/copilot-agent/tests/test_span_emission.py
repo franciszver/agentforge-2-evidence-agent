@@ -63,7 +63,7 @@ class FakePlannerWithLlmCalls:
         self._llm_calls = llm_calls or []
         self._raw_results = raw_results or []
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
         return PlannerResult(
             answer=self._answer,
             trace=self._trace,

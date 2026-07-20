@@ -42,7 +42,7 @@ class _FakePlanner:
     def __init__(self, trace: list[ToolCallTrace], answer: str, raw_results: list[dict | None]) -> None:
         self._result = PlannerResult(answer=answer, trace=trace, raw_results=raw_results)
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
         return self._result
 
 
