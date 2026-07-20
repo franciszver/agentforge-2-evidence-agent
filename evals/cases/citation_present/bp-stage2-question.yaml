@@ -38,19 +38,30 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (issue #100, live re-verification against current main post
-  PR #94/#95/#98/#101): this case was one of the committed 5/12 baseline's
-  non-xfail cases, but that pass reflected one stable, frozen recording from
-  an earlier draw -- it was never re-checked against a FRESH live draw. Ten
-  independent fresh live runs through the real pipeline
-  (`evals/runner/pipeline.run_case`, production `LlamaServerClient`, no
-  replay) landed on `partially_verified` with zero `document_citations`
-  10/10 times, deterministically: the model answers only from the
-  `get_vitals` chart data (148/94 mmHg, correctly categorized as elevated)
-  and never surfaces or quotes the retrieved blood-pressure-categories
-  guideline chunk in its final answer -- the same chart-data-only pattern
-  already documented for several sibling xfail'd cases in this category
-  (see e.g. `lipid-panel-ldl-question`). The recording has been re-captured
-  against current main to honestly reflect this typical outcome rather than
-  the stale lucky draw it replaced -- see docs/MODEL_AND_HARDWARE_SELECTION.md
-  for the updated baseline discussion.
+  OBSERVED (issue #85, live re-verification against current main post the
+  #85 claim-extraction fix): the recording has been re-captured again --
+  the extraction bug issue #100 originally attributed this case's failure
+  to (the model never surfacing the guideline chunk at all) is fixed as of
+  issue #85: the extraction step now correctly reclassifies the model's
+  guideline citation (previously misrouted into `source_refs` with
+  `tool_call_id="blood-pressure-categories"`, `record_id="categories"`,
+  failing `unknown_tool_call`) into a real `document_citations` entry that
+  passes provenance re-validation (`check_document_citation` returns
+  `valid` -- the quoted "Stage 2 hypertension: systolic 140 mmHg or higher
+  OR diastolic 90 mmHg or higher." text is a real, verbatim substring of
+  the retrieved chunk). This case still does not verify, for a DIFFERENT,
+  newly-visible reason: the semantic-support judge downgrades that same
+  citation to `not_semantically_supported`, reasoning "The QUOTE defines
+  Stage 2 hypertension but does not provide specific blood pressure
+  readings from the CLAIM's context, so it does not directly support the
+  assertion that 'this reading falls into the category of elevated blood
+  pressure.'" -- a claim/citation category-name mismatch (the model's own
+  final-answer text calls 148/94 mmHg "elevated blood pressure" rather than
+  "Stage 2 hypertension", the category the retrieved guideline's own
+  thresholds actually put it in). Current outcome on this recording:
+  verdict `partially_verified`, the BP-value claim renders as a verified
+  claim, and the category claim renders as a stripped `Notice` (no
+  surviving `document_citations`). See issue #85's PR description for the
+  full mechanism and why fixing the category-name mismatch is a separate,
+  out-of-scope follow-up (planner answer composition, not claim/citation
+  assembly).

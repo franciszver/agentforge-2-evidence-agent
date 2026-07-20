@@ -91,6 +91,14 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE defines Stage 2 hypertension but does not provide specific blood pressure readings from the CLAIM's context, so it does not directly support the assertion that 'this reading falls into the category of elevated blood pressure.'",
+        "verdict": "not_supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }
