@@ -466,7 +466,21 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
     A no-op (returns ``claims`` unchanged) when ``chunks`` is empty."""
     if not chunks:
         return claims
-    chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    # Last-wins on a duplicate chunk_id would silently mis-associate a quote
+    # with the wrong chunk's doc_id/section -- retrieve_hybrid's RRF fusion
+    # already de-dupes by chunk_id before rerank/this call, so this should
+    # never trigger in practice, but this mirrors app.verification's own
+    # CorpusChunkIndex.from_chunks/DocumentFactIndex.from_citations
+    # convention of raising loudly on a collision rather than picking one
+    # silently -- same defensive posture, same reason (issue #40).
+    chunk_by_id: dict[str, RerankedChunk] = {}
+    for chunk in chunks:
+        if chunk.chunk_id in chunk_by_id:
+            raise ValueError(
+                f"_coerce_misrouted_guideline_refs: duplicate chunk_id {chunk.chunk_id!r} in "
+                "retrieved_chunks -- refusing to silently pick one over the other"
+            )
+        chunk_by_id[chunk.chunk_id] = chunk
 
     coerced: list[Claim] = []
     for claim in claims:

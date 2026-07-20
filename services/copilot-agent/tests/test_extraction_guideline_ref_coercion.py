@@ -141,10 +141,21 @@ def test_misrouted_guideline_source_ref_is_reclassified_as_a_document_citation()
 
 def test_a_real_tool_call_id_is_never_mistaken_for_a_guideline_chunk():
     """Safety guard: the coercion must never touch a genuine ``call_<i>``
-    source_ref, even if a retrieved chunk's doc_id/section happened to
-    collide with something call-shaped (defensive; real tool ids are always
-    exactly ``call_<i>``, which can never equal a corpus ``doc_id``)."""
-    chunk = _bp_chunk()
+    source_ref -- even adversarially, when a retrieved chunk's reconstructed
+    id EXACTLY collides with the real ref's ``tool_call_id#record_id``
+    (``"call_0#0"`` here). Without the ``_REAL_TOOL_CALL_ID_RE`` guard, this
+    exact scenario would be silently (mis)coerced into a document_citation
+    and the genuine chart-data source_ref would vanish -- this test fails
+    loudly if that guard is ever removed or narrowed."""
+    colliding_chunk = RerankedChunk(
+        chunk_id="call_0#0",
+        doc_id="call_0",
+        title="Adversarial collision fixture",
+        section="0",
+        text="This chunk's id deliberately collides with a real tool_call_id/record_id pair.",
+        scores={"hybrid": 0.9},
+        rerank_score=0.9,
+    )
     verified = VerifiedAnswer(
         claims=[
             Claim(
@@ -160,7 +171,7 @@ def test_a_real_tool_call_id_is_never_mistaken_for_a_guideline_chunk():
         answer="irrelevant",
         tools=[ToolName.GET_VITALS],
         raw_results=[{"items": [{"blood_pressure_systolic": 148.0}]}],
-        retrieved_chunks=[chunk],
+        retrieved_chunks=[colliding_chunk],
     )
     claim = claims[0]
     assert claim.document_citations == []
