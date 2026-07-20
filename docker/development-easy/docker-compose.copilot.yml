@@ -272,6 +272,21 @@ services:
       # is independent of COPILOT_LLM_ENGINE above).
       COPILOT_EMBED_ENGINE: llama_server
       LLAMA_SERVER_EMBED_BASE_URL: http://llama-server-embed:8080
+      # P5.1 demo dry run (issue #27): the P3.9/P3.9a evidence-retrieval path
+      # -- guideline-corpus citations (app.retrieval) AND the per-patient
+      # lab_pdf/intake_form document-fact citations
+      # (app.chat.get_patient_fact_provider) -- share this ONE flag, default
+      # OFF upstream (app/config.py's copilot_evidence_retrieval_enabled
+      # docstring: no retrieval call, no extra embedding round trip when
+      # off). The demo's citation-overlay (beat 2) and graceful-failure
+      # (beat 3) moments are both this feature; a dev stack with the flag at
+      # its default silently answers from EMR chart tools alone with zero
+      # document citations -- discovered live during the P5.1 dry run, not
+      # something the prior research pass could see from static review.
+      # Default ON here so a plain `docker compose ... up` demoes the real
+      # capability out of the box, matching COPILOT_LLM_ENGINE's default-on
+      # precedent above.
+      COPILOT_EVIDENCE_RETRIEVAL_ENABLED: "true"
     networks:
       - copilot_internal
     depends_on:

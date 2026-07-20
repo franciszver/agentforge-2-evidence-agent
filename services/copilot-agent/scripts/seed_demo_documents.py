@@ -37,6 +37,27 @@ document-ingestion extraction (``app.chat._build_evidence_workers``'s
 docstring: vision ingestion always uses Ollama, independent of
 ``COPILOT_LLM_ENGINE``) -- see ``docs/DEVELOPERS_GUIDE.md`` for how the dev
 stack's Ollama instance is provisioned.
+
+**P5.1 dry-run correction (issue #27):** the host-run invocation above does
+NOT work against ``docker/development-easy``'s dev stack as configured --
+``agent`` and ``ollama`` sit on the ``copilot_internal`` compose network,
+which is declared ``internal: true`` and publishes no host ports (a
+deliberate security boundary, see ``docker-compose.copilot.yml``'s
+module-level comment), so ``localhost:11435`` is never reachable from the
+host, and even where a host port existed, ingesting from the host would
+write to the host filesystem rather than the running ``agent`` container's
+``/data/ingestion`` store that ``/chat`` actually reads facts back out of.
+Verified live during the P5.1 dry run. Against THIS stack, ingest from
+inside the ``agent`` container instead -- see ``docs/DEMO_SCRIPT.md``'s
+setup section and ``scripts/ingest_demo_pdf.py`` (a container-side runner
+with the same ``attach_and_extract``/``LocalIngestionStore`` wiring as this
+module, minus the host-only pubpid resolution below, which
+``get_pid_for_pubpid`` performs via ``docker compose exec mysql`` -- itself
+only reachable from the host, not from inside ``agent``). This module is
+still correct wherever ``OLLAMA_BASE_URL`` genuinely is host-reachable
+(e.g. a different network topology, or a future dev-stack change that
+publishes a host port for ``ollama``) -- it is the topology assumption that
+was wrong, not this function.
 """
 
 from __future__ import annotations
