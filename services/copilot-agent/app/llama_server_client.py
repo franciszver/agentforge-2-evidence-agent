@@ -22,11 +22,23 @@ Design notes:
     to grammar-constrained decoding -- the same guarantee Ollama's
     ``format=<schema>`` gives: output is always syntactically valid JSON for
     the schema.
-  * ``max_tokens: 1536`` is applied to EVERY request (chat and extract), not
-    only chat. A JSON schema alone does not bound generation length -- an
-    open-ended schema string field can still run away (measured: one
-    extraction call ran 305s and hit the request timeout even with a schema
-    in effect), so the cap is unconditional.
+  * ``max_tokens`` is capped on EVERY request, but ``extract`` uses a LARGER
+    cap than ``chat``/``chat_stream`` (P5.3, issue #85). A JSON schema alone
+    does not bound generation length -- an open-ended schema string field
+    can still run away (measured: one extraction call ran 305s and hit the
+    request timeout even with a schema in effect), so a cap is unconditional
+    on every call. ``chat``/``chat_stream`` keep the original ``1536`` cap
+    (that 305s runaway-generation measurement -- do not relax this path).
+    ``extract`` gets its own, larger ``_EXTRACT_MAX_TOKENS`` (see its
+    definition below for the sizing rationale): claim extraction's required
+    JSON output echoes retrieved guideline-chunk/patient-fact text verbatim
+    into ``quote_or_value`` fields (``app.extraction._build_guideline_catalog``
+    /``_build_fact_catalog``), which can exceed 1536 tokens once real
+    retrieval (unlike the eval harness's tiny hand-authored fixtures) hands
+    back multiple full corpus sections -- hitting the cap mid-string then
+    fails JSON parsing/schema validation, exhausts retries, and
+    ``ClaimExtractor.extract_claims`` fails closed to ``[]`` (see
+    ``app.extraction``).
   * ``<think>`` leak stripping and message normalization directly REUSE
     ``OllamaClient._strip_leaked_thinking``/``_normalize_messages`` (both
     pure, stateless static methods) rather than a second copy of the regex,
@@ -67,8 +79,24 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
-# Hard cap applied to every call (chat and extract) -- see module docstring.
-_MAX_TOKENS = 1536
+# Hard cap applied to chat()/chat_stream() -- see module docstring. Left
+# unchanged from the original 305s-runaway-generation measurement.
+_CHAT_MAX_TOKENS = 1536
+
+# Hard cap applied to extract() ONLY (P5.3, issue #85) -- larger than
+# _CHAT_MAX_TOKENS because the claim-extraction JSON output must echo
+# retrieved guideline/fact text verbatim (see module docstring). Sized from
+# a measured production decode throughput of ~50 tokens/sec (qwen3-8b-q5 on
+# the dev GPU) against ``Settings.llama_server_api_timeout_seconds`` (60s
+# default): 2560 tokens / 50 tok/s = ~51s decode, leaving ~9s of headroom
+# for connection setup and prompt prefill before the 60s request timeout
+# would fire -- large enough to comfortably hold several full corpus
+# sections (each ~300-500 chars, ~100-150 tokens) plus the tool-result
+# catalog and JSON schema overhead, without trading truncation for a
+# request-timeout failure instead (LlamaServerError either way, but a
+# timeout gives no finish_reason/content to diagnose from -- see
+# ``_single_message_content``'s error detail).
+_EXTRACT_MAX_TOKENS = 2560
 
 
 class LlamaServerError(LLMEngineError):
@@ -136,7 +164,7 @@ class LlamaServerClient:
         start_ts = time.time()
         try:
             response = self._post(_CHAT_COMPLETIONS_PATH, body)
-            content, tokens_in, tokens_out = self._single_message_content(response)
+            content, tokens_in, tokens_out, _finish_reason = self._single_message_content(response)
         except LlamaServerError as exc:
             end_ts = time.time()
             self.call_stats.append(
@@ -287,8 +315,11 @@ class LlamaServerClient:
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": True},
             },
+            max_tokens=_EXTRACT_MAX_TOKENS,
         )
 
+        last_finish_reason: str | None = None
+        last_content_len: int | None = None
         for attempt in range(1, self._max_retries + 1):
             start_ts = time.time()
             try:
@@ -305,8 +336,11 @@ class LlamaServerClient:
                 raise
             tokens_in: int | None = None
             tokens_out: int | None = None
+            finish_reason: str | None = None
+            content_len: int | None = None
             try:
-                content, tokens_in, tokens_out = self._single_message_content(response)
+                content, tokens_in, tokens_out, finish_reason = self._single_message_content(response)
+                content_len = len(content)
                 payload = json.loads(content)
                 result = schema.model_validate(payload)
             except (LlamaServerError, ValueError, ValidationError) as exc:
@@ -315,6 +349,15 @@ class LlamaServerClient:
                     LlmCallStats(model=self._model, start_ts=start_ts, end_ts=end_ts, ok=False, tokens_in=tokens_in, tokens_out=tokens_out)
                 )
                 will_retry = attempt < self._max_retries
+                # Diagnostic signal (P5.3, issue #85): finish_reason and
+                # content length -- NOT the raw content itself, which may
+                # embed retrieved corpus/patient-fact text -- so this failure
+                # class (in particular truncation, finish_reason == "length")
+                # is diagnosable from logs alone, without a live re-probe.
+                # Log-safe: mirrors ``LlamaServerError``'s own "never the raw
+                # model output" contract (see module docstring).
+                last_finish_reason = finish_reason
+                last_content_len = content_len
                 _logger.warning(
                     "llama-server extract call retrying after malformed output"
                     if will_retry
@@ -325,6 +368,8 @@ class LlamaServerClient:
                         "attempt": attempt,
                         "max_retries": self._max_retries,
                         "error_type": type(exc).__name__,
+                        "finish_reason": finish_reason,
+                        "content_len": content_len,
                     },
                 )
                 continue
@@ -333,7 +378,10 @@ class LlamaServerClient:
             )
             return result
 
-        raise LlamaServerError(f"constrained extraction failed after {self._max_retries} attempts")
+        raise LlamaServerError(
+            f"constrained extraction failed after {self._max_retries} attempts "
+            f"(last finish_reason={last_finish_reason!r}, last content_len={last_content_len!r})"
+        )
 
     def embed(self, text: str) -> list[float]:
         """Not implemented -- embeddings always stay on ``OllamaClient`` (see
@@ -364,14 +412,17 @@ class LlamaServerClient:
         stream: bool,
         options: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
+        max_tokens: int = _CHAT_MAX_TOKENS,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "stream": stream,
             "temperature": 0,
-            # Hard cap on every call -- see module docstring.
-            "max_tokens": _MAX_TOKENS,
+            # Hard cap on every call -- see module docstring. Callers pass
+            # ``_EXTRACT_MAX_TOKENS`` for extract(); every other caller keeps
+            # the default ``_CHAT_MAX_TOKENS``.
+            "max_tokens": max_tokens,
         }
         if options:
             # OllamaClient's ``options`` dict is Ollama-shaped (e.g.
@@ -392,7 +443,17 @@ class LlamaServerClient:
     _strip_leaked_thinking = staticmethod(OllamaClient._strip_leaked_thinking)
 
     @staticmethod
-    def _single_message_content(response: httpx.Response) -> tuple[str, int | None, int | None]:
+    def _single_message_content(response: httpx.Response) -> tuple[str, int | None, int | None, str | None]:
+        """Returns ``(content, tokens_in, tokens_out, finish_reason)``.
+
+        ``finish_reason`` (P5.3, issue #85) is llama.cpp's own signal for why
+        generation stopped -- ``"stop"`` (natural end) vs ``"length"`` (hit
+        ``max_tokens`` mid-generation, the truncation failure mode this issue
+        addresses) vs other engine-specific values. Callers that need to
+        diagnose a malformed/truncated extraction thread this through into
+        ``LlamaServerError`` (see :meth:`extract`) rather than needing a live
+        re-probe to find out which one happened.
+        """
         try:
             payload = response.json()
         except ValueError as exc:
@@ -400,6 +461,8 @@ class LlamaServerClient:
 
         choices = payload.get("choices") if isinstance(payload, dict) else None
         message = choices[0].get("message") if choices else None
+        finish_reason = choices[0].get("finish_reason") if choices else None
+        finish_reason = finish_reason if isinstance(finish_reason, str) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             raise LlamaServerError("llama-server response missing message content")
@@ -408,4 +471,4 @@ class LlamaServerClient:
         tokens_out = usage.get("completion_tokens") if isinstance(usage, dict) else None
         tokens_in = tokens_in if isinstance(tokens_in, int) else None
         tokens_out = tokens_out if isinstance(tokens_out, int) else None
-        return LlamaServerClient._strip_leaked_thinking(content), tokens_in, tokens_out
+        return LlamaServerClient._strip_leaked_thinking(content), tokens_in, tokens_out, finish_reason
