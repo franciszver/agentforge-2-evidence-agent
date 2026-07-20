@@ -491,16 +491,16 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
             if _REAL_TOOL_CALL_ID_RE.match(ref.tool_call_id):
                 kept_refs.append(ref)
                 continue
-            chunk = chunk_by_id.get(f"{ref.tool_call_id}#{ref.record_id}")
-            if chunk is None or not ref.asserted_value or not ref.asserted_value.strip():
+            matched_chunk = chunk_by_id.get(f"{ref.tool_call_id}#{ref.record_id}")
+            if matched_chunk is None or not ref.asserted_value or not ref.asserted_value.strip():
                 kept_refs.append(ref)
                 continue
             new_document_citations.append(
                 DocumentCitation(
                     source_type="guideline_chunk",
-                    source_id=chunk.doc_id,
-                    page_or_section=chunk.section,
-                    field_or_chunk_id=chunk.chunk_id,
+                    source_id=matched_chunk.doc_id,
+                    page_or_section=matched_chunk.section,
+                    field_or_chunk_id=matched_chunk.chunk_id,
                     quote_or_value=ref.asserted_value,
                 )
             )
