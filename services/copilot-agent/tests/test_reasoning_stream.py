@@ -159,7 +159,7 @@ class _FakeStreamingPlanner:
     def __init__(self, events: list[PlannerEvent]) -> None:
         self._events = events
 
-    def run_streaming(self, question: str) -> Iterable[PlannerEvent]:
+    def run_streaming(self, question: str, guideline_excerpts: object = None) -> Iterable[PlannerEvent]:
         yield from self._events
 
 
@@ -230,7 +230,7 @@ def test_stream_chat_with_no_reasoning_delta_events_emits_no_reasoning_delta_fra
     from app.planner import PlannerResult
 
     class _FakeRunOnlyPlanner:
-        def run(self, question: str):
+        def run(self, question: str, guideline_excerpts: object = None):
             return PlannerResult(answer="No tools needed.", trace=[], raw_results=[])
 
     app.dependency_overrides[get_token_validator] = lambda: (lambda token: None)

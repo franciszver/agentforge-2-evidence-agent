@@ -63,7 +63,7 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -403,6 +403,43 @@ _FINAL_REASON_PROMPT = (
 )
 _FINAL_EXTRACT_PROMPT = "Extract the final answer for the clinician as JSON."
 
+# Issue #105 (bp-stage2 follow-up from #85): the guideline corpus retrieval
+# (P3.9, `app.chat.get_evidence_retriever`) used to run strictly AFTER
+# `Planner.run`/`run_streaming` returned -- the planner composed its answer
+# text purely from tool results and its own training/priors, and a citation
+# was bolted onto that already-written prose after the fact by the claim
+# extractor. That let the planner's category language (e.g. "elevated blood
+# pressure") drift from the guideline text it ended up citing (e.g. "Stage 2
+# hypertension"): a genuine, verbatim citation attached to prose that
+# disagreed with it -- exactly the failure the semantic-support judge (#47)
+# is designed to catch.
+#
+# The fix feeds retrieved guideline text INTO the free-text reasoning call
+# (`_finalize_answer_streaming`) that composes the answer, not just into
+# post-hoc citation attachment -- so when a guideline chunk actually defines
+# a category/threshold relevant to a value already in the tool results, the
+# model is instructed to use THAT text's own category name rather than
+# reaching for its own general-knowledge terminology. Retrieval itself still
+# happens exactly where it always did (`app.chat`'s evidence-retrieval
+# path); only the ORDER changed -- it now runs before the planner call
+# instead of after, and its result is threaded through as `guideline_excerpts`
+# (see `Planner.run`/`run_streaming`). A question with no relevant guideline
+# evidence (chart-data-only, or retrieval found nothing above the relevance
+# floor) passes `None`/empty here and this prompt addition is skipped
+# entirely -- byte-identical to the pre-#105 prompt.
+_GUIDELINE_CONTEXT_PROMPT_TEMPLATE = """\
+The following clinical guideline excerpts were retrieved as potentially relevant \
+to this patient's data. If an excerpt defines a category, threshold, or name for \
+a value already established by the tool results above, use THAT EXACT category \
+name in your answer -- do not substitute your own general terminology for it. \
+These excerpts are reference material only, not facts about this specific \
+patient -- never state anything from them as a patient-specific fact unless the \
+tool results already established it.
+
+{excerpts}
+/no_think\
+"""
+
 
 def _coerce_arg(key: str, value: str) -> Any:
     if key in _INT_ARG_KEYS:
@@ -518,20 +555,28 @@ class Planner:
         """
         return get_patient_roster(self._openemr, self._token, self._patient_id)
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: Sequence[str] | None = None) -> PlannerResult:
         """Run the loop to completion and return the finished result.
 
         Delegates to ``run_streaming`` and returns only its terminal event's
         result, discarding the intermediate ``ToolDispatched`` events -- so
         this stays byte-identical to the pre-P2.12 implementation from the
         caller's perspective.
+
+        ``guideline_excerpts`` (#105): retrieved guideline-corpus chunk text
+        (if any -- see ``app.chat``'s evidence-retrieval wiring, which now
+        retrieves BEFORE calling this) fed into final-answer composition so
+        the answer's own category language matches what it will end up
+        citing. ``None``/empty is a no-op, byte-identical to before #105.
         """
-        for event in self.run_streaming(question):
+        for event in self.run_streaming(question, guideline_excerpts):
             if isinstance(event, PlannerCompleted):
                 return event.result
         raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
 
-    def run_streaming(self, question: str) -> Iterator[PlannerEvent]:
+    def run_streaming(
+        self, question: str, guideline_excerpts: Sequence[str] | None = None
+    ) -> Iterator[PlannerEvent]:
         """Same single-tool-per-turn loop as ``run()``, but yields a
         ``ToolDispatched`` event immediately after each tool dispatch
         completes (success, API error, or binding-violation refusal) instead
@@ -539,6 +584,8 @@ class Planner:
         yields exactly one terminal ``PlannerCompleted`` event, last, whose
         ``result`` is identical to what ``run()`` returns for the same
         inputs (P2.12).
+
+        ``guideline_excerpts``: see ``run()``'s docstring (#105).
         """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _build_system_prompt(self._patient_id, self._registry)},
@@ -552,7 +599,7 @@ class Planner:
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
-                final = yield from self._finalize_answer_streaming(messages)
+                final = yield from self._finalize_answer_streaming(messages, guideline_excerpts)
                 yield PlannerCompleted(
                     PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
                 )
@@ -649,7 +696,9 @@ class Planner:
         return list(getattr(self._ollama, "call_stats", []))
 
     def _finalize_answer_streaming(
-        self, messages: list[dict[str, str]]
+        self,
+        messages: list[dict[str, str]],
+        guideline_excerpts: Sequence[str] | None = None,
     ) -> Generator[ReasoningDelta, None, FinalAnswer]:
         """Produce the final answer via the two-call pattern (P2.9), streaming
         the free-text reasoning half as ``ReasoningDelta`` events (P213).
@@ -659,6 +708,15 @@ class Planner:
         that pins the answer to ``FinalAnswer``. The reasoning is fed into
         the extraction call so the extractor only has to transcribe, not
         re-derive.
+
+        ``guideline_excerpts`` (#105): when non-empty, a
+        ``_GUIDELINE_CONTEXT_PROMPT_TEMPLATE`` message carrying the retrieved
+        guideline text is appended to the reasoning call's messages, BEFORE
+        ``_FINAL_REASON_PROMPT`` -- so the model composes its answer with
+        that text already in view rather than reaching for its own
+        general-knowledge category language and having a citation bolted on
+        after the fact. ``None``/empty is a no-op: no message is appended,
+        and the prompt is byte-identical to before #105.
 
         When ``self._ollama`` exposes ``chat_stream`` (the real
         ``OllamaClient``), the reasoning call streams: each delta is yielded
@@ -671,7 +729,16 @@ class Planner:
         ``tests/test_planner.py`` and the eval runner) -- this is what keeps
         those 18 direct-``run()`` tests and the eval replay suite green.
         """
-        reason_messages = messages + [{"role": "user", "content": _FINAL_REASON_PROMPT}]
+        reason_messages = list(messages)
+        if guideline_excerpts:
+            excerpt_text = "\n\n".join(guideline_excerpts)
+            reason_messages.append(
+                {
+                    "role": "user",
+                    "content": _GUIDELINE_CONTEXT_PROMPT_TEMPLATE.format(excerpts=excerpt_text),
+                }
+            )
+        reason_messages.append({"role": "user", "content": _FINAL_REASON_PROMPT})
         chat_stream = getattr(self._ollama, "chat_stream", None)
         if chat_stream is not None:
             reasoning_parts: list[str] = []

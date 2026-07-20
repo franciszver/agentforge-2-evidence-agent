@@ -123,6 +123,25 @@ bug fixed (issue #85)" section for the full mechanism. Net effect for this
 beat: still not demo-ready as a "look, it verified" moment, but for a
 narrower, better-understood reason than before.
 
+**Update (issue #105): the category-mismatch gap named above is fixed, but
+`bp-stage2-question` STILL does not verify, for a third reason.** #105
+moved guideline-corpus retrieval before the planner's answer-composition
+call and fed the retrieved text into it — live re-verification (11/11 fresh
+draws) confirms the planner now correctly says "falls into the category of
+Stage 2 hypertension," matching the guideline's own category name, and the
+citation passes provenance re-validation every time. The case still does
+not verify: the semantic-support judge now downgrades the (correctly-worded)
+citation because the guideline excerpt alone doesn't restate the patient's
+148/94 mmHg reading — a category-threshold reference document never will;
+that value lives on the SAME claim's other (chart-data) citation, which the
+judge doesn't appear to be shown as connected context. This is a
+claim/citation-assembly or judge-prompt gap, not a planner answer-
+composition one, and is out of issue #105's scope. See
+`docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Issue #105 follow-up" section for
+the full live-verification data. Net effect for this beat: still not
+demo-ready as a "look, it verified" moment — three successive fixes have
+each narrowed the gap without yet closing it.
+
 **Honesty note on what "citation overlay" means here.** The module's
 citation UI (`copilot-chat.js`) renders every claim's citation chips inline
 in the chat — clicking one expands the section/page and the exact quoted
@@ -410,6 +429,28 @@ not reliably reproduce a verified citation either — see below and
    precisely: "the system genuinely finds and cites the right guideline
    passage; what it doesn't yet do live is get the category label in its
    own answer right before checking that citation against it."
+8. **Update (issue #105) — the planner-composition gap named in step 7 is
+   closed; the case still doesn't verify, for a fourth reason.** #105 fed
+   the retrieved guideline text into the planner's answer-composition call
+   itself, so it now reads the guideline before writing about it rather
+   than after. Confirmed live (11/11 fresh draws, fully deterministic): the
+   planner's answer now correctly says "Stage 2 hypertension," matching the
+   guideline's own category name — the category-name mismatch is gone. The
+   citation is still genuine and verbatim and still passes provenance
+   re-validation every time. The case still ends `partially_verified`,
+   `xfail`: the semantic-support judge now downgrades the citation for a
+   NEW reason — the guideline excerpt alone doesn't restate the patient's
+   148/94 mmHg reading (a category-threshold document never will; that
+   value lives on the claim's other, chart-data citation). This reads as a
+   claim/citation-assembly or judge-prompt gap (the judge isn't shown that
+   a sibling citation on the same claim already establishes the value),
+   not a planner-composition defect. See `docs/MODEL_AND_HARDWARE_
+   SELECTION.md`'s "Issue #105 follow-up" section for the full detail. The
+   narration line from step 7 above should be updated to: "the system
+   genuinely finds the right guideline passage AND now describes the
+   patient's reading using that guideline's own language; what it doesn't
+   yet do live is connect that category citation back to the specific
+   reading it's categorizing, for the semantic-support check."
 
 ### Beat 3 — Graceful failure on an unreadable field (Phil Belford) — **measured mid-tier (RTX 3060 12 GB desktop): 22.5s**
 
@@ -584,22 +625,38 @@ Nothing below is guessed at; each item names how it was checked.
   `document_citations` entry now attaches (confirmed 6/6 on fresh live
   draws). See `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Claim-extraction
   citation routing bug fixed (issue #85)" section for the full mechanism.
-- **New gap found by issue #85's fix: the planner's own answer text
-  mislabels the BP category, so the now-attached citation still fails
-  semantic support.** With the routing bug fixed, `bp-stage2-question`'s
-  citation reaches the semantic-support judge for the first time and is
+- **Gap found by issue #85's fix, planner category-name mismatch — RESOLVED
+  (issue #105).** With the routing bug fixed, `bp-stage2-question`'s
+  citation reached the semantic-support judge for the first time and was
   correctly downgraded `not_semantically_supported`: the planner's
-  free-text answer calls 148/94 mmHg "elevated blood pressure," but the
+  free-text answer called 148/94 mmHg "elevated blood pressure," but the
   retrieved guideline's own thresholds put that reading in "Stage 2
-  hypertension." Root cause: `app.chat`'s `evidence_retriever()` call runs
-  strictly AFTER `planner.run()` composes the final answer text (P3.9's
-  documented design — retrieval is post-hoc citation evidence, not
-  answer-composition input), so the planner never sees the guideline
-  thresholds it's describing and falls back on its own (here, imprecise)
-  medical knowledge. Fixing this would mean feeding retrieved guideline
-  text into the planner's own answer-composition step, not just the
-  post-hoc citation step — a real architecture change, out of scope for a
-  citation-assembly fix. Worth a dedicated follow-up issue.
+  hypertension." Root cause was `app.chat`'s `evidence_retriever()` call
+  running strictly AFTER `planner.run()` composed the final answer text,
+  so the planner never saw the guideline thresholds it was describing.
+  Fixed: retrieval now runs BEFORE the planner call, and the retrieved
+  text is fed into the planner's own answer-composition step
+  (`Planner.run`/`run_streaming`'s `guideline_excerpts` parameter). Confirmed
+  live, 11/11 fresh draws, fully deterministic: the planner now correctly
+  writes "Stage 2 hypertension." See
+  `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Issue #105 follow-up" section
+  for the full mechanism.
+- **New gap found by issue #105's fix: the semantic-support judge evaluates
+  the guideline citation in isolation, without the sibling chart-data
+  citation that establishes the value it's categorizing.** With the
+  category-name mismatch fixed, `bp-stage2-question`'s citation is now
+  genuinely correct AND correctly-worded — and STILL fails semantic
+  support, for a new reason: the judge downgrades it because the guideline
+  excerpt alone doesn't restate the patient's 148/94 mmHg reading. A
+  category-threshold reference document will never itself restate a
+  specific patient's value — that value lives on the SAME claim's other
+  (chart-data) citation, which the judge isn't shown as connected context
+  when it evaluates the guideline citation. This looks like a
+  claim/citation-assembly or judge-prompt gap, not a planner
+  answer-composition defect, and is out of issue #105's scope. Worth a
+  dedicated follow-up issue — candidate fix direction: give the
+  semantic-support judge the claim's OTHER citations as context, not just
+  the one citation it's currently evaluating.
 - **No `/chat`-reachable path from a question to ingested per-patient
   document facts.** `app.chat.get_patient_fact_provider` only feeds the
   post-answer verification step, not the planner's tool-calling loop that

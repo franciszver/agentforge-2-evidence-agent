@@ -392,7 +392,7 @@ def test_chat_endpoint_response_header_matches_the_recorded_turn_correlation_id(
     caplog.set_level(logging.INFO, logger="app.chat")
 
     class _FakePlanner:
-        def run(self, question: str) -> PlannerResult:
+        def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
             return PlannerResult(answer="ok", trace=[], raw_results=[])
 
     def _ok_validator(token: str) -> None:
@@ -444,7 +444,7 @@ def test_chat_endpoint_logs_never_carry_patient_id(caplog):
     caplog.set_level(logging.INFO, logger="app.chat")
 
     class _FakePlanner:
-        def run(self, question: str) -> PlannerResult:
+        def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
             return PlannerResult(answer="ok", trace=[], raw_results=[])
 
     def _ok_validator(token: str) -> None:

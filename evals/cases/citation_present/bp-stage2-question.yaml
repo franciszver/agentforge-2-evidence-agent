@@ -38,30 +38,34 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (issue #85, live re-verification against current main post the
-  #85 claim-extraction fix): the recording has been re-captured again --
-  the extraction bug issue #100 originally attributed this case's failure
-  to (the model never surfacing the guideline chunk at all) is fixed as of
-  issue #85: the extraction step now correctly reclassifies the model's
-  guideline citation (previously misrouted into `source_refs` with
-  `tool_call_id="blood-pressure-categories"`, `record_id="categories"`,
-  failing `unknown_tool_call`) into a real `document_citations` entry that
-  passes provenance re-validation (`check_document_citation` returns
-  `valid` -- the quoted "Stage 2 hypertension: systolic 140 mmHg or higher
-  OR diastolic 90 mmHg or higher." text is a real, verbatim substring of
-  the retrieved chunk). This case still does not verify, for a DIFFERENT,
-  newly-visible reason: the semantic-support judge downgrades that same
-  citation to `not_semantically_supported`, reasoning "The QUOTE defines
-  Stage 2 hypertension but does not provide specific blood pressure
-  readings from the CLAIM's context, so it does not directly support the
-  assertion that 'this reading falls into the category of elevated blood
-  pressure.'" -- a claim/citation category-name mismatch (the model's own
-  final-answer text calls 148/94 mmHg "elevated blood pressure" rather than
-  "Stage 2 hypertension", the category the retrieved guideline's own
-  thresholds actually put it in). Current outcome on this recording:
-  verdict `partially_verified`, the BP-value claim renders as a verified
-  claim, and the category claim renders as a stripped `Notice` (no
-  surviving `document_citations`). See issue #85's PR description for the
-  full mechanism and why fixing the category-name mismatch is a separate,
-  out-of-scope follow-up (planner answer composition, not claim/citation
-  assembly).
+  OBSERVED (issue #105, live re-verification against current main post the
+  #105 planner/retrieval-ordering fix): the recording has been re-captured
+  again -- the category-name mismatch issue #85 diagnosed (the planner's
+  own final-answer text called 148/94 mmHg "elevated blood pressure" while
+  the guideline it cited categorizes that reading as "Stage 2
+  hypertension") is FIXED as of issue #105: guideline-corpus retrieval now
+  runs before the planner composes its answer, and the retrieved text is
+  fed into the planner's own answer-composition call, so it now correctly
+  uses the guideline's own category name ("Stage 2 hypertension") --
+  confirmed live across 11/11 fresh draws, fully deterministic. The
+  citation is genuine and verbatim, and passes provenance re-validation
+  every time. This case STILL does not verify, for a DIFFERENT, third
+  reason: the semantic-support judge now downgrades the (correctly-worded)
+  citation with a NEW objection -- "The QUOTE defines Stage 2 hypertension
+  but does not provide the patient's blood pressure reading, so it does
+  not support the specific claim about the patient's condition." The judge
+  evaluates the guideline citation in isolation and, on that narrow
+  question, is not wrong: a category-threshold reference document will
+  never itself restate a specific patient's reading -- that value only
+  ever lives in the claim's OTHER citation (the chart-data `source_refs`
+  for 148/94 mmHg, on the same claim). This looks like a claim/citation-
+  assembly or judge-prompt gap (the judge isn't shown that a chart-data
+  citation on the same claim already establishes the value the guideline
+  citation categorizes), not a planner answer-composition defect, and is
+  out of issue #105's scope (category-name mismatch specifically) --
+  flagged as a candidate for a new follow-up issue rather than fixed here.
+  Current outcome on this recording: verdict `partially_verified`, the two
+  BP-value claims render as verified claims, and the category claim
+  renders as a stripped `Notice` (no surviving `document_citations`). See
+  `docs/MODEL_AND_HARDWARE_SELECTION.md`'s "Issue #105 follow-up" section
+  for the full live-verification data and reasoning.

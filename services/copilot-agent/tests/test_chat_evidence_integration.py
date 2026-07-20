@@ -62,7 +62,7 @@ class _FakePlanner:
     def __init__(self, answer: str) -> None:
         self._answer = answer
 
-    def run(self, question: str) -> PlannerResult:
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
         return PlannerResult(answer=self._answer, trace=[], raw_results=[])
 
 

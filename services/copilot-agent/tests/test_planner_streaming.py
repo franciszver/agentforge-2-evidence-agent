@@ -133,7 +133,7 @@ class _FakeStreamingPlanner:
     def __init__(self, events: list[PlannerEvent]) -> None:
         self._events = events
 
-    def run_streaming(self, question: str) -> Iterable[PlannerEvent]:
+    def run_streaming(self, question: str, guideline_excerpts: object = None) -> Iterable[PlannerEvent]:
         yield from self._events
 
 
@@ -290,7 +290,7 @@ class _ProbeStreamingPlanner:
         self.inner_closed = False
         self.reached_second_yield = False
 
-    def run_streaming(self, question: str) -> Iterable[PlannerEvent]:
+    def run_streaming(self, question: str, guideline_excerpts: object = None) -> Iterable[PlannerEvent]:
         try:
             yield ToolDispatched(self._first_trace)
             # If the caller keeps pulling we'd emit more; a mid-stream

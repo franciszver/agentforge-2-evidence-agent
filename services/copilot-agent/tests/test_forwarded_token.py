@@ -93,7 +93,7 @@ class _FakePlanner:
     def __init__(self) -> None:
         self.questions: list[str] = []
 
-    def run(self, question: str):  # pragma: no cover - must never be called on 401
+    def run(self, question: str, guideline_excerpts: object = None):  # pragma: no cover - must never be called on 401
         self.questions.append(question)
         raise AssertionError("planner ran despite an invalid token")
 
@@ -139,7 +139,7 @@ def test_endpoint_active_token_reaches_planner():
         def __init__(self) -> None:
             self.questions: list[str] = []
 
-        def run(self, question: str):
+        def run(self, question: str, guideline_excerpts: object = None):
             from app.planner import PlannerResult
 
             self.questions.append(question)
