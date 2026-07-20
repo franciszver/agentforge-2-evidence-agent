@@ -4,6 +4,15 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY app ./app
+# app/retrieval.py's CORPUS_DIR (P3.9 guideline-corpus evidence retrieval)
+# resolves to ./corpus at runtime -- without this, build_retriever_from_corpus
+# parses a directory that doesn't exist in the image, silently returning zero
+# chunks for every query (parse_corpus on a missing dir, no error raised).
+# Found live during the P5.1 demo dry run (issue #27): with
+# COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true the guideline-citation path still
+# never produced a citation until this line was added -- the feature was
+# unreachable in every built image, not just flag-gated off.
+COPY corpus ./corpus
 
 RUN pip install --no-cache-dir .
 
