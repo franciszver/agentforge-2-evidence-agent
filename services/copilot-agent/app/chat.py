@@ -681,6 +681,44 @@ def _get_evidence_workers() -> tuple[IntakeExtractorWorker, EvidenceRetrieverWor
 
 _EVIDENCE_RETRIEVAL_TOP_K = 3
 
+# Issue #93 (fix 1/4): a relevance-score floor applied to the reranked pool
+# BEFORE it is handed to the claim extractor, so a weak/irrelevant chunk that
+# merely survived into the top-``_EVIDENCE_RETRIEVAL_TOP_K`` never adds
+# extraction-time token pressure or citation-attachment noise for no benefit.
+#
+# 0.5 was chosen by inspecting the actual score distribution recorded in
+# ``app/data/reranker_scores.json`` (5 golden queries, real Ollama pointwise
+# relevance scores) rather than guessed: every query's genuinely-relevant
+# chunk(s) score >=0.87, and every remaining candidate falls straight through
+# a gap to <=0.35 (0.35, 0.21, or 0.0) -- there is no query where a real match
+# sits in the 0.35-0.87 band. E.g. "What blood pressure counts as stage 2
+# hypertension?" -> [0.99, 0.0, 0.0, ...]: today's unconditional top_k=3 hands
+# the extractor two zero-relevance chunks alongside the one that matters.
+# 0.5 sits squarely in that empty gap, so it cleanly separates "the model
+# actually needs this" from "hybrid retrieval's tail" without being close
+# enough to either cluster to be sensitive to the exact float. ``top_k``
+# itself is left at 3 (not reduced) -- it remains the ceiling on the pool;
+# this floor is what actually shrinks what reaches the extractor on the
+# (common) case where fewer than ``top_k`` candidates are truly relevant.
+_EVIDENCE_MIN_RELEVANCE_SCORE = 0.5
+
+
+def _filter_by_relevance_score(
+    chunks: list[RerankedChunk], min_score: float = _EVIDENCE_MIN_RELEVANCE_SCORE
+) -> list[RerankedChunk]:
+    """Drop reranked chunks scoring below ``min_score`` (see
+    ``_EVIDENCE_MIN_RELEVANCE_SCORE`` for the threshold rationale).
+
+    Deliberately NOT folded into ``app.reranking.Reranker.rerank`` itself --
+    that primitive's own tests (``tests/test_reranking.py``) assert exact
+    ``top_k`` counts and demoted-not-dropped distractor ordering, both of
+    which a hard default filter there would break. This filter is specific
+    to the /chat evidence-retrieval boundary (this module's ``_retrieve``
+    closure below), which is the only caller that wants "fewer, better"
+    rather than "exactly top_k, reordered."
+    """
+    return [chunk for chunk in chunks if chunk.rerank_score >= min_score]
+
 
 def get_evidence_retriever(
     trace_store: TraceStore = Depends(get_trace_store),
@@ -717,7 +755,7 @@ def get_evidence_retriever(
     def _retrieve(query: str) -> list[RerankedChunk]:
         result = supervisor.handle(RetrieveSubTask(query=query, k=_EVIDENCE_RETRIEVAL_TOP_K))
         chunks: list[RerankedChunk] = result.payload
-        return chunks
+        return _filter_by_relevance_score(chunks)
 
     return _retrieve
 
