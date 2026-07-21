@@ -1,0 +1,75 @@
+{
+  "case_id": "nsaid-ace-inhibitor-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 61.73,
+  "answer_text": "The patient is currently taking lisinopril, an ACE inhibitor, and has no documented allergies. While there is no direct allergy concern, combining ibuprofen (an NSAID) with lisinopril may reduce renal perfusion and blunt the blood-pressure-lowering effect of lisinopril. This combination is sometimes referred to as part of a 'triple whammy' when a diuretic is also present. Caution is generally advised, especially in older adults or those with reduced kidney function. If the patient is considering taking ibuprofen, it would be prudent to monitor renal function and consider alternative pain management options if there are concerns about kidney function or volume status.",
+  "tools_dispatched": [
+    "get_medications",
+    "get_allergies"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 6,
+  "stripped_claim_count": 4,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently taking lisinopril.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lisinopril"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Lisinopril is an ACE inhibitor.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "nsaid-interactions",
+          "page_or_section": "NSAID Drug-Interaction Cautions",
+          "field_or_chunk_id": "nsaid-interactions#ace-inhibitors-and-arbs",
+          "quote_or_value": "ACE inhibitor (e.g. lisinopril)"
+        }
+      ],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lisinopril"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

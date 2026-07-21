@@ -1,0 +1,110 @@
+{
+  "case_id": "statin-liver-monitoring-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 44.69,
+  "answer_text": "The patient is currently prescribed Atorvastatin at a dose of 20mg taken orally. Routine ongoing liver-enzyme monitoring is generally not needed for an asymptomatic patient on a statin. Liver enzymes are typically checked if the patient develops symptoms suggestive of hepatotoxicity or if clinically indicated for another reason. Therefore, routine liver-enzyme monitoring is not required unless the patient presents with symptoms or there is a clinical indication for it.",
+  "tools_dispatched": [
+    "get_medications"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 7,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently prescribed Atorvastatin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Atorvastatin"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is prescribed Atorvastatin at a dose of 20mg.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "dose",
+          "asserted_value": "20mg"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is prescribed Atorvastatin taken orally.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "route",
+          "asserted_value": "oral"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's Atorvastatin prescription is active.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Routine ongoing liver-enzyme monitoring is generally not needed for an asymptomatic patient on a statin.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "statin-monitoring",
+          "page_or_section": "Statin Therapy Monitoring / Baseline Liver Function",
+          "field_or_chunk_id": "statin-monitoring#baseline-liver-function",
+          "quote_or_value": "Routine ongoing liver-enzyme monitoring in an asymptomatic patient is usually not needed"
+        }
+      ],
+      "source_refs": []
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Liver enzymes are typically checked if the patient develops symptoms suggestive of hepatotoxicity.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "statin-monitoring",
+          "page_or_section": "Statin Therapy Monitoring / Baseline Liver Function",
+          "field_or_chunk_id": "statin-monitoring#baseline-liver-function",
+          "quote_or_value": "liver enzymes are checked if the patient develops symptoms suggestive of hepatotoxicity"
+        }
+      ],
+      "source_refs": []
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

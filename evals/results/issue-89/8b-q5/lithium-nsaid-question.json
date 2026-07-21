@@ -1,0 +1,100 @@
+{
+  "case_id": "lithium-nsaid-question",
+  "model_label": "8b-q5",
+  "elapsed_seconds": 22.08,
+  "answer_text": "The patient is currently taking lithium. Using ibuprofen for back pain may reduce renal lithium clearance, which can raise lithium levels toward toxicity. Therefore, if ibuprofen is necessary, closer monitoring of lithium levels is recommended.",
+  "tools_dispatched": [
+    "get_allergies",
+    "get_medications"
+  ],
+  "verdict": "verified",
+  "total_claim_count": 3,
+  "stripped_claim_count": 0,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently taking lithium.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lithium Carbonate"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Using ibuprofen for back pain may reduce renal lithium clearance, which can raise lithium levels toward toxicity.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "nsaid-interactions",
+          "page_or_section": "NSAID Drug-Interaction Cautions",
+          "field_or_chunk_id": "nsaid-interactions#lithium",
+          "quote_or_value": "NSAIDs can reduce renal lithium clearance, raising lithium levels toward toxicity; this combination generally calls for closer lithium-level monitoring if it cannot be avoided."
+        }
+      ],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lithium Carbonate"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lithium Carbonate"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Therefore, if ibuprofen is necessary, closer monitoring of lithium levels is recommended.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "nsaid-interactions",
+          "page_or_section": "NSAID Drug-Interaction Cautions",
+          "field_or_chunk_id": "nsaid-interactions#lithium",
+          "quote_or_value": "NSAIDs can reduce renal lithium clearance, raising lithium levels toward toxicity; this combination generally calls for closer lithium-level monitoring if it cannot be avoided."
+        }
+      ],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lithium Carbonate"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    }
+  ]
+}

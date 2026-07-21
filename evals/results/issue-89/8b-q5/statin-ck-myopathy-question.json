@@ -1,0 +1,115 @@
+{
+  "case_id": "statin-ck-myopathy-question",
+  "model_label": "8b-q5",
+  "elapsed_seconds": 40.0,
+  "answer_text": "Based on the information provided, the patient is currently taking Simvastatin at a dose of 40mg orally and has no existing problems or recent lab results indicating any issues. According to the clinical guideline, routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended. A CK level should only be checked if the patient reports new muscle pain, tenderness, or weakness. Since the patient feels fine and there are no indications of muscle-related symptoms, a routine CK level check is not necessary at this time.",
+  "tools_dispatched": [
+    "get_medications",
+    "get_problems",
+    "get_recent_labs"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 8,
+  "stripped_claim_count": 3,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently taking Simvastatin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Simvastatin"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is taking Simvastatin at a dose of 40mg.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "dose",
+          "asserted_value": "40mg"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is taking Simvastatin orally.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "route",
+          "asserted_value": "oral"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently active on Simvastatin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient feels fine and there are no indications of muscle-related symptoms.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "dose",
+          "asserted_value": "40mg"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Simvastatin"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}
