@@ -97,10 +97,20 @@ def recording_path(recordings_dir: Path, case_id: str) -> Path:
     return recordings_dir / f"{case_id}.json"
 
 
-def save_recording(path: Path, calls: list[RecordedCall]) -> None:
-    """Write the recording artifact. Creates parent directories as needed."""
+def save_recording(path: Path, calls: list[RecordedCall], *, code_stamp: str | None = None) -> None:
+    """Write the recording artifact. Creates parent directories as needed.
+
+    ``code_stamp`` (#140): the app-code content stamp (see
+    ``runner.code_stamp.compute_app_stamp``) that was live when this
+    recording was made, stamped into the artifact's metadata so a future
+    audit can tell what code produced it. Omitted from the payload entirely
+    when not given, so callers that don't pass one (and recordings written
+    before #140) keep the exact old payload shape.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"calls": [call.to_json() for call in calls]}
+    payload: dict[str, Any] = {"calls": [call.to_json() for call in calls]}
+    if code_stamp is not None:
+        payload["code_stamp"] = code_stamp
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

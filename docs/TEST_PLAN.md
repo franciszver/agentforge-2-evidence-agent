@@ -245,4 +245,24 @@ docker cp development-easy-agent-1:/app/evals/recordings/<id>.json evals/recordi
 
 Its filesystem layout is also flattened relative to a full monorepo checkout — `/app` IS the copilot-agent root directly (`/app/app/...`), not `<repo-root>/services/copilot-agent/app/...` — so `evals/runner/record.py`'s own `sys.path` setup detects both layouts (see its module docstring) rather than assuming the monorepo one; this is what stops a stale, pre-built `app` copy under that container's `site-packages` from silently shadowing the live source.
 
+**Code-stamp drift guard (#140).** The zero-bind-mount fact above means a recording can be made against a genuinely stale baked `app/` with no error — exactly what happened during #70/#130, where the recording subagent had to notice by hand that the container predated #86/#138 and `docker cp` current sources in first. `evals/runner/record.py` now refuses that silently: before any live model call, it computes a content stamp (`runner.code_stamp.compute_app_stamp` — a sha256 over every file under `app/`, path + bytes, excluding `__pycache__`/`*.pyc` build artifacts — covers behavioral data assets under `app/data/` as well as source, not just `*.py`) over the `app/` package it actually resolved and imported (`Path(app.__file__).parent`, the module this process genuinely has loaded — not a separately re-resolved guess at it), and compares it against `EXPECTED_APP_STAMP` if that env var is set. The full protocol:
+
+```bash
+# 1. Host-side, compute the stamp for the CURRENT working tree:
+python -c "from pathlib import Path; import sys; sys.path.insert(0, 'evals/runner'); \
+  from code_stamp import compute_app_stamp; print(compute_app_stamp(Path('services/copilot-agent/app')))"
+
+# 2. docker cp current sources in (as before, #119) and pass the stamp through:
+docker cp services/copilot-agent/app development-easy-agent-1:/app/app
+docker exec -e EXPECTED_APP_STAMP=<stamp from step 1> -it development-easy-agent-1 \
+  python evals/runner/record.py <case-id>
+
+# 3. Copy the recording back out, as before:
+docker cp development-easy-agent-1:/app/evals/recordings/<id>.json evals/recordings/
+```
+
+If step 2's `docker cp` is forgotten (the exact #70/#130 failure mode), the container's baked `app/` no longer matches the stamp computed in step 1, and `record.py` raises `CodeStampMismatchError` naming both stamps and the remediation (rebuild the image, or `docker cp` current sources in) before making a single live model call — a stale recording is no longer possible without the operator seeing a hard failure. Recording directly on the host (no container in the loop, `EXPECTED_APP_STAMP` unset) skips the check entirely — there the live code trivially IS the working tree, so there is nothing to drift from. Every new recording also has its stamp written into a `code_stamp` metadata field (read directly off the loaded JSON payload for an audit — "what code produced this recording?") so a later audit can tell what code produced it; recordings committed before #140 have no such field and are never rewritten to add one, but keep replaying exactly as before.
+
+**Fail CLOSED, not open, on a missing stamp under the container layout (gate review, PR #143).** The stamp check above is only a real guard if a forgotten `EXPECTED_APP_STAMP` can't silently disable it. `record.py` detects the flattened in-container layout (the same #119 resolution this section already relies on — its winning candidate is the repo root itself, not `services/copilot-agent`) and, if that layout is detected with `EXPECTED_APP_STAMP` unset or empty, raises `MissingExpectedStampError` and aborts before any live model call — it does not fall back to a silent no-op. Only the genuine host-monorepo layout (no container, no baked-code drift possible) still treats an unset var as a no-op, exactly as before.
+
 CI is the enforcement backstop, not the primary quality mechanism — the TDD protocol and the three gates run before CI ever sees a PR.

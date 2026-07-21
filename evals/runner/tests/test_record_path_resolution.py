@@ -27,7 +27,7 @@ from pathlib import Path
 
 from app.planner import Planner
 
-from runner.record import _agent_root_candidates
+from runner.record import _agent_root_candidates, _in_flattened_container_layout_for
 
 
 def test_agent_root_candidates_prefers_monorepo_layout_when_present(tmp_path: Path) -> None:
@@ -68,6 +68,49 @@ def test_agent_root_candidates_falls_back_to_monorepo_guess_when_neither_exists(
     candidates = _agent_root_candidates(repo_root, monorepo_agent_root)
 
     assert candidates[0] == monorepo_agent_root
+
+
+# --- _in_flattened_container_layout_for (gate review on #143): the fail- --
+# closed guard's crux comparison, made directly unit-testable by taking the
+# candidate roots as parameters (mirroring _agent_root_candidates itself)
+# instead of only being reachable by monkeypatching the whole
+# ``_in_flattened_container_layout`` function away. Without this, an
+# inverted comparison (``== monorepo_agent_root`` instead of ``==
+# repo_root``) would reopen the exact fail-open hole #143 closed while every
+# existing test (which monkeypatches the function wholesale) stayed green. -
+
+
+def test_in_flattened_container_layout_for_true_under_flattened_layout(tmp_path: Path) -> None:
+    """Flattened dev-container layout: ``repo_root`` IS the copilot-agent
+    root directly -- the monorepo candidate does not exist on disk, so it
+    loses the candidate race and the flattened layout is flagged."""
+    repo_root = tmp_path / "app"
+    monorepo_agent_root = repo_root / "services" / "copilot-agent"
+    (repo_root / "app").mkdir(parents=True)
+    (repo_root / "app" / "__init__.py").touch()
+
+    assert _in_flattened_container_layout_for(repo_root, monorepo_agent_root) is True
+
+
+def test_in_flattened_container_layout_for_false_under_monorepo_layout(tmp_path: Path) -> None:
+    """Full monorepo/host checkout: the monorepo candidate wins the
+    candidate race, so the flattened-container layout is NOT flagged."""
+    repo_root = tmp_path / "repo"
+    monorepo_agent_root = repo_root / "services" / "copilot-agent"
+    (monorepo_agent_root / "app").mkdir(parents=True)
+    (monorepo_agent_root / "app" / "__init__.py").touch()
+
+    assert _in_flattened_container_layout_for(repo_root, monorepo_agent_root) is False
+
+
+def test_in_flattened_container_layout_for_false_when_neither_layout_present(tmp_path: Path) -> None:
+    """Neither candidate holds an ``app`` package on disk -- falls back to
+    the monorepo guess (same as ``_agent_root_candidates`` itself), so the
+    flattened layout is NOT flagged for an unrecognized tree."""
+    repo_root = tmp_path / "repo"
+    monorepo_agent_root = repo_root / "services" / "copilot-agent"
+
+    assert _in_flattened_container_layout_for(repo_root, monorepo_agent_root) is False
 
 
 def test_record_module_imports_live_app_package_not_a_stale_shadow() -> None:
