@@ -25,6 +25,20 @@ Usage (from repo root):
 
 Tears down nothing itself -- the bridge (if any) is the caller's to start and
 stop.
+
+**Running inside ``development-easy-agent-1`` (or any container whose image
+copy of this repo is flattened, i.e. ``/app`` is the copilot-agent root
+directly rather than ``<repo>/services/copilot-agent``):** this script's
+own ``sys.path`` setup detects both layouts (#119) so it always imports the
+LIVE ``app`` package baked into the image, never a stale pre-built copy
+under ``site-packages``. That container also has **no bind mounts**
+(``docker inspect development-easy-agent-1`` shows ``"Mounts": []``) -- it
+is a snapshot of the image, not a live-editable checkout, so any file this
+script writes (recordings included) must be copied out explicitly, e.g.:
+
+    docker cp development-easy-agent-1:/app/evals/recordings/<id>.json evals/recordings/
+
+before it will show up on the host to commit.
 """
 
 from __future__ import annotations
@@ -35,10 +49,36 @@ import sys
 from pathlib import Path
 
 _EVALS_ROOT = Path(__file__).resolve().parents[1]
-_AGENT_ROOT = _EVALS_ROOT.parent / "services" / "copilot-agent"
-for _root in (str(_AGENT_ROOT), str(_EVALS_ROOT)):
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
+_REPO_ROOT = _EVALS_ROOT.parent
+_MONOREPO_AGENT_ROOT = _REPO_ROOT / "services" / "copilot-agent"
+
+
+def _agent_root_candidates(repo_root: Path, monorepo_agent_root: Path) -> list[Path]:
+    """Directories that might hold the live ``app`` package, most-preferred
+    first -- covers both layouts this script runs under (#119):
+
+    * full monorepo checkout: ``<repo-root>/services/copilot-agent/app/``
+    * the ``development-easy-agent-1`` dev container's flattened layout,
+      where ``/app`` (i.e. ``repo_root`` here) IS the copilot-agent root
+      directly -- ``repo_root / "services" / "copilot-agent"`` does not
+      exist there, so that candidate must not be the only one inserted.
+
+    Whichever candidate actually contains an ``app`` package on disk sorts
+    first, so it lands ahead of the other candidate -- and ahead of any
+    stale ``app`` copy pre-installed in site-packages -- on ``sys.path``,
+    regardless of which layout is active. Pure function of its arguments
+    (no module-global reads) so it's directly unit-testable against
+    synthetic directory trees -- see
+    ``evals/runner/tests/test_record_path_resolution.py``.
+    """
+    candidates = [monorepo_agent_root, repo_root]
+    return sorted(candidates, key=lambda root: not (root / "app" / "__init__.py").is_file())
+
+
+for _root in reversed(_agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT) + [_EVALS_ROOT]):
+    _root_str = str(_root)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
 
 from app.config import Settings  # noqa: E402
 from app.llama_server_client import LlamaServerClient  # noqa: E402
