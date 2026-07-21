@@ -1,0 +1,86 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "call_tool",
+        "final_answer": null,
+        "reason": "To find her most recent lab result, we need to retrieve the latest lab data.",
+        "tool": "get_recent_labs",
+        "tool_args": {
+          "limit": "1"
+        }
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "summary": "The patient's potassium level is 4.1 mEq/L."
+      },
+      "schema": "QuarantineSummary"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Her most recent lab result shows a potassium level of 4.1 mEq/L, which is within the normal range.",
+        "reason": "The most recent lab result shows a potassium level of 4.1 mEq/L, which is within the normal range.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "The patient's most recent lab result shows a potassium level of 4.1 mEq/L, which is within the normal range.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "The patient's most recent lab result shows a potassium level of 4.1 mEq/L, which is within the normal range.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "4.1",
+                "field": "value",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "mEq/L",
+                "field": "unit",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The patient's most recent lab result shows a potassium level of 4.1 mEq/L."
+          },
+          {
+            "document_citations": [],
+            "source_refs": [
+              {
+                "asserted_value": "normal",
+                "field": "abnormal_flag",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "The potassium level is within the normal range."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

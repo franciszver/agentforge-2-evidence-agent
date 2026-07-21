@@ -1,0 +1,18 @@
+id: fixture-patient-facts-smoke
+category: citation_present
+failure_mode: >
+  Harness self-test (issue #70): proves runner.pipeline.run_case threads a
+  case's patient_facts fixture into BOTH the planner's reasoning call
+  (document_facts) and run_verification's patient_facts, mirroring #86's
+  app.chat wiring for the same one-fetch, two-consumer document-fact source.
+question: "What was her last creatinine?"
+patient_id: 1
+patient_facts:
+  - source_type: lab_pdf
+    source_id: lab-doc-1
+    page_or_section: "page 2"
+    field_or_chunk_id: lab-doc-1#page-2-row-0
+    quote_or_value: "Creatinine: 0.9"
+assertions:
+  - type: verdict
+    equals: verified

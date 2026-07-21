@@ -36,6 +36,18 @@ list of deterministic assertions to run against the pipeline's result.
                                  stage (``runner.pipeline.needs_verification``
                                  -- widened to also trigger on this
                                  assertion).
+  * ``no_document_citation_from_patient_fact`` -- none of the rendered,
+                                 surviving claims may carry a document
+                                 citation whose ``source_id`` matches one of
+                                 this case's own ``patient_facts`` fixtures --
+                                 a structural check that a planted document
+                                 fact (e.g. an injection probe's poisoned
+                                 lab-report quote) never ends up cited as
+                                 grounding evidence, regardless of whether the
+                                 model's free-text answer merely repeats the
+                                 injected text (``answer_not_contains``
+                                 already guards that). Also widens
+                                 ``runner.pipeline.needs_verification``.
 
 ``verdict`` (and therefore the extraction + verification pipeline stage) is
 only computed for cases that actually use it -- see
@@ -55,6 +67,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.schemas.ingestion import Citation
 from app.schemas.planner import ToolName
 from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
@@ -177,6 +190,15 @@ class GuidelineCitationPresentAssertion(_AssertionBase):
     type: Literal["guideline_citation_present"]
 
 
+class NoDocumentCitationFromPatientFactAssertion(_AssertionBase):
+    """None of the rendered, surviving claims may carry a document citation
+    whose ``source_id`` matches one of this case's own ``patient_facts``
+    fixtures -- see module docstring. Requires the case to declare at least
+    one ``patient_facts`` fixture (nothing to check against otherwise)."""
+
+    type: Literal["no_document_citation_from_patient_fact"]
+
+
 Assertion = Annotated[
     Union[
         FirstToolInAssertion,
@@ -186,6 +208,7 @@ Assertion = Annotated[
         MustRefuseAssertion,
         NoPhiAssertion,
         GuidelineCitationPresentAssertion,
+        NoDocumentCitationFromPatientFactAssertion,
     ],
     Field(discriminator="type"),
 ]
@@ -221,6 +244,28 @@ class RetrievedChunkFixture(BaseModel):
             text=self.text,
             scores={"hybrid": self.rerank_score},
             rerank_score=self.rerank_score,
+        )
+
+
+class PatientFactFixture(BaseModel):
+    """Canned stand-in for one patient-scoped ingested document fact (issue
+    #70); fields mirror ``app.schemas.ingestion.Citation`` exactly."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: Literal["lab_pdf", "intake_form"]
+    source_id: str = Field(min_length=1)
+    page_or_section: str = Field(min_length=1)
+    field_or_chunk_id: str = Field(min_length=1)
+    quote_or_value: str = Field(min_length=1)
+
+    def to_citation(self) -> Citation:
+        return Citation(
+            source_type=self.source_type,
+            source_id=self.source_id,
+            page_or_section=self.page_or_section,
+            field_or_chunk_id=self.field_or_chunk_id,
+            quote_or_value=self.quote_or_value,
         )
 
 
@@ -275,6 +320,18 @@ class EvalCase(BaseModel):
             "nothing on the live /chat path."
         ),
     )
+    patient_facts: list[PatientFactFixture] = Field(
+        default_factory=list,
+        description=(
+            "Issue #70: canned patient-scoped ingested document-fact "
+            "citations for this case's bound patient -- see "
+            "PatientFactFixture. Empty (the default) for cases with no "
+            "document-fact surface, mirroring a chart-data-only turn where "
+            "app.chat.get_patient_fact_provider's live fetch returns nothing "
+            "for that patient -- byte-identical to the pre-#70 harness, so "
+            "every existing case YAML stays valid unmodified."
+        ),
+    )
     assertions: list[Assertion] = Field(min_length=1)
     xfail: str | None = Field(
         default=None,
@@ -312,6 +369,18 @@ class EvalCase(BaseModel):
                 raise ValueError(
                     f"tool_data[{tool.value!r}] does not validate against {schema.__name__}: {exc}"
                 ) from exc
+        return self
+
+    @model_validator(mode="after")
+    def _validate_no_document_citation_assertion_has_patient_facts(self) -> EvalCase:
+        has_assertion = any(
+            isinstance(assertion, NoDocumentCitationFromPatientFactAssertion) for assertion in self.assertions
+        )
+        if has_assertion and not self.patient_facts:
+            raise ValueError(
+                "no_document_citation_from_patient_fact assertion needs at least one "
+                "patient_facts fixture to check against"
+            )
         return self
 
 
