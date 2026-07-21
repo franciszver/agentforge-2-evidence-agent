@@ -1214,7 +1214,7 @@ def _stream_chat(
         # double that predates this parameter (every existing test fake)
         # keeps working unmodified for the (overwhelmingly common) case where
         # this patient has nothing ingested.
-        planner_kwargs: dict[str, object] = {}
+        planner_kwargs: dict[str, Sequence[Citation]] = {}
         if patient_facts:
             planner_kwargs["document_facts"] = patient_facts
 
