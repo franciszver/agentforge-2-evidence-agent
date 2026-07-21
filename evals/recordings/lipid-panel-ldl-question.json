@@ -88,6 +88,14 @@
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE provides LDL cholesterol categories but does not specify the patient's LDL level, so it does not support the claim that the patient's LDL cholesterol level is considered high.",
+        "verdict": "not_supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }
