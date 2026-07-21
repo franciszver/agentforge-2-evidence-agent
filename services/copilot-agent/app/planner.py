@@ -72,6 +72,7 @@ from app.ollama_client import LlmCallStats
 from app.openemr_client import OpenEmrApiError, OpenEmrClient
 from app.quarantine import QuarantinedSummarizer, quarantine_tool_result
 from app.schemas.common import ToolSchemaModel
+from app.schemas.ingestion import Citation
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
     GetAllergiesInput,
@@ -440,6 +441,32 @@ tool results already established it.
 /no_think\
 """
 
+# Issue #86: mirrors #105's guideline_excerpts fix at the SAME call site
+# (the free-text reasoning call in `_finalize_answer_streaming`, never the
+# #123-fragile tool-dispatch decision prompt) -- appended ONLY when
+# `document_facts` is non-empty, so the (today, universal) empty case stays
+# byte-identical to before this fix.
+_DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE = """\
+The following facts were extracted from documents this patient's clinician has \
+uploaded (e.g. a lab report or intake form). Each line below is a literal quote \
+of what was actually read from that document -- if a field is not shown, it was \
+not legible or not present in the document; never guess or state a value for it. \
+These ARE facts about this specific patient -- use them to answer the question \
+when relevant, and if the document does not contain the specific detail asked \
+about, say so honestly rather than reporting that no data exists at all.
+
+{facts}
+/no_think\
+"""
+
+
+def _append_context_message(messages: list[dict[str, str]], template: str, **template_kwargs: str) -> None:
+    """Append one ``{"role": "user"}`` message rendering ``template`` --
+    shared by the guideline-excerpts (#105) and document-facts (#86)
+    context-injection blocks in ``_finalize_answer_streaming``, which are
+    otherwise structurally identical (guard on non-empty input -> append)."""
+    messages.append({"role": "user", "content": template.format(**template_kwargs)})
+
 
 def _coerce_arg(key: str, value: str) -> Any:
     if key in _INT_ARG_KEYS:
@@ -555,7 +582,12 @@ class Planner:
         """
         return get_patient_roster(self._openemr, self._token, self._patient_id)
 
-    def run(self, question: str, guideline_excerpts: Sequence[str] | None = None) -> PlannerResult:
+    def run(
+        self,
+        question: str,
+        guideline_excerpts: Sequence[str] | None = None,
+        document_facts: Sequence[Citation] | None = None,
+    ) -> PlannerResult:
         """Run the loop to completion and return the finished result.
 
         Delegates to ``run_streaming`` and returns only its terminal event's
@@ -568,14 +600,25 @@ class Planner:
         retrieves BEFORE calling this) fed into final-answer composition so
         the answer's own category language matches what it will end up
         citing. ``None``/empty is a no-op, byte-identical to before #105.
+
+        ``document_facts`` (#86): this patient's own ingested lab/intake-form
+        fact citations (if any -- see ``app.chat.get_patient_fact_provider``,
+        which now fetches BEFORE calling this) fed into final-answer
+        composition so a question only answerable from an ingested document
+        is actually answered from it, instead of "no data recorded" (chart
+        tools alone genuinely have none). ``None``/empty is a no-op,
+        byte-identical to before #86.
         """
-        for event in self.run_streaming(question, guideline_excerpts):
+        for event in self.run_streaming(question, guideline_excerpts, document_facts):
             if isinstance(event, PlannerCompleted):
                 return event.result
         raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
 
     def run_streaming(
-        self, question: str, guideline_excerpts: Sequence[str] | None = None
+        self,
+        question: str,
+        guideline_excerpts: Sequence[str] | None = None,
+        document_facts: Sequence[Citation] | None = None,
     ) -> Iterator[PlannerEvent]:
         """Same single-tool-per-turn loop as ``run()``, but yields a
         ``ToolDispatched`` event immediately after each tool dispatch
@@ -586,6 +629,7 @@ class Planner:
         inputs (P2.12).
 
         ``guideline_excerpts``: see ``run()``'s docstring (#105).
+        ``document_facts``: see ``run()``'s docstring (#86).
         """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _build_system_prompt(self._patient_id, self._registry)},
@@ -599,7 +643,7 @@ class Planner:
             decision = self._ollama.extract(messages, PlannerDecision)
 
             if decision.action is PlannerAction.ANSWER or decision.tool is None:
-                final = yield from self._finalize_answer_streaming(messages, guideline_excerpts)
+                final = yield from self._finalize_answer_streaming(messages, guideline_excerpts, document_facts)
                 yield PlannerCompleted(
                     PlannerResult(answer=final.answer, trace=trace, raw_results=raw_results, llm_calls=self._collect_llm_calls())
                 )
@@ -699,6 +743,7 @@ class Planner:
         self,
         messages: list[dict[str, str]],
         guideline_excerpts: Sequence[str] | None = None,
+        document_facts: Sequence[Citation] | None = None,
     ) -> Generator[ReasoningDelta, None, FinalAnswer]:
         """Produce the final answer via the two-call pattern (P2.9), streaming
         the free-text reasoning half as ``ReasoningDelta`` events (P213).
@@ -718,6 +763,16 @@ class Planner:
         after the fact. ``None``/empty is a no-op: no message is appended,
         and the prompt is byte-identical to before #105.
 
+        ``document_facts`` (#86): when non-empty, a
+        ``_DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE`` message carrying this
+        patient's own ingested document facts (their literal citation quotes
+        only) is appended AFTER the
+        guideline-excerpts message (if any) and BEFORE
+        ``_FINAL_REASON_PROMPT``, so the model can answer from an ingested
+        document instead of reporting no data exists for it.
+        ``None``/empty is a no-op: no message is appended, and the prompt is
+        byte-identical to before #86.
+
         When ``self._ollama`` exposes ``chat_stream`` (the real
         ``OllamaClient``), the reasoning call streams: each delta is yielded
         as a ``ReasoningDelta`` event as it arrives, and the reasoning text
@@ -731,12 +786,16 @@ class Planner:
         """
         reason_messages = list(messages)
         if guideline_excerpts:
-            excerpt_text = "\n\n".join(guideline_excerpts)
-            reason_messages.append(
-                {
-                    "role": "user",
-                    "content": _GUIDELINE_CONTEXT_PROMPT_TEMPLATE.format(excerpts=excerpt_text),
-                }
+            _append_context_message(
+                reason_messages,
+                _GUIDELINE_CONTEXT_PROMPT_TEMPLATE,
+                excerpts="\n\n".join(guideline_excerpts),
+            )
+        if document_facts:
+            _append_context_message(
+                reason_messages,
+                _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE,
+                facts="\n".join(f"- {fact.quote_or_value}" for fact in document_facts),
             )
         reason_messages.append({"role": "user", "content": _FINAL_REASON_PROMPT})
         chat_stream = getattr(self._ollama, "chat_stream", None)

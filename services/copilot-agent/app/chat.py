@@ -162,9 +162,23 @@ class PlannerProtocol(Protocol):
     text, fed into answer composition -- see ``app.planner.Planner.run``'s
     docstring. Defaulted so a test double that ignores it (every existing
     fake planner) stays valid.
+
+    ``document_facts`` (#86): optional patient-scoped ingested document fact
+    citations, also fed into answer composition -- see
+    ``app.planner.Planner.run``'s docstring. Also defaulted, and
+    ``_stream_chat`` only ever passes it as an explicit keyword argument when
+    non-empty (mirrors ``app.extraction.run_verification``'s own
+    conditional-kwarg convention for ``retrieved_chunks``/``patient_facts``),
+    so every existing fake planner (which never receives it) stays valid
+    unmodified.
     """
 
-    def run(self, question: str, guideline_excerpts: Sequence[str] | None = None) -> PlannerResult: ...
+    def run(
+        self,
+        question: str,
+        guideline_excerpts: Sequence[str] | None = None,
+        document_facts: Sequence[Citation] | None = None,
+    ) -> PlannerResult: ...
 
 
 TokenValidator = Callable[[str], None]
@@ -1183,11 +1197,32 @@ def _stream_chat(
             retrieved_chunks = []
         guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
 
+        # #86: this turn's patient's ingested fact citations, fetched HERE
+        # (before the planner runs) so this ONE disk read feeds both answer
+        # composition (`document_facts` below) and the post-hoc verification
+        # pass further below (`patient_facts`, P3.9a/#46) -- never fetched
+        # twice. Fail-soft like evidence_retriever above: logged by type only.
+        try:
+            patient_facts = patient_fact_provider(conversation.patient_id)
+        except Exception as exc:
+            _logger.warning("patient fact lookup failed", extra={"error_type": type(exc).__name__})
+            patient_facts = []
+
+        # Threaded into the planner call ONLY when non-empty -- the same
+        # conditional-kwarg convention `app.extraction.run_verification`
+        # already uses for `retrieved_chunks`/`patient_facts` -- so a planner
+        # double that predates this parameter (every existing test fake)
+        # keeps working unmodified for the (overwhelmingly common) case where
+        # this patient has nothing ingested.
+        planner_kwargs: dict[str, Sequence[Citation]] = {}
+        if patient_facts:
+            planner_kwargs["document_facts"] = patient_facts
+
         if cross_patient_reference_detected:
             result = cross_patient_refusal_result()
         elif run_streaming is not None:
             result = None
-            for event in run_streaming(message, guideline_excerpts):
+            for event in run_streaming(message, guideline_excerpts, **planner_kwargs):
                 if isinstance(event, ToolDispatched):
                     yield _tool_call_frame(trace_store, correlation_id, event.trace)
                 elif isinstance(event, ReasoningDelta):
@@ -1202,7 +1237,7 @@ def _stream_chat(
             if result is None:
                 raise AssertionError("run_streaming ended without a terminal PlannerCompleted event")  # pragma: no cover
         else:
-            result = planner.run(message, guideline_excerpts)
+            result = planner.run(message, guideline_excerpts, **planner_kwargs)
         assert result is not None  # mypy: the elif branch's loop widens result
         # Deterministic cross-patient subject-check (#194, follow-up to
         # #121): a small model can verbally attribute the bound patient's
@@ -1273,19 +1308,12 @@ def _stream_chat(
         # retrieval call per turn, same as before, just earlier.
 
         # P3.9a (issue #46): this turn's bound patient's own extracted
-        # lab/intake-form fact citations (flag-gated -- see
-        # get_patient_fact_provider), offered to the extraction pipeline
+        # lab/intake-form fact citations, offered to the extraction pipeline
         # below alongside the guideline chunks and tool-result catalog.
-        # ``conversation.patient_id`` is the SAME id already verified by the
-        # launch-patient binding and P2.16 conversation binding above -- this
-        # lookup is never given any other patient's id. Fail-soft, same
-        # discipline as evidence_retriever above: a lookup failure must never
-        # break an otherwise-working chat turn, and is logged by TYPE ONLY.
-        try:
-            patient_facts = patient_fact_provider(conversation.patient_id)
-        except Exception as exc:
-            _logger.warning("patient fact lookup failed", extra={"error_type": type(exc).__name__})
-            patient_facts = []
+        # ``patient_facts`` was already computed ABOVE, before the planner
+        # ran (see that comment -- #86 folded this fetch into the SAME
+        # earlier point ``guideline_excerpts``/``retrieved_chunks`` already
+        # use) -- reused here rather than looked up a second time.
 
         # Run the answer->claims extraction pipeline and populate the verification
         # frame with the REAL verdict / citation chips / warnings for this answer.
