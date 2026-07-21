@@ -236,4 +236,12 @@ Frontend logic: `npm test` (Jest) once the panel lands (P2.14).
 
 **Where eval inference actually runs (decided 2026-07-14):** GitHub-hosted runners have no GPU and cannot serve a 4B model at useful speed, so model inference never runs in CI. The eval harness supports **record/replay**: live-model runs execute locally on the dev GPU and record model outputs as committed artifacts; CI replays those recordings through every deterministic assertion and validates all case schemas — so a broken checker, contract, or case still fails the PR without any inference. Live runs are mandatory before merging any agent-behavior PR and at every phase gate (see PR Definition of Done, §3); their pass-rate results are committed, feeding the dashboard chart and the README results table. A self-hosted runner on the dev machine was considered and rejected: attaching a personal machine to a public repository's CI is an unnecessary attack surface.
 
+**Running a live record against the dev stack's `development-easy-agent-1` container (#119).** That container is a baked copy of the image, not a live-editable checkout — `docker inspect development-easy-agent-1` shows `"Mounts": []`, so nothing written inside it (a recording included) reaches the host automatically. Copy results out explicitly after recording:
+
+```bash
+docker cp development-easy-agent-1:/app/evals/recordings/<id>.json evals/recordings/
+```
+
+Its filesystem layout is also flattened relative to a full monorepo checkout — `/app` IS the copilot-agent root directly (`/app/app/...`), not `<repo-root>/services/copilot-agent/app/...` — so `evals/runner/record.py`'s own `sys.path` setup detects both layouts (see its module docstring) rather than assuming the monorepo one; this is what stops a stale, pre-built `app` copy under that container's `site-packages` from silently shadowing the live source.
+
 CI is the enforcement backstop, not the primary quality mechanism — the TDD protocol and the three gates run before CI ever sees a PR.
