@@ -348,6 +348,7 @@ run below.
 |---|---|---|---|---|---|
 | Qwen3-8B-Q5_K_M (pre-fix, 4 fresh draws) | 8B, Q5_K_M | **2/12** (identical on all 4 draws) | 26.0–30.8 s | 2–3 / 12 | 7.6 GB VRAM |
 | Qwen3-14B-Q4_K_M | 14B, Q4_K_M | 4/12 | 33.3 s | 2 / 12 | 10.7 GB VRAM |
+| Qwen3-14B-Q5_K_M (issue #89, 1 fresh draw) | 14B, Q5_K_M | 3/12 | 38.0 s | not tracked in this comparison — see "Issue #89 findings" below | ~11.9 GB VRAM (212 MiB headroom) |
 | Qwen3-30B-A3B (`--n-cpu-moe 32`) | 30B MoE, Q5_K_M | 3/12 | 57.6 s | 2 / 12 | 9.9 GB VRAM |
 | Qwen3.6-35B-A3B (`--n-cpu-moe 30`) | 35B MoE, Q5_K_M | 5/12 | 81.9 s | 3 / 12 | 10.3 GB VRAM |
 | gpt-oss-120b (`--n-cpu-moe 32`) | 120B MoE, Q8_K_XL | 5/12 | 220.6 s | **0 / 12** | 10.5 GB VRAM + ~60 GB CPU RAM |
@@ -386,7 +387,8 @@ further movement in these numbers.
 
 **No model swap tested here beat the pipeline-fixed 8B-Q5 result.** The
 single most effective intervention measured this session was a bug fix, not
-a bigger model — 14B, 30B-A3B, 35B-A3B, and gpt-oss-120b all either scored
+a bigger model — 14B (Q4_K_M and Q5_K_M — see "Issue #89 findings" below),
+30B-A3B, 35B-A3B, and gpt-oss-120b all either scored
 lower or cost dramatically more latency (up to 9x) than the post-fix 8B-Q5's
 4/12 at 25.6 s, and none reach the committed baseline's 5/12 without paying
 a latency penalty that disqualifies them for interactive use. gpt-oss-120b
@@ -497,20 +499,19 @@ hardware."
 | **Total verified** | **4/12** | **3/12** |
 | **Mean latency** | **30.3 s** (13.3–58.9 s) | **38.0 s** (19.1–61.7 s) |
 
-Every "verified" cell above was confirmed by inspecting
-`result.rendered.segments`/`document_citations` directly (not the bare
-`verdict` string) — each `verified` case genuinely carries a
-`source_type == "guideline_chunk"` `DocumentCitation` that passed both
-provenance re-validation and the semantic-support judge; none is a
-verdict-only false positive.
+Every "verified" cell above was confirmed with the same segment-inspection
+discipline already established above (issue #109's lesson): each `verified`
+case genuinely carries a `source_type == "guideline_chunk"` `DocumentCitation`
+that passed both provenance re-validation and the semantic-support judge;
+none is a verdict-only false positive.
 
-**This is a same-day single-draw comparison, not a large-sample one** — the
-committed `citation_present` baseline elsewhere in this document (issue
-#133: 7/12) is measured differently (stable-recording re-judge / larger live
-samples per case); this section's numbers are a fresh single draw per case
-on each engine, exactly matching this addendum's own already-disclosed
-methodology and its own already-disclosed 1/12–6/12 fresh-draw variance
-band for this pipeline. Three cases (`a1c-target-question`,
+**This is a same-day single-draw comparison, not a large-sample one** — see
+"Fresh draw vs. stable recording, again" above for why these fresh
+single-draw numbers are a different measurement regime from the committed,
+stable-recording `citation_present` baseline (issue #133: 7/12), and are
+instead a fresh single draw per case on each engine, exactly matching this
+addendum's own already-disclosed methodology and its own already-disclosed
+1/12–6/12 fresh-draw variance band for this pipeline. Three cases (`a1c-target-question`,
 `lithium-nsaid-question`, `statin-liver-monitoring-question`) flipped from
 `verified` on 8B-Q5 to `partially_verified` on 14B-Q5_K_M; two
 (`metformin-renal-monitoring-question`, `renal-function-ace-question`)
@@ -523,19 +524,17 @@ other.
 
 **Honest verdict: 14B-Q5_K_M does not meaningfully improve citation quality
 over 8B-Q5 on this hardware, and costs meaningfully more latency for it.**
-3/12 vs. 4/12 is a **decrease**, not an improvement, and sits inside this
-document's own already-disclosed single-draw variance band rather than
-outside it — this result alone would not justify adopting 14B even setting
-latency aside. Mean latency is **25% higher** (38.0 s vs. 30.3 s), and the
-hardware-fit finding above (212 MiB of margin left on a 12 GB card, an
-auto-fit warning that had to be overridden by the load succeeding anyway) is
-a real operational red flag independent of the citation numbers: this
-config is not a comfortable, reliably-repeatable fit on this specific
-desktop the way 8B-Q5's ~7.6 GB footprint is. Combined with the
+3/12 vs. 4/12 is a **decrease**, not an improvement — this result alone
+would not justify adopting 14B even setting latency aside. Mean latency is
+**25% higher** (38.0 s vs. 30.3 s), and the hardware-fit red flag above is a
+real operational concern independent of the citation numbers. Combined with the
 Q4_K_M row already in this addendum's results table (4/12, matching 8B-Q5
 exactly, not beating it either), **no quantization of Qwen3-14B measured
-across either issue #89 or the earlier sweep beats the committed 8B-Q5
-baseline on this hardware.** Per issue #89's own "Done when" criterion
+across either issue #89 or the earlier sweep beats 8B-Q5 under this
+addendum's fresh-draw protocol on this hardware** (a separate measurement
+regime from the committed, stable-recording `citation_present` baseline —
+see "Fresh draw vs. stable recording, again" above and issue #133's 7/12).
+Per issue #89's own "Done when" criterion
 ("if meaningfully better, presented ... as a candidate measured mid-tier
 model"): **it is not meaningfully better, and is not presented as a
 candidate for the mid-tier doc addendum.** The maintainer should treat this
