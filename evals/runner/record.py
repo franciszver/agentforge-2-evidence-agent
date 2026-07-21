@@ -39,6 +39,21 @@ script writes (recordings included) must be copied out explicitly, e.g.:
     docker cp development-easy-agent-1:/app/evals/recordings/<id>.json evals/recordings/
 
 before it will show up on the host to commit.
+
+**Code-stamp drift guard (#140).** Because that container has no bind
+mounts, a live recording made without noticing the baked ``app/`` is stale
+(exactly what happened during #70/#130) silently corrupts the committed
+golden eval set -- no error, just wrong recorded output. Before making any
+live model call, ``main()`` calls :func:`verify_code_stamp`, which computes
+a content stamp over the ``app/`` package this process actually resolved and
+imported (``runner.code_stamp.compute_app_stamp``) and, if the recording
+protocol supplied ``EXPECTED_APP_STAMP`` (host-computed over
+``services/copilot-agent/app`` before docker-exec'ing in -- see ``docs/
+TEST_PLAN.md`` Sec 9), refuses loudly on any mismatch instead of recording
+against silently-stale code. The resulting stamp is also written into every
+new recording's ``code_stamp`` metadata field, so a future audit can tell
+what code produced it (old recordings without the field are untouched and
+still replay exactly as before).
 """
 
 from __future__ import annotations
@@ -84,6 +99,7 @@ from app.config import Settings  # noqa: E402
 from app.llama_server_client import LlamaServerClient  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
 
+from runner.code_stamp import check_code_stamp, compute_app_stamp  # noqa: E402
 from runner.loader import discover_case_files, load_case  # noqa: E402
 from runner.ollama_replay import OllamaLike, RecordingOllamaClient, recording_path, save_recording  # noqa: E402
 from runner.pipeline import run_case  # noqa: E402
@@ -92,12 +108,33 @@ _CASES_DIR = _EVALS_ROOT / "cases"
 _REGRESSIONS_DIR = _EVALS_ROOT / "regressions"
 _RECORDINGS_DIR = _EVALS_ROOT / "recordings"
 
+# The SAME resolved root #119's sys.path setup picked as the live ``app``
+# package source -- whichever candidate actually has ``app/__init__.py`` on
+# disk (see ``_agent_root_candidates``'s docstring). Recomputing it here
+# (cheap, pure) rather than threading a value out of the sys.path loop above
+# keeps that loop's only job being sys.path setup.
+_RESOLVED_APP_ROOT = _agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT)[0] / "app"
+
 
 def _find_case_file(case_id: str) -> Path:
     for path in discover_case_files(_CASES_DIR, _REGRESSIONS_DIR):
         if load_case(path).id == case_id:
             return path
     raise SystemExit(f"no case with id {case_id!r} under {_CASES_DIR} or {_REGRESSIONS_DIR}")
+
+
+def verify_code_stamp() -> str:
+    """Compute this process's local app-code stamp (#140) and, if the
+    recording protocol supplied ``EXPECTED_APP_STAMP`` (host-computed over
+    ``services/copilot-agent/app`` before docker-exec'ing into a container
+    -- see ``docs/TEST_PLAN.md`` Sec 9), refuse loudly on mismatch before
+    any live model call is made. Returns the local stamp so it can be
+    stamped into the recording's own metadata (an audit trail even when no
+    ``EXPECTED_APP_STAMP`` was supplied, e.g. recording directly on host).
+    """
+    local_stamp = compute_app_stamp(_RESOLVED_APP_ROOT)
+    check_code_stamp(local_stamp, os.environ.get("EXPECTED_APP_STAMP"))
+    return local_stamp
 
 
 def _build_live_client(engine: str, ollama_base_url: str) -> OllamaLike:
@@ -111,7 +148,7 @@ def _build_live_client(engine: str, ollama_base_url: str) -> OllamaLike:
     return OllamaClient.from_settings(settings)
 
 
-def record_case(case_id: str, ollama_base_url: str, engine: str) -> None:
+def record_case(case_id: str, ollama_base_url: str, engine: str, code_stamp: str) -> None:
     case = load_case(_find_case_file(case_id))
 
     recorder = RecordingOllamaClient(_build_live_client(engine, ollama_base_url))  # type: ignore[arg-type]
@@ -119,7 +156,7 @@ def record_case(case_id: str, ollama_base_url: str, engine: str) -> None:
     result = run_case(case, recorder)
 
     out_path = recording_path(_RECORDINGS_DIR, case.id)
-    save_recording(out_path, recorder.calls)
+    save_recording(out_path, recorder.calls, code_stamp=code_stamp)
     tools_dispatched = [call.tool.value for call in result.planner_result.trace]
     print(f"[record] {case.id}: {len(recorder.calls)} call(s) -> {out_path}")
     print(f"[record] {case.id}: tools dispatched = {tools_dispatched}")
@@ -136,6 +173,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # #140: refuse before any live model call (and before wasting the
+    # operator's time/tokens on a doomed run) if the code this process
+    # actually resolved and imported has drifted from what the recording
+    # protocol expects.
+    code_stamp = verify_code_stamp()
+
     ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     engine = os.environ.get("RECORD_ENGINE", "ollama")
 
@@ -148,7 +191,7 @@ def main() -> None:
         parser.error("pass one or more case ids, or --all")
 
     for case_id in case_ids:
-        record_case(case_id, ollama_base_url, engine)
+        record_case(case_id, ollama_base_url, engine, code_stamp)
 
 
 if __name__ == "__main__":

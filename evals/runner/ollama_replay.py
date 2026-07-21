@@ -97,10 +97,20 @@ def recording_path(recordings_dir: Path, case_id: str) -> Path:
     return recordings_dir / f"{case_id}.json"
 
 
-def save_recording(path: Path, calls: list[RecordedCall]) -> None:
-    """Write the recording artifact. Creates parent directories as needed."""
+def save_recording(path: Path, calls: list[RecordedCall], *, code_stamp: str | None = None) -> None:
+    """Write the recording artifact. Creates parent directories as needed.
+
+    ``code_stamp`` (#140): the app-code content stamp (see
+    ``runner.code_stamp.compute_app_stamp``) that was live when this
+    recording was made, stamped into the artifact's metadata so a future
+    audit can tell what code produced it. Omitted from the payload entirely
+    when not given, so callers that don't pass one (and recordings written
+    before #140) keep the exact old payload shape.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"calls": [call.to_json() for call in calls]}
+    payload: dict[str, Any] = {"calls": [call.to_json() for call in calls]}
+    if code_stamp is not None:
+        payload["code_stamp"] = code_stamp
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -113,6 +123,17 @@ def load_recording(path: Path) -> list[RecordedCall]:
         )
     data = json.loads(path.read_text(encoding="utf-8"))
     return [RecordedCall.from_json(call) for call in data["calls"]]
+
+
+def read_code_stamp(path: Path) -> str | None:
+    """Read a recording's ``code_stamp`` metadata (#140) without touching
+    its calls -- for audits ("what code produced this recording?"). ``None``
+    for recordings committed before #140, which never had one; this is
+    never rewritten onto old, already-committed recordings.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    stamp = data.get("code_stamp")
+    return stamp if isinstance(stamp, str) else None
 
 
 class RecordingOllamaClient:
