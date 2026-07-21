@@ -20,6 +20,7 @@ from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
 from app.planner import _FEW_SHOT_EXAMPLES, _FINAL_REASON_PROMPT, Planner, ToolSpec
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
+from app.schemas.ingestion import Citation
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
 from app.schemas.tools import (
     GetMedicationsInput,
@@ -637,3 +638,102 @@ def test_finalize_answer_omits_guideline_context_block_when_no_excerpts_given():
 
     reasoning_messages = ollama.chat_calls[-1]
     assert reasoning_messages[-1]["content"] == _FINAL_REASON_PROMPT
+
+
+# --- issue #86: ingested document facts feed answer composition ------------
+#
+# Root cause (DEMO_SCRIPT.md beat 3): `app.chat.get_patient_fact_provider`
+# reads `LocalIngestionStore.list_citations_for_patient` -- but only AFTER
+# `Planner.run`/`run_streaming` already returned, feeding ONLY the post-hoc
+# claim-extraction/verification step (P3.9a, issue #46). The planner itself
+# never sees a patient's own ingested lab/intake-form facts while composing
+# its answer, so a question only answerable from an ingested PDF gets
+# answered as if the document doesn't exist (chart tools alone). This fix
+# mirrors #105's `guideline_excerpts` mechanism exactly: retrieved document
+# facts are threaded into the SAME free-text reasoning call
+# (`_finalize_answer_streaming`) via a new, purely-additive `document_facts`
+# parameter -- appended to the reasoning messages ONLY when non-empty, so a
+# turn with nothing ingested (every citation_present eval case today) is
+# byte-identical to before this fix.
+
+
+def test_finalize_answer_includes_document_facts_in_the_reasoning_call():
+    """When `document_facts` is passed to `run`, the free-text reasoning call
+    must receive each fact's literal citation quote -- so the model can
+    answer from the patient's own ingested document instead of reporting
+    "no lab results recorded" when a relevant document actually exists."""
+    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Her A1c is 5.4%.", reason="direct")]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry={})
+
+    fact = Citation(
+        source_type="lab_pdf",
+        source_id="deadbeef" * 4,
+        page_or_section="page 1",
+        field_or_chunk_id="Hemoglobin A1c#page1-row0",
+        quote_or_value="Hemoglobin A1c: 5.4",
+    )
+    planner.run("What is her A1c?", document_facts=[fact])
+
+    assert ollama.chat_calls, "expected the reasoning (chat) call to have run"
+    reasoning_messages = ollama.chat_calls[-1]
+    joined = " ".join(message["content"] for message in reasoning_messages)
+    assert fact.quote_or_value in joined, (
+        "the ingested document fact's literal quote must reach the reasoning "
+        "call that composes the answer"
+    )
+
+
+def test_finalize_answer_never_states_a_field_the_document_fact_quote_omits():
+    """The no-fabrication contract (`app.ingestion._quote_for_row`) already
+    guarantees an unreadable field is simply ABSENT from a fact's citation
+    quote (e.g. a Creatinine row with an illegible collection date has a
+    quote of "Creatinine: 0.9" -- no date, not a guessed one). Since the
+    reasoning call only ever sees that literal quote text, verbatim, it
+    structurally cannot pass a fabricated collection date to the model --
+    this pins that the quote fed into the prompt is exactly the honest,
+    field-omitting text, never anything richer than what was actually
+    extracted."""
+    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
+    ollama = _ScriptedOllamaClient(decisions)
+    planner = _make_planner(ollama, registry={})
+
+    # Mirrors tests/test_ingestion.py's deliberately-unreadable-field fixture:
+    # Creatinine's value is legible but its collection_date is not, so
+    # `_quote_for_row` never mentions a date at all for this row.
+    redacted_fact = Citation(
+        source_type="lab_pdf",
+        source_id="cafebabe" * 4,
+        page_or_section="page 2",
+        field_or_chunk_id="Creatinine#page2-row7",
+        quote_or_value="Creatinine: 0.9",
+    )
+    planner.run("What was the collection date for his creatinine result?", document_facts=[redacted_fact])
+
+    reasoning_messages = ollama.chat_calls[-1]
+    joined = " ".join(message["content"] for message in reasoning_messages)
+    assert redacted_fact.quote_or_value in joined
+    # No fabricated date has any way to appear: the quote fed to the model
+    # names only the test and its value, never a date the source document
+    # never actually gave up.
+    assert "2026" not in joined and "collection_date" not in joined.lower().replace("_", "")
+
+
+def test_finalize_answer_omits_document_fact_context_block_when_no_facts_given():
+    """No document_facts (the default -- every turn today, since nothing in
+    the citation_present eval suite has an ingested document) must be a
+    complete no-op: the reasoning call's prompt is BYTE-IDENTICAL to a call
+    with no document_facts argument at all -- the entire safety argument for
+    this being a prompt-neutral change for every existing case."""
+    decisions_a = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
+    decisions_b = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
+    ollama_a = _ScriptedOllamaClient(decisions_a)
+    ollama_b = _ScriptedOllamaClient(decisions_b)
+    planner_a = _make_planner(ollama_a, registry={})
+    planner_b = _make_planner(ollama_b, registry={})
+
+    planner_a.run("What meds is she on?")
+    planner_b.run("What meds is she on?", document_facts=None)
+
+    assert ollama_a.chat_calls[-1] == ollama_b.chat_calls[-1]
+    assert ollama_b.chat_calls[-1][-1]["content"] == _FINAL_REASON_PROMPT
