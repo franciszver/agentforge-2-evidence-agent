@@ -153,20 +153,51 @@ class MissingExpectedStampError(RuntimeError):
     no baked-code drift possible) still treats an unset var as a no-op."""
 
 
-def _in_flattened_container_layout() -> bool:
-    """True when this process resolved the live ``app`` package via the
+def _in_flattened_container_layout_for(repo_root: Path, monorepo_agent_root: Path) -> bool:
+    """True when ``repo_root``/``monorepo_agent_root`` resolve to the
     flattened dev-container layout (#119's ``_agent_root_candidates``
-    winning candidate is the repo root itself, not ``services/
-    copilot-agent``) -- i.e. exactly the ``development-easy-agent-1``-style
-    layout with no bind mounts, where the baked ``app/`` can silently drift
-    from the host tree an operator thinks they're recording against.
+    winning candidate is ``repo_root`` itself, not ``monorepo_agent_root``)
+    -- i.e. exactly the ``development-easy-agent-1``-style layout with no
+    bind mounts, where the baked ``app/`` can silently drift from the host
+    tree an operator thinks they're recording against.
 
-    The host-monorepo layout (``_MONOREPO_AGENT_ROOT/app/__init__.py``
+    The host-monorepo layout (``monorepo_agent_root/app/__init__.py``
     exists) is never flagged, whether or not it happens to also win the
     candidate race -- there the live code trivially IS the working tree, so
     ``EXPECTED_APP_STAMP`` staying optional is correct, not a gap.
+
+    Pure function of its arguments (no module-global reads), mirroring
+    ``_agent_root_candidates`` -- extracted (gate review on #143) so the
+    fail-closed crux comparison is directly unit-testable against synthetic
+    directory trees (see ``evals/runner/tests/test_record_path_resolution.py``)
+    instead of only reachable by monkeypatching the whole zero-arg wrapper
+    below away, which would let an inverted comparison here slip through
+    with every existing test still green.
     """
-    return _agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT)[0] == _REPO_ROOT
+    return _agent_root_candidates(repo_root, monorepo_agent_root)[0] == repo_root
+
+
+def _in_flattened_container_layout() -> bool:
+    """Thin zero-arg wrapper over :func:`_in_flattened_container_layout_for`
+    binding it to this process's actual resolved roots (``_REPO_ROOT``,
+    ``_MONOREPO_AGENT_ROOT``) -- the call site ``verify_code_stamp`` uses,
+    and what existing tests monkeypatch wholesale to simulate either layout.
+
+    **Known limitation, not a bug (gate review on #143).** This detects
+    "flattened layout" as a PROXY for the real invariant this guard needs,
+    which is "container with no bind mounts, so baked app/ can drift
+    unnoticed from the host tree". Today those two conditions coincide --
+    the only container image running this code is the documented flattened
+    ``development-easy-agent-1`` layout. A hypothetical FUTURE no-bind-mount
+    container image baked with the full monorepo layout (``services/
+    copilot-agent/`` present) would win the monorepo candidate, return
+    ``False`` here, and fail OPEN exactly like the original bug this guard
+    closes -- because the proxy and the real invariant would have diverged.
+    No such image exists today, so this is a comment, not a code change:
+    anyone introducing a monorepo-layout baked (no-bind-mount) container
+    image must revisit this function's detection logic.
+    """
+    return _in_flattened_container_layout_for(_REPO_ROOT, _MONOREPO_AGENT_ROOT)
 
 
 def verify_code_stamp() -> str:

@@ -32,7 +32,14 @@ def _write_app(root: Path, files: dict[str, str | bytes]) -> Path:
         if isinstance(content, bytes):
             path.write_bytes(content)
         else:
-            path.write_text(content, encoding="utf-8")
+            # newline="" disables Python text-mode newline translation --
+            # without it, on Windows a "\n" inside a str being written is
+            # silently rewritten to os.linesep ("\r\n"), corrupting the
+            # exact-bytes-on-disk fixtures the CRLF/LF normalization tests
+            # below depend on (a content string already containing "\r\n"
+            # would come out as "\r\r\n"). Fixtures must control their own
+            # on-disk bytes precisely, independent of host platform.
+            path.write_text(content, encoding="utf-8", newline="")
     return app_dir
 
 
