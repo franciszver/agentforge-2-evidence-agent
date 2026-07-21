@@ -18,6 +18,7 @@ real suite entry point, ``evals/test_cases.py``, which only scans
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,9 @@ from runner.ollama_replay import (
     RecordingNotFoundError,
     ReplayOllamaClient,
     load_recording,
+    read_code_stamp,
     recording_path,
+    save_recording,
 )
 from runner.pipeline import run_case
 from runner.schema import EvalCaseError
@@ -153,3 +156,52 @@ def test_recording_sequence_mismatch_raises_a_clear_error() -> None:
 
     with pytest.raises(RecordingMismatchError, match="recording mismatch"):
         run_case(case, client)
+
+
+# --- recording metadata: code-stamp audit trail (#140) --------------------
+
+
+def test_save_recording_stamps_code_stamp_into_metadata(tmp_path: Path) -> None:
+    """A recording written with a ``code_stamp`` (record.py's job -- see
+    ``test_record_code_stamp_guard.py``) must persist it in the artifact so
+    a future audit can tell what code produced the recording."""
+    out_path = tmp_path / "some-case.json"
+    calls = [RecordedCall(kind="chat", schema=None, response="hello")]
+
+    save_recording(out_path, calls, code_stamp="abc123")
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["code_stamp"] == "abc123"
+    # The calls themselves must still round-trip untouched.
+    assert load_recording(out_path) == calls
+    assert read_code_stamp(out_path) == "abc123"
+
+
+def test_recordings_without_a_code_stamp_still_load_and_replay(tmp_path: Path) -> None:
+    """Old, already-committed recordings predate #140 and have no
+    ``code_stamp`` key at all -- they must keep replaying exactly as before
+    (this repo does not rewrite committed recordings), and an audit reading
+    them back gets an honest "unknown", not a KeyError."""
+    out_path = tmp_path / "pre-140-case.json"
+    out_path.write_text(
+        json.dumps({"calls": [{"kind": "chat", "schema": None, "response": "hi"}]}),
+        encoding="utf-8",
+    )
+
+    calls = load_recording(out_path)
+
+    assert calls == [RecordedCall(kind="chat", schema=None, response="hi")]
+    assert read_code_stamp(out_path) is None
+
+
+def test_save_recording_omits_code_stamp_key_when_not_given(tmp_path: Path) -> None:
+    """Callers that don't pass ``code_stamp`` (none exist today, but the
+    parameter is optional) get the old payload shape exactly -- no stray
+    ``null`` key clutter."""
+    out_path = tmp_path / "no-stamp-case.json"
+    calls = [RecordedCall(kind="chat", schema=None, response="hi")]
+
+    save_recording(out_path, calls)
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert "code_stamp" not in payload
