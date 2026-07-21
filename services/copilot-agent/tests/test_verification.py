@@ -434,6 +434,58 @@ def test_claim_with_multiple_refs_one_invalid_fails_the_whole_claim():
     assert result.citation_results[1].passed is False
 
 
+def test_source_ref_relevance_is_not_checked_structural_validity_only():
+    """Characterization test (issue #118 / #130), NOT a bug report: documents
+    a known, currently-accepted gap rather than a defect being fixed here.
+
+    Issue #118 hypothesized that the claim extractor sometimes attaches a
+    guideline-derived claim's citation entirely to an irrelevant, duplicated
+    chart-data ``SourceRef`` instead of a real ``DocumentCitation`` for the
+    guideline text it actually paraphrases -- exactly the shape reproduced
+    below: a claim about kidney-function MONITORING FREQUENCY citing only
+    the patient's medication NAME field. Live re-verification (10 fresh
+    draws via ``evals.runner.pipeline.run_case``, no replay -- see
+    ``evals/cases/citation_present/metformin-renal-monitoring-question.yaml``)
+    found the extractor does NOT actually produce this shape in practice
+    (it reliably attaches a real, verbatim, semantically-supported
+    ``DocumentCitation`` alongside the duplicated ref) -- so #118's specific
+    defect is not being fixed here; there is nothing live to fix.
+
+    What IS real: ``check_source_ref`` validates STRUCTURE (does the
+    tool_call_id/record_id/field exist) and VALUE (does asserted_value match
+    the resolved raw value) -- nothing else. It has no way to tell that a
+    perfectly valid, value-matching ``SourceRef`` is irrelevant to what the
+    claim's text actually asserts. This test proves that gap directly: a
+    claim whose text is entirely about monitoring frequency, citing ONLY the
+    medication's ``name`` field (a real, correctly-value-matching citation,
+    but one that supports "the medication is Metformin", not "check eGFR
+    annually"), currently PASSES ``check_claim`` -- there is no content-
+    relevance check on ordinary ``SourceRef``s the way ``DocumentCitation``s
+    get via the issue #47/#81 semantic-support gate (``app.semantic_support``,
+    ``guideline_chunk`` citations only).
+
+    This is a DELIBERATE scope decision, not an oversight: issue #130 tracks
+    the open design question (should ordinary ``SourceRef``s get a relevance
+    check analogous to the semantic-support judge) without mandating a fix,
+    since #118 found no live-reproducible case that actually needs it and a
+    broad relevance check risks false-rejecting genuinely-valid citations
+    elsewhere in the suite (see #130 for the full rationale). If this test
+    ever starts FAILING (i.e. ``check_claim`` starts rejecting this shape),
+    that's a sign this documented gap has been closed -- update this test's
+    assertion and docstring rather than treating a red run as a regression.
+    """
+    index = _index(_MEDS_RESULT)
+    claim = Claim(
+        text="Estimated glomerular filtration rate (eGFR) should be checked at least annually.",
+        source_refs=[_ref(record_id="0", field="name", asserted_value="Lisinopril")],
+    )
+
+    result = check_claim(claim, index)
+
+    assert result.passed is True
+    assert result.citation_results[0].status is CitationStatus.VALID
+
+
 def test_claim_with_zero_citations_reaching_the_checker_fails_closed():
     """Not reachable via normal ``Claim`` construction (P3.1's min_length=1),
     but nothing prevents a caller from bypassing validation -- the vacuous
