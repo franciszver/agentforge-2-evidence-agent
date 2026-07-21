@@ -5,7 +5,7 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "To determine when to recheck kidney function, we need to know the patient's current medications, specifically lisinopril, and any relevant lab results such as kidney function tests (e.g., creatinine).",
+        "reason": "To determine when to recheck kidney function, we need to know the patient's current medications, specifically lisinopril, and any existing kidney function test results.",
         "tool": "get_medications",
         "tool_args": null
       },
@@ -23,10 +23,10 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "To determine when to recheck kidney function, we need to know the patient's recent lab results, specifically kidney function tests (e.g., creatinine), to establish a baseline and monitor for any changes.",
+        "reason": "To determine when to recheck kidney function, we need to know the patient's recent lab results, specifically kidney function tests such as creatinine or estimated glomerular filtration rate (eGFR).",
         "tool": "get_recent_labs",
         "tool_args": {
-          "limit": "1"
+          "limit": "3"
         }
       },
       "schema": "PlannerDecision"
@@ -36,7 +36,7 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "Since there are no recent lab results available, it is necessary to check the patient's problem list to see if there is any existing information about kidney function or related conditions that might influence the timing of the recheck.",
+        "reason": "Since there are no recent lab results, we need to check the patient's problem list to see if there is any existing information about kidney function or related conditions that might influence the timing of rechecking kidney function.",
         "tool": "get_problems",
         "tool_args": null
       },
@@ -46,19 +46,8 @@
       "kind": "extract",
       "response": {
         "action": "call_tool",
-        "final_answer": null,
-        "reason": "Since there are no recent lab results and no existing problems related to kidney function, it is necessary to check the patient's encounter history to determine if there was any mention of kidney function or related recommendations during previous visits.",
-        "tool": "get_encounters",
-        "tool_args": null
-      },
-      "schema": "PlannerDecision"
-    },
-    {
-      "kind": "extract",
-      "response": {
-        "action": "answer",
-        "final_answer": "Since the patient started Lisinopril and there are no prior kidney function tests, it is generally recommended to recheck kidney function (e.g., creatinine) within 3 to 6 months, unless there are specific clinical indicators for more frequent monitoring.",
-        "reason": "Based on the available information, there are no recent lab results, no documented problems, and no encounter history to reference. The patient is currently taking Lisinopril, and since there is no prior kidney function data, it is generally recommended to recheck kidney function (e.g., creatinine) within 3 to 6 months after starting an ACE inhibitor like Lisinopril, unless there are specific clinical indicators for more frequent monitoring.",
+        "final_answer": "When starting lisinopril, it is generally recommended to recheck kidney function (such as serum creatinine and estimated glomerular filtration rate [eGFR]) within the first 2-4 weeks of therapy. If the patient has pre-existing kidney disease or is at risk for renal impairment, more frequent monitoring may be required. Please consult with the patient's physician for personalized guidance.",
+        "reason": "Since there are no recent lab results and no existing problems related to kidney function, the next step is to provide general guidance based on standard medical practice for rechecking kidney function when starting lisinopril.",
         "tool": null,
         "tool_args": null
       },
@@ -66,13 +55,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recent lab results, no documented problems, and no encounter history to provide additional context about kidney function or related recommendations. Based on standard clinical guidelines, kidney function should typically be monitored within the first few weeks of starting an ACE inhibitor like Lisinopril, especially in patients with risk factors for renal impairment. It would be appropriate to recheck kidney function (e.g., creatinine and BUN) within 4-6 weeks of initiating therapy to ensure there are no adverse effects on renal function.",
+      "response": "Based on the information provided, the patient has started lisinopril, an ACE inhibitor. According to the clinical guideline, a baseline creatinine and eGFR should be checked before starting an ACE inhibitor, and a recheck is typically recommended at roughly 1-2 weeks after starting or up-titrating the medication. Since there are no recent lab results or problem list entries related to kidney function, it is recommended to recheck the patient's kidney function within 1-2 weeks of starting lisinopril.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient is currently taking Lisinopril at a dose of 10mg orally. There are no recent lab results, no documented problems, and no encounter history to provide additional context about kidney function or related recommendations. Based on standard clinical guidelines, kidney function should typically be monitored within the first few weeks of starting an ACE inhibitor like Lisinopril, especially in patients with risk factors for renal impairment. It would be appropriate to recheck kidney function (e.g., creatinine and BUN) within 4-6 weeks of initiating therapy to ensure there are no adverse effects on renal function.",
+        "answer": "The patient has started lisinopril, an ACE inhibitor. A baseline creatinine and eGFR should be checked before starting an ACE inhibitor, and a recheck is typically recommended at roughly 1-2 weeks after starting or up-titrating the medication. Since there are no recent lab results or problem list entries related to kidney function, it is recommended to recheck the patient's kidney function within 1-2 weeks of starting lisinopril.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -89,37 +78,7 @@
                 "field": "name",
                 "record_id": "0",
                 "tool_call_id": "call_0"
-              }
-            ],
-            "text": "The patient is currently taking Lisinopril."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
-              {
-                "asserted_value": "10mg",
-                "field": "dose",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              }
-            ],
-            "text": "The dose of Lisinopril is 10mg."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
-              {
-                "asserted_value": "oral",
-                "field": "route",
-                "record_id": "0",
-                "tool_call_id": "call_0"
-              }
-            ],
-            "text": "The route of administration for Lisinopril is oral."
-          },
-          {
-            "document_citations": [],
-            "source_refs": [
+              },
               {
                 "asserted_value": "active",
                 "field": "status",
@@ -127,14 +86,46 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "The status of Lisinopril is active."
+            "text": "The patient has started lisinopril, an ACE inhibitor."
           },
           {
             "document_citations": [
               {
                 "field_or_chunk_id": "renal-function-monitoring#ace-inhibitors-and-arbs",
                 "page_or_section": "ACE Inhibitors and ARBs",
-                "quote_or_value": "A baseline creatinine/eGFR and potassium is typically checked before starting an ACE inhibitor or ARB, with a recheck at roughly 1-2 weeks after starting or up-titrating.",
+                "quote_or_value": "A baseline creatinine/eGFR and potassium is typically checked before starting an ACE inhibitor or ARB",
+                "source_id": "renal-function-monitoring",
+                "source_type": "guideline_chunk"
+              }
+            ],
+            "source_refs": [
+              {
+                "asserted_value": "Lisinopril",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "Lisinopril",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "A baseline creatinine and eGFR should be checked before starting an ACE inhibitor."
+          },
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "renal-function-monitoring#ace-inhibitors-and-arbs",
+                "page_or_section": "ACE Inhibitors and ARBs",
+                "quote_or_value": "with a recheck at roughly 1-2 weeks after starting or up-titrating",
                 "source_id": "renal-function-monitoring",
                 "source_type": "guideline_chunk"
               }
@@ -153,14 +144,14 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "Kidney function should typically be monitored within the first few weeks of starting an ACE inhibitor like Lisinopril."
+            "text": "A recheck is typically recommended at roughly 1-2 weeks after starting or up-titrating the medication."
           },
           {
             "document_citations": [
               {
                 "field_or_chunk_id": "renal-function-monitoring#ace-inhibitors-and-arbs",
                 "page_or_section": "ACE Inhibitors and ARBs",
-                "quote_or_value": "A recheck at roughly 1-2 weeks after starting or up-titrating.",
+                "quote_or_value": "with a recheck at roughly 1-2 weeks after starting or up-titrating",
                 "source_id": "renal-function-monitoring",
                 "source_type": "guideline_chunk"
               }
@@ -179,11 +170,27 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "It would be appropriate to recheck kidney function (e.g., creatinine and BUN) within 4-6 weeks of initiating therapy to ensure there are no adverse effects on renal function."
+            "text": "Since there are no recent lab results or problem list entries related to kidney function, it is recommended to recheck the patient's kidney function within 1-2 weeks of starting lisinopril."
           }
         ]
       },
       "schema": "VerifiedAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE explicitly mentions that a baseline creatinine/eGFR is checked before starting an ACE inhibitor, which directly supports the CLAIM.",
+        "verdict": "supported"
+      },
+      "schema": "SemanticSupportJudgement"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "reason": "The QUOTE only mentions the timing for a recheck but does not address the specific recommendation for rechecking kidney function or mention lisinopril.",
+        "verdict": "not_supported"
+      },
+      "schema": "SemanticSupportJudgement"
     }
   ]
 }

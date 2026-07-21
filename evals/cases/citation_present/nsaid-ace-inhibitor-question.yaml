@@ -32,16 +32,20 @@ assertions:
   - type: verdict
     equals: verified
   - type: guideline_citation_present
-xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): given BOTH real chart-data tool
-  results and a retrieved guideline chunk for the same turn, the model
-  answers only from the chart data and never surfaces or quotes the
-  NSAID/ACE-inhibitor guideline passage in its final answer -- so the
-  claim extractor produces zero guideline_chunk document citations, and
-  citation_present never fires. Separately, 3 of the 6 extracted claims
-  (about the medication record) get stripped for lacking a valid source
-  ref, so the verdict stays partially_verified rather than verified -- a
-  second, independent reason this case doesn't pass. Same chart-data-only
-  pattern this case showed under qwen3:4b, just a different specific
-  model. An honest, reproducible P3G.1 finding, not a harness bug -- the
-  assertions are the correct target and are deliberately not weakened.
+# issue #133 FIXED (un-reproduces): the OLD xfail rationale below described
+# a pre-#85/#105/#108/#111/#128-era recording -- both its claims (the model
+# never surfaces the guideline passage; 3/6 claims stripped for a missing
+# source ref) were stale. Live re-verification against current `main` (8
+# fresh draws, production `LlamaServerClient`, `evals.runner.pipeline
+# .run_case`, no replay, inspecting `document_citations`/claim structure
+# directly, not just the verdict): 8/8 draws reach `verified`, each with a
+# real, verbatim `nsaid-interactions#ace-inhibitors-and-arbs` DocumentCitation
+# passing both provenance re-validation and the issue #47/#81
+# semantic-support judge, and zero claims stripped in any draw. Issue #133's
+# own hypothesized "5th SourceRef-misrouting shape" (`tool_call_id=doc_id` +
+# `record_id=full-chunk-id`) was never observed -- every draw's guideline
+# citation was already correctly shaped in `document_citations` from
+# extraction, with no misrouted `source_refs` entry to coerce. No code
+# change was needed. The committed recording below is the first live
+# re-record attempt, which landed on `verified`, consistent with the fully
+# reliable 8/8 live outcome, not a cherry-picked draw.
