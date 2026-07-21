@@ -14,7 +14,7 @@
     {
       "kind": "extract",
       "response": {
-        "summary": "The patient is prescribed Simvastatin at a dose of 40mg orally."
+        "summary": "The patient is prescribed Simvastatin 40mg orally."
       },
       "schema": "QuarantineSummary"
     },
@@ -23,7 +23,7 @@
       "response": {
         "action": "call_tool",
         "final_answer": null,
-        "reason": "To assess whether a routine CK level is needed, we should check the patient's problem list for any conditions that might require monitoring of CK levels, such as muscle-related issues or a history of myopathy.",
+        "reason": "To assess whether a routine CK level is needed, we should check the patient's problem list for any conditions that might require monitoring of CK levels, such as muscle-related issues or other contraindications for statin use.",
         "tool": "get_problems",
         "tool_args": null
       },
@@ -33,8 +33,8 @@
       "kind": "extract",
       "response": {
         "action": "answer",
-        "final_answer": "The patient is on Simvastatin and does not have any active medical problems that would necessitate routine CK level monitoring. However, it is generally recommended to monitor CK levels periodically for patients on statins, especially if there are risk factors for muscle-related side effects. The decision to check CK levels should be based on clinical judgment and patient-specific factors.",
-        "reason": "The patient is on Simvastatin and does not have any active medical problems that would necessitate routine CK level monitoring. However, it is generally recommended to monitor CK levels periodically for patients on statins, especially if there are risk factors for muscle-related side effects. The decision to check CK levels should be based on clinical judgment and patient-specific factors.",
+        "final_answer": "The patient is on Simvastatin and does not have any active medical problems that would necessitate routine CK level monitoring. However, it is still important to consider clinical guidelines and the patient's individual risk factors for statin-induced myopathy. Routine CK monitoring is generally not required for patients on statins unless there are specific risk factors or symptoms suggestive of muscle damage.",
+        "reason": "The patient is on Simvastatin and does not have any active medical problems that would necessitate routine CK level monitoring. However, it is still important to consider clinical guidelines and the patient's individual risk factors for statin-induced myopathy. Routine CK monitoring is generally not required for patients on statins unless there are specific risk factors or symptoms suggestive of muscle damage.",
         "tool": null,
         "tool_args": null
       },
@@ -42,13 +42,13 @@
     },
     {
       "kind": "chat",
-      "response": "The patient is currently taking Simvastatin at a dose of 40mg orally. There are no recorded problems or conditions in the patient's problem list that would necessitate routine CK level monitoring. Therefore, based on the current information, there is no indication that a routine CK level check is required at this time.",
+      "response": "Based on the information provided, the patient is currently taking Simvastatin 40mg orally and does not have any recorded conditions or problems. According to the clinical guideline, routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended. A CK level should only be checked if the patient reports new muscle pain, tenderness, or weakness. Since the patient feels fine and there are no reported muscle symptoms, there is no indication for a routine CK level check at this time.",
       "schema": null
     },
     {
       "kind": "extract",
       "response": {
-        "answer": "The patient is currently taking Simvastatin at a dose of 40mg orally. There are no recorded problems or conditions in the patient's problem list that would necessitate routine CK level monitoring. Therefore, based on the current information, there is no indication that a routine CK level check is required at this time.",
+        "answer": "The patient is prescribed Simvastatin 40mg orally and does not have any recorded conditions or problems. Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended. A CK level should only be checked if the patient reports new muscle pain, tenderness, or weakness. Since the patient feels fine and there are no reported muscle symptoms, there is no indication for a routine CK level check at this time.",
         "source_refs": null
       },
       "schema": "FinalAnswer"
@@ -79,16 +79,37 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "The patient is currently taking Simvastatin at a dose of 40mg orally."
+            "text": "The patient is prescribed Simvastatin 40mg orally."
           },
           {
-            "document_citations": [],
-            "source_refs": [],
-            "text": "There are no recorded problems or conditions in the patient's problem list that would necessitate routine CK level monitoring."
-          },
-          {
-            "document_citations": [],
+            "document_citations": [
+              {
+                "field_or_chunk_id": "statin-monitoring#muscle-symptoms-and-ck",
+                "page_or_section": "Statin Therapy Monitoring",
+                "quote_or_value": "Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended; a CK level is checked if the patient reports new muscle pain, tenderness, or weakness.",
+                "source_id": "statin-monitoring",
+                "source_type": "guideline_chunk"
+              }
+            ],
             "source_refs": [
+              {
+                "asserted_value": "Simvastatin",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "40mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
               {
                 "asserted_value": "active",
                 "field": "status",
@@ -96,7 +117,83 @@
                 "tool_call_id": "call_0"
               }
             ],
-            "text": "Therefore, based on the current information, there is no indication that a routine CK level check is required at this time."
+            "text": "Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended."
+          },
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "statin-monitoring#muscle-symptoms-and-ck",
+                "page_or_section": "Statin Therapy Monitoring",
+                "quote_or_value": "a CK level is checked if the patient reports new muscle pain, tenderness, or weakness.",
+                "source_id": "statin-monitoring",
+                "source_type": "guideline_chunk"
+              }
+            ],
+            "source_refs": [
+              {
+                "asserted_value": "Simvastatin",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "40mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "A CK level should only be checked if the patient reports new muscle pain, tenderness, or weakness."
+          },
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "statin-monitoring#muscle-symptoms-and-ck",
+                "page_or_section": "Statin Therapy Monitoring",
+                "quote_or_value": "Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended; a CK level is checked if the patient reports new muscle pain, tenderness, or weakness.",
+                "source_id": "statin-monitoring",
+                "source_type": "guideline_chunk"
+              }
+            ],
+            "source_refs": [
+              {
+                "asserted_value": "Simvastatin",
+                "field": "name",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "40mg",
+                "field": "dose",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "oral",
+                "field": "route",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              },
+              {
+                "asserted_value": "active",
+                "field": "status",
+                "record_id": "0",
+                "tool_call_id": "call_0"
+              }
+            ],
+            "text": "Since the patient feels fine and there are no reported muscle symptoms, there is no indication for a routine CK level check at this time."
           }
         ]
       },
