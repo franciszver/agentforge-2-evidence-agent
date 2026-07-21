@@ -21,7 +21,7 @@
  *
  * P213 reasoning zone: the model's free-text reasoning (`reasoning_delta`
  * frames, `app/chat.py`'s SSE frame contract) types into a separate
- * "Reasoning locally (Qwen3-4B)..." zone as it arrives, distinct from the
+ * "Reasoning locally (Qwen3-8B)..." zone as it arrives, distinct from the
  * answer bubble -- see createReasoningZone below. This is UNVERIFIED,
  * provisional model text; the answer bubble renders ONLY from the `answer`
  * frame's already-verified text, never from any reasoning_delta text. The
@@ -175,7 +175,7 @@
     // -------------------------------------------------------------------
     var THINKING_STAGE_LABELS = {
         consulting: 'Consulting the chart…',
-        reasoning: 'Reasoning locally (Qwen3-4B)…',
+        reasoning: 'Reasoning locally (Qwen3-8B)…',
         verifying: 'Verifying claims against the record…'
     };
     var THINKING_GENERIC_LABEL = 'Thinking…';
