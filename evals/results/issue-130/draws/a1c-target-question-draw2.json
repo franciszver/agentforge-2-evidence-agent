@@ -1,0 +1,19 @@
+{
+  "case_id": "a1c-target-question",
+  "draw_index": 2,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient's most recent A1c level is 7.8%.",
+      "source_ref_facts": [
+        "value: 7.8",
+        "unit: %"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS provide the exact value and unit that match the CLAIM about the patient's most recent A1c level.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

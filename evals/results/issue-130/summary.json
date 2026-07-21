@@ -1,0 +1,81 @@
+{
+  "per_case": {
+    "a1c-target-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "bp-stage2-question": {
+      "judged": 16,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "dual-antiplatelet-question": {
+      "judged": 14,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "hypertension-lifestyle-followup-question": {
+      "judged": 0,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "lipid-panel-ldl-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "lithium-nsaid-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "metformin-renal-monitoring-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "nsaid-ace-inhibitor-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "renal-function-ace-question": {
+      "judged": 9,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "statin-ck-myopathy-question": {
+      "judged": 32,
+      "false_rejects": 24,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "statin-liver-monitoring-question": {
+      "judged": 25,
+      "false_rejects": 9,
+      "draws": 8,
+      "exceptions": 0
+    },
+    "warfarin-antibiotic-question": {
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0
+    }
+  },
+  "total_judged_claims": 144,
+  "total_false_rejects": 33,
+  "positive_control_draws": 8,
+  "positive_control_caught": 8,
+  "positive_control_catch_rate": 1.0
+}

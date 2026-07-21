@@ -1,0 +1,28 @@
+{
+  "case_id": "renal-function-ace-question",
+  "draw_index": 0,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 2,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Lisinopril.",
+      "source_ref_facts": [
+        "name: Lisinopril",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that Lisinopril is an active medication, which directly supports the CLAIM that the patient is currently taking Lisinopril.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient has no recent lab results.",
+      "source_ref_facts": [
+        "recent_lab_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS state that the recent_lab_count is 0, which directly supports the CLAIM that the patient has no recent lab results.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

@@ -1,0 +1,20 @@
+{
+  "case_id": "warfarin-antibiotic-question",
+  "draw_index": 3,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking warfarin at a dose of 5mg orally.",
+      "source_ref_facts": [
+        "name: Warfarin",
+        "dose: 5mg",
+        "route: oral"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS provide the name, dose, and route of warfarin, which directly support the CLAIM that the patient is currently taking warfarin at a dose of 5mg orally.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}
