@@ -1,0 +1,104 @@
+{
+  "case_id": "metformin-renal-monitoring-question",
+  "model_label": "8b-q5",
+  "elapsed_seconds": 30.79,
+  "answer_text": "The patient is on metformin, and based on clinical guidelines, her kidney function (eGFR) should be checked at least annually while on this medication. If her renal function is borderline or shows a trend of decline, more frequent monitoring is recommended. The exact frequency may also depend on other factors not specified in the current tool results.",
+  "tools_dispatched": [
+    "get_medications",
+    "get_problems"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 4,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is on metformin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's kidney function (eGFR) should be checked at least annually while on metformin.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "renal-function-monitoring",
+          "page_or_section": "Renal Function Monitoring on Nephrotoxic-Risk Medications",
+          "field_or_chunk_id": "renal-function-monitoring#metformin",
+          "quote_or_value": "eGFR is generally checked at least annually in patients on metformin"
+        }
+      ],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "If the patient's renal function is borderline or shows a trend of decline, more frequent monitoring is recommended.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "renal-function-monitoring",
+          "page_or_section": "Renal Function Monitoring on Nephrotoxic-Risk Medications",
+          "field_or_chunk_id": "renal-function-monitoring#metformin",
+          "quote_or_value": "more frequently if renal function is borderline or trending down"
+        }
+      ],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

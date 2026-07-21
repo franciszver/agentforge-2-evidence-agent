@@ -405,6 +405,151 @@ the VLM/document-ingestion path — a separate Q8_0 vision-fabrication retest
 in `docs/W2_ARCHITECTURE.md`'s vision-tier section, is a follow-up for that
 document, not this one.
 
+### Issue #89 findings: Qwen3-14B-Q5_K_M vs. same-day 8B-Q5 control — 3/12 vs. 4/12, no meaningful improvement
+
+Issue #89 asked for a **different quantization** of the 14B candidate than the
+one already measured in this addendum's results table above
+(`Qwen3-14B-Q4_K_M`, 4/12, from the earlier same-session sweep): the actual
+GGUF pinned for this issue is **`bartowski/Qwen_Qwen3-14B-GGUF` @
+`bd080f768a6401c2d5a7fa53a2e50cd8218a9ce2`, `Qwen_Qwen3-14B-Q5_K_M.gguf`
+(10,514,570,272 bytes, size+sha256 verified before this run)** — a full
+grade heavier than the Q4_K_M row already in the table. This section is a
+fresh, honest measurement of that specific file, run through the same
+harness discipline this addendum already established (single fresh draw per
+case, no re-rolls, `evals.runner.pipeline.run_case`/production
+`LlamaServerClient`, `result.rendered.segments`/`document_citations`
+inspected directly per case rather than trusting the top-level `verdict`
+string alone — issue #109's own lesson).
+
+**Method.** Both rows below are same-day, same-session, same-hardware draws
+(this desktop, RTX 3060 12 GB) captured back-to-back in one sitting so
+neither draw's answer is stale relative to the other: (1) a fresh 8B-Q5
+CONTROL — the exact serving config already committed for this hardware tier,
+restarted clean before the run — over all 12 `citation_present` cases, one
+draw each; (2) a docker-managed swap to the 14B-Q5_K_M file, one draw each
+over the same 12 cases, identical draw protocol; (3) a docker-managed swap
+back to 8B-Q5, byte-identical to its pre-swap `docker inspect` image digest
+and `Cmd`, health-checked and smoke-tested before being called done. Per-case
+JSON artifacts (verdict, claim/segment structure, `document_citations`,
+latency) for both runs are committed under
+`evals/results/issue-89/{8b-q5,14b-q5}/`.
+
+**Exact serving configs (both engines, identical apart from `--model` and
+container name):**
+
+```
+image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10068@sha256:b8791d2ab8c51570e75067f626db7a271caa3e99396056f2721fac432e03c852
+--model <qwen3-8b-q5_k_m.gguf | Qwen_Qwen3-14B-Q5_K_M.gguf>
+--ctx-size 16384 --parallel 1
+--cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on
+--n-gpu-layers 999 --host 0.0.0.0 --port 8080 --reasoning off
+```
+
+8B-Q5 is the compose-managed `development-easy-llama-server-1` container,
+unmodified. 14B-Q5_K_M was served from a standalone `docker run` (same image
+digest, same flags, host-mounted GGUF, attached to the compose
+`copilot_internal` network under its own alias) rather than editing the
+compose file, so the swap is fully reversible with no compose-file diff —
+per this issue's own "docker-managed swaps only" instruction. `ollama` and
+`llama-server-embed` were stopped for the duration of both runs to keep the
+GPU-memory ledger clean (neither is on this eval harness's call path: cases
+inject their `retrieved_chunks` fixture directly rather than calling live
+retrieval/embedding).
+
+**Hardware-fit note (issue #89 flagged this as a real risk, and it materialized).**
+The desktop's GPU already carries a **fixed ~5.4 GB non-container floor**
+(Windows desktop compositor/background apps — confirmed by `nvidia-smi`
+before either engine loaded any weights, and unaffected by stopping every
+project container). That leaves roughly **6.7 GB, not 12 GB,** actually
+available to an engine. 14B-Q5_K_M (10.5 GB on disk) does not fit inside
+that reduced budget: `llama-server`'s own auto-fit calculator logged
+`failed to fit params to free device memory: n_gpu_layers already set by
+user to 999, abort` at load time. Despite that warning, the load *did*
+eventually complete fully GPU-resident (all layers) after roughly 2.5
+minutes — reported final usage 11,902 MiB / 12,288 MiB (**212 MiB free**),
+smoke-tested with a real completion call before the measurement pass began.
+This is recorded plainly as an anomaly, not silently smoothed over: the
+requested config (`--n-gpu-layers 999`, full residency) nominally should not
+have fit this machine's real available budget, and did anyway, with almost
+no headroom left — a materially more fragile state than 8B-Q5's comfortable
+~7.6 GB/12 GB fit. No partial CPU offload was needed in the end, but the
+margin was thin enough that a slightly larger KV allocation or a second
+concurrent GPU consumer could plausibly have OOM'd mid-run; this should be
+read as "it fit, barely, this time," not "this config reliably fits this
+hardware."
+
+**Results.**
+
+| Case | 8B-Q5 (control, fresh draw) | 14B-Q5_K_M (fresh draw) |
+|---|---|---|
+| `a1c-target-question` | `verified` (16.6 s) | `partially_verified` (43.2 s) |
+| `bp-stage2-question` | `partially_verified` (16.8 s) | `partially_verified` (31.4 s) |
+| `dual-antiplatelet-question` | `blocked` (38.0 s) | `blocked` (30.6 s) |
+| `hypertension-lifestyle-followup-question` | `blocked` (21.4 s) | `blocked` (19.1 s) |
+| `lipid-panel-ldl-question` | `partially_verified` (13.3 s) | `partially_verified` (21.3 s) |
+| `lithium-nsaid-question` | `verified` (22.1 s) | `partially_verified` (34.1 s) |
+| `metformin-renal-monitoring-question` | `partially_verified` (30.8 s) | **`verified`** (41.1 s) |
+| `nsaid-ace-inhibitor-question` | `partially_verified` (39.2 s) | `partially_verified` (61.7 s) |
+| `renal-function-ace-question` | `partially_verified` (27.9 s) | **`verified`** (40.7 s) |
+| `statin-ck-myopathy-question` | `partially_verified` (40.0 s) | `partially_verified` (36.0 s) |
+| `statin-liver-monitoring-question` | **`verified`** (58.9 s) | `partially_verified` (44.7 s) |
+| `warfarin-antibiotic-question` | `verified` (39.1 s) | `verified` (52.6 s) |
+| **Total verified** | **4/12** | **3/12** |
+| **Mean latency** | **30.3 s** (13.3–58.9 s) | **38.0 s** (19.1–61.7 s) |
+
+Every "verified" cell above was confirmed by inspecting
+`result.rendered.segments`/`document_citations` directly (not the bare
+`verdict` string) — each `verified` case genuinely carries a
+`source_type == "guideline_chunk"` `DocumentCitation` that passed both
+provenance re-validation and the semantic-support judge; none is a
+verdict-only false positive.
+
+**This is a same-day single-draw comparison, not a large-sample one** — the
+committed `citation_present` baseline elsewhere in this document (issue
+#133: 7/12) is measured differently (stable-recording re-judge / larger live
+samples per case); this section's numbers are a fresh single draw per case
+on each engine, exactly matching this addendum's own already-disclosed
+methodology and its own already-disclosed 1/12–6/12 fresh-draw variance
+band for this pipeline. Three cases (`a1c-target-question`,
+`lithium-nsaid-question`, `statin-liver-monitoring-question`) flipped from
+`verified` on 8B-Q5 to `partially_verified` on 14B-Q5_K_M; two
+(`metformin-renal-monitoring-question`, `renal-function-ace-question`)
+flipped the other way. Net: one fewer `verified` case on the bigger model,
+well within the single-draw noise this pipeline is already known to produce
+on either engine — not treated here as evidence that 14B is *worse* at
+citing, only as evidence that a single draw on either engine cannot
+distinguish "genuinely better," "genuinely worse," and "noise" from each
+other.
+
+**Honest verdict: 14B-Q5_K_M does not meaningfully improve citation quality
+over 8B-Q5 on this hardware, and costs meaningfully more latency for it.**
+3/12 vs. 4/12 is a **decrease**, not an improvement, and sits inside this
+document's own already-disclosed single-draw variance band rather than
+outside it — this result alone would not justify adopting 14B even setting
+latency aside. Mean latency is **25% higher** (38.0 s vs. 30.3 s), and the
+hardware-fit finding above (212 MiB of margin left on a 12 GB card, an
+auto-fit warning that had to be overridden by the load succeeding anyway) is
+a real operational red flag independent of the citation numbers: this
+config is not a comfortable, reliably-repeatable fit on this specific
+desktop the way 8B-Q5's ~7.6 GB footprint is. Combined with the
+Q4_K_M row already in this addendum's results table (4/12, matching 8B-Q5
+exactly, not beating it either), **no quantization of Qwen3-14B measured
+across either issue #89 or the earlier sweep beats the committed 8B-Q5
+baseline on this hardware.** Per issue #89's own "Done when" criterion
+("if meaningfully better, presented ... as a candidate measured mid-tier
+model"): **it is not meaningfully better, and is not presented as a
+candidate for the mid-tier doc addendum.** The maintainer should treat this
+as closing, not deferring, the 14B question for this hardware tier absent a
+larger-sample re-measurement someone judges worth the GPU time.
+
+**Stack restored.** After the 14B draws completed, the standalone container
+was removed, `ollama`/`llama-server-embed`/`llama-server` were restarted
+(compose-managed `llama-server`/`llama-server-embed` containers were never
+recreated — same container, same image digest, same `Cmd`, confirmed via
+`docker inspect` before and after), and the agent container was restarted
+and smoke-tested (`/health` → `200 {"status":"ok"}`, a real `/completion`
+call succeeded) before this measurement was called done.
+
 ## The two engine-level levers that decide what fits
 
 **q8_0 KV-cache quantization + flash-attn (llama.cpp).** This is the enabling configuration for the chosen model. Without KV-cache quantization, an 8B model's key/value cache at a 16k context window does not fit alongside the model weights inside 8 GB of VRAM; q8_0 quantizes the cache to roughly a quarter of its FP16 footprint, and flash-attn keeps the attention computation itself memory-efficient at that context length. Together they're what lets Qwen3-8B-Q5_K_M run **fully GPU-resident** at 6.63 GB / 8 GB — no CPU offload, no swap latency.

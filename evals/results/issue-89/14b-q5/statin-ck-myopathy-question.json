@@ -1,0 +1,87 @@
+{
+  "case_id": "statin-ck-myopathy-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 35.98,
+  "answer_text": "The patient is currently taking Simvastatin, a statin medication, and reports feeling fine without any symptoms of muscle pain, tenderness, or weakness. Based on the clinical guideline, routine CK monitoring is not generally recommended for asymptomatic patients on statins. Therefore, there is no need for a routine CK level check at this time unless the patient develops new muscle-related symptoms.",
+  "tools_dispatched": [
+    "get_problems",
+    "get_medications"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 5,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently taking Simvastatin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Simvastatin"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Simvastatin is a statin medication.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Simvastatin"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "Routine CK monitoring is not generally recommended for asymptomatic patients on statins.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "statin-monitoring",
+          "page_or_section": "Statin Therapy Monitoring / Muscle Symptoms and CK",
+          "field_or_chunk_id": "statin-monitoring#muscle-symptoms-and-ck",
+          "quote_or_value": "Routine creatine kinase (CK) monitoring in an asymptomatic patient is generally not recommended"
+        }
+      ],
+      "source_refs": []
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "There is no need for a routine CK level check at this time unless the patient develops new muscle-related symptoms.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "statin-monitoring",
+          "page_or_section": "Statin Therapy Monitoring / Muscle Symptoms and CK",
+          "field_or_chunk_id": "statin-monitoring#muscle-symptoms-and-ck",
+          "quote_or_value": "a CK level is checked if the patient reports new muscle pain, tenderness, or weakness."
+        }
+      ],
+      "source_refs": []
+    }
+  ]
+}

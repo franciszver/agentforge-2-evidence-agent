@@ -1,0 +1,48 @@
+{
+  "case_id": "bp-stage2-question",
+  "model_label": "8b-q5",
+  "elapsed_seconds": 16.75,
+  "answer_text": "The patient's last blood pressure reading was 148 mmHg systolic and 94 mmHg diastolic, recorded on June 1, 2026. This falls under Stage 2 hypertension, as systolic blood pressure is 140 mmHg or higher.",
+  "tools_dispatched": [
+    "get_vitals"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 3,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's systolic blood pressure was recorded as 148 mmHg.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "blood_pressure_systolic",
+          "asserted_value": "148.0"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's diastolic blood pressure was recorded as 94 mmHg.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "1",
+          "field": "blood_pressure_diastolic",
+          "asserted_value": "94.0"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

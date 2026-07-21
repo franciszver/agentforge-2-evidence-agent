@@ -1,0 +1,63 @@
+{
+  "case_id": "bp-stage2-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 31.36,
+  "answer_text": "The patient's last blood pressure reading was 148 mmHg systolic and 94 mmHg diastolic, recorded on June 1, 2026. Based on the clinical guidelines, this falls into the category of Stage 2 hypertension, as the systolic reading is 140 mmHg or higher.",
+  "tools_dispatched": [
+    "get_vitals"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 4,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's last blood pressure reading was 148 mmHg systolic.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "blood_pressure_systolic",
+          "asserted_value": "148"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's last blood pressure reading was 94 mmHg diastolic.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "1",
+          "field": "blood_pressure_diastolic",
+          "asserted_value": "94"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The blood pressure reading was recorded on June 1, 2026.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "date",
+          "asserted_value": "2026-06-01T09:00:00"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

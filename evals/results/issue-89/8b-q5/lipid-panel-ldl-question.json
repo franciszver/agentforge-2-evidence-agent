@@ -1,0 +1,39 @@
+{
+  "case_id": "lipid-panel-ldl-question",
+  "model_label": "8b-q5",
+  "elapsed_seconds": 13.31,
+  "answer_text": "The patient's LDL cholesterol level is 172 mg/dL, which is considered high according to the clinical guideline.",
+  "tools_dispatched": [
+    "get_recent_labs"
+  ],
+  "verdict": "partially_verified",
+  "total_claim_count": 2,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's LDL cholesterol level is 172 mg/dL.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "value",
+          "asserted_value": "172"
+        },
+        {
+          "tool_call_id": "call_0",
+          "record_id": "0",
+          "field": "unit",
+          "asserted_value": "mg/dL"
+        }
+      ]
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}
