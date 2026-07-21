@@ -1,0 +1,19 @@
+{
+  "case_id": "nsaid-ace-inhibitor-question",
+  "draw_index": 6,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking lisinopril.",
+      "source_ref_facts": [
+        "name: Lisinopril",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that Lisinopril is an active medication, which directly supports the CLAIM that the patient is currently taking lisinopril.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

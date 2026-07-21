@@ -1,0 +1,45 @@
+{
+  "case_id": "statin-liver-monitoring-question",
+  "draw_index": 0,
+  "answer_verdict": "partially_verified",
+  "exposure_claim_count": 4,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Atorvastatin.",
+      "source_ref_facts": [
+        "name: Atorvastatin"
+      ],
+      "verdict": "not_supported",
+      "reason": "The SOURCE FACTS only provide the name 'Atorvastatin' without any information about whether the patient is currently taking it.",
+      "would_downgrade": true
+    },
+    {
+      "claim_text": "The patient is taking Atorvastatin at a dose of 20mg.",
+      "source_ref_facts": [
+        "dose: 20mg"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the dose of 20mg, which matches the CLAIM about the patient taking Atorvastatin at that dose.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient is taking Atorvastatin orally.",
+      "source_ref_facts": [
+        "route: oral"
+      ],
+      "verdict": "not_supported",
+      "reason": "The source fact 'route: oral' only indicates the route of administration but does not specify the medication name, thus it does not support the claim that the patient is taking Atorvastatin orally.",
+      "would_downgrade": true
+    },
+    {
+      "claim_text": "The patient's status for Atorvastatin is active.",
+      "source_ref_facts": [
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state that the status is 'active', which directly supports the CLAIM that the patient's status for Atorvastatin is active.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

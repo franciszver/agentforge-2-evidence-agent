@@ -1,0 +1,19 @@
+{
+  "case_id": "lithium-nsaid-question",
+  "draw_index": 6,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking lithium.",
+      "source_ref_facts": [
+        "name: Lithium Carbonate",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that Lithium Carbonate is active, which directly supports the CLAIM that the patient is currently taking lithium.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

@@ -1,0 +1,6 @@
+{
+  "draw_index": 3,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS provide information about the number of active problems, which is unrelated to the patient's blood pressure.",
+  "caught": true
+}
