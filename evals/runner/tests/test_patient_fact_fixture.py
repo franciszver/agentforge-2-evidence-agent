@@ -9,12 +9,12 @@ schema's backward-compatible default, independent of any pipeline wiring
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from app.schemas.ingestion import Citation
-
-from pathlib import Path
 
 from runner.loader import load_case
 from runner.schema import EvalCase, PatientFactFixture

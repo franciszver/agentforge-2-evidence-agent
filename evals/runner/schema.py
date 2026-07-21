@@ -227,25 +227,7 @@ class RetrievedChunkFixture(BaseModel):
 
 class PatientFactFixture(BaseModel):
     """Canned stand-in for one patient-scoped ingested document fact (issue
-    #70, following #86's ``document_facts``/P3.9a's ``patient_facts``) -- the
-    VLM-extracted lab/intake-form ``Citation`` a case declares as already
-    ingested for its bound patient, exactly the way ``tool_data`` cans a
-    structured-tool result and ``RetrievedChunkFixture`` cans a guideline
-    chunk. Fed to BOTH consumers a real turn feeds from this one source
-    (``app.chat``'s #86 fetch-once-use-twice convention, mirrored by
-    ``runner.pipeline.run_case``):
-
-    * ``Planner.run``'s ``document_facts`` kwarg -- reaches the answer-
-      composition (reasoning) call itself, so the model can only ever
-      restate what it was actually shown.
-    * ``app.extraction.run_verification``'s ``patient_facts`` kwarg -- builds
-      the ``DocumentFactIndex`` any resulting ``lab_pdf``/``intake_form``
-      ``DocumentCitation`` is re-validated against; a citation naming a fact
-      this patient does not have (hallucinated, or a cross-patient reference)
-      fails closed as ``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``.
-
-    Field names mirror ``app.schemas.ingestion.Citation`` exactly (the same
-    convention ``RetrievedChunkFixture`` follows for ``RerankedChunk``)."""
+    #70); fields mirror ``app.schemas.ingestion.Citation`` exactly."""
 
     model_config = ConfigDict(extra="forbid")
 

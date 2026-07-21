@@ -200,10 +200,8 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
             patient_id=case.patient_id,
             registry=registry,
         )
-        # Threaded ONLY when non-empty -- the same conditional-kwarg
-        # convention `app.chat._stream_chat` and `run_verification` below use
-        # for this same list, so a case with no patient_facts fixture exactly
-        # mirrors the pre-#70 harness (byte-identical `Planner.run` call).
+        # Threaded ONLY when non-empty -- see `patient_facts`'s definition
+        # above for the one-source, two-consumers rationale.
         planner_kwargs: dict[str, list[Citation]] = {}
         if patient_facts:
             planner_kwargs["document_facts"] = patient_facts
@@ -237,9 +235,7 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # needs one (`get_support_judge_provider`) -- see `needs_semantic_support`
     # for which cases actually exercise the judge call.
     support_judge = ollama_client if needs_semantic_support(case) else None
-    # `patient_facts` (issue #70): the SAME list already threaded into
-    # `Planner.run` above, reused here for `run_verification`'s citation-
-    # attachment pass -- mirrors `retrieved_chunks`'s reuse pattern exactly.
+    # `patient_facts`: same one-source, two-consumers list, reused here.
     verdict_result, rendered = run_verification(
         extractor,
         planner_result,
