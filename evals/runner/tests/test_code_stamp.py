@@ -118,6 +118,90 @@ def test_compute_app_stamp_ignores_compiled_pyc_files_outside_pycache(tmp_path: 
     assert compute_app_stamp(app_a) == compute_app_stamp(app_b)
 
 
+# --- CRLF/LF line-ending normalization (gate review on #143): the Windows ---
+# host checkout is CRLF (autocrlf), the Linux container bakes the LF git
+# blob -- a byte-exact hash of a TEXT file makes EVERY recording abort with
+# CodeStampMismatchError even when the two trees are the identical logical
+# source. Binary assets must NOT be normalized -- a real \r\n byte pair in a
+# binary file is data, not a line ending, and collapsing it would hide
+# genuine drift in exactly the assets (drug_interactions.db) the widened
+# coverage exists to protect. -------------------------------------------
+
+
+def test_compute_app_stamp_same_for_crlf_and_lf_text_file(tmp_path: Path) -> None:
+    app_a = _write_app(tmp_path / "a", {"__init__.py": "", "planner.py": "x = 1\ny = 2\n"})
+    app_b = _write_app(tmp_path / "b", {"__init__.py": "", "planner.py": "x = 1\r\ny = 2\r\n"})
+
+    assert compute_app_stamp(app_a) == compute_app_stamp(app_b)
+
+
+def test_compute_app_stamp_same_for_lone_cr_text_file(tmp_path: Path) -> None:
+    """Old-Mac-style lone ``\\r`` line endings normalize to ``\\n`` too, not
+    just the Windows ``\\r\\n`` pair."""
+    app_a = _write_app(tmp_path / "a", {"__init__.py": "", "planner.py": "x = 1\ny = 2\n"})
+    app_b = _write_app(tmp_path / "b", {"__init__.py": "", "planner.py": "x = 1\ry = 2\r"})
+
+    assert compute_app_stamp(app_a) == compute_app_stamp(app_b)
+
+
+def test_compute_app_stamp_still_detects_real_text_content_drift(tmp_path: Path) -> None:
+    """Normalization must not make the guard blind to genuine source
+    drift -- only line-ending differences collapse, not body changes."""
+    app_a = _write_app(tmp_path / "a", {"__init__.py": "", "planner.py": "x = 1\r\n"})
+    app_b = _write_app(tmp_path / "b", {"__init__.py": "", "planner.py": "x = 2\r\n"})
+
+    assert compute_app_stamp(app_a) != compute_app_stamp(app_b)
+
+
+def test_compute_app_stamp_does_not_normalize_binary_file_line_ending_bytes(tmp_path: Path) -> None:
+    """A binary file (contains a NUL byte, e.g. a sqlite ``.db``) that
+    happens to contain ``\\r\\n`` byte pairs must hash differently from the
+    same file with those bytes collapsed to ``\\n`` -- those bytes are
+    opaque binary data, not line endings, and normalizing them would mask
+    real drift in a behavioral asset like ``drug_interactions.db``."""
+    app_a = _write_app(tmp_path / "a", {"data/drug_interactions.db": b"\x00binary\r\npayload"})
+    app_b = _write_app(tmp_path / "b", {"data/drug_interactions.db": b"\x00binary\npayload"})
+
+    assert compute_app_stamp(app_a) != compute_app_stamp(app_b)
+
+
+def test_compute_app_stamp_binary_file_identical_bytes_still_matches(tmp_path: Path) -> None:
+    app_a = _write_app(tmp_path / "a", {"data/drug_interactions.db": b"\x00binary\r\npayload"})
+    app_b = _write_app(tmp_path / "b", {"data/drug_interactions.db": b"\x00binary\r\npayload"})
+
+    assert compute_app_stamp(app_a) == compute_app_stamp(app_b)
+
+
+# --- runtime-mutable data files excluded from the stamp (gate review on ----
+# #143): app/data/eval_history.json is REWRITTEN at runtime by
+# app.dashboard_eval_history.append_eval_run (called from
+# evals/runner/record_run.py after every eval run), so in a long-lived
+# container it drifts from its committed state for reasons that have
+# nothing to do with source code drift -- the stamp guard must not treat
+# that as a mismatch. Other data/ assets the app only ever reads
+# (reranker_scores.json etc.) remain real drift surface. ------------------
+
+
+def test_compute_app_stamp_ignores_eval_history_json_changes(tmp_path: Path) -> None:
+    app_a = _write_app(tmp_path / "a", {"__init__.py": "", "data/eval_history.json": "[]"})
+    app_b = _write_app(
+        tmp_path / "b",
+        {"__init__.py": "", "data/eval_history.json": '[{"timestamp": "2026-01-01", "total": 1}]'},
+    )
+
+    assert compute_app_stamp(app_a) == compute_app_stamp(app_b)
+
+
+def test_compute_app_stamp_still_detects_reranker_scores_changes(tmp_path: Path) -> None:
+    """Sanity check that the eval-history exclusion is narrow -- a sibling
+    ``data/`` asset the app only reads (never rewrites) still drifts the
+    stamp as before."""
+    app_a = _write_app(tmp_path / "a", {"__init__.py": "", "data/reranker_scores.json": '{"score": 1}'})
+    app_b = _write_app(tmp_path / "b", {"__init__.py": "", "data/reranker_scores.json": '{"score": 2}'})
+
+    assert compute_app_stamp(app_a) != compute_app_stamp(app_b)
+
+
 # --- check_code_stamp: fail loudly on mismatch, no-op when not requested --
 
 
