@@ -31,7 +31,6 @@ from runner.ollama_replay import (
     RecordingNotFoundError,
     ReplayOllamaClient,
     load_recording,
-    read_code_stamp,
     recording_path,
     save_recording,
 )
@@ -174,7 +173,6 @@ def test_save_recording_stamps_code_stamp_into_metadata(tmp_path: Path) -> None:
     assert payload["code_stamp"] == "abc123"
     # The calls themselves must still round-trip untouched.
     assert load_recording(out_path) == calls
-    assert read_code_stamp(out_path) == "abc123"
 
 
 def test_recordings_without_a_code_stamp_still_load_and_replay(tmp_path: Path) -> None:
@@ -191,7 +189,6 @@ def test_recordings_without_a_code_stamp_still_load_and_replay(tmp_path: Path) -
     calls = load_recording(out_path)
 
     assert calls == [RecordedCall(kind="chat", schema=None, response="hi")]
-    assert read_code_stamp(out_path) is None
 
 
 def test_save_recording_omits_code_stamp_key_when_not_given(tmp_path: Path) -> None:

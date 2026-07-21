@@ -45,15 +45,29 @@ mounts, a live recording made without noticing the baked ``app/`` is stale
 (exactly what happened during #70/#130) silently corrupts the committed
 golden eval set -- no error, just wrong recorded output. Before making any
 live model call, ``main()`` calls :func:`verify_code_stamp`, which computes
-a content stamp over the ``app/`` package this process actually resolved and
-imported (``runner.code_stamp.compute_app_stamp``) and, if the recording
-protocol supplied ``EXPECTED_APP_STAMP`` (host-computed over
-``services/copilot-agent/app`` before docker-exec'ing in -- see ``docs/
-TEST_PLAN.md`` Sec 9), refuses loudly on any mismatch instead of recording
-against silently-stale code. The resulting stamp is also written into every
-new recording's ``code_stamp`` metadata field, so a future audit can tell
-what code produced it (old recordings without the field are untouched and
-still replay exactly as before).
+a content stamp over the actually-IMPORTED ``app`` package (``Path(app.
+__file__).parent`` -- provably the code this process has in memory, not a
+separately re-resolved guess at it) via ``runner.code_stamp.
+compute_app_stamp`` and, if the recording protocol supplied
+``EXPECTED_APP_STAMP`` (host-computed over ``services/copilot-agent/app``
+before docker-exec'ing in -- see ``docs/TEST_PLAN.md`` Sec 9), refuses
+loudly on any mismatch instead of recording against silently-stale code.
+The resulting stamp is also written into every new recording's
+``code_stamp`` metadata field, so a future audit can tell what code produced
+it (old recordings without the field are untouched and still replay exactly
+as before).
+
+**Fail CLOSED on a missing stamp under the container layout (gate review,
+PR #143).** The first cut of this guard treated an unset ``EXPECTED_APP_STAMP``
+as "check not requested" everywhere -- a no-op. That is correct on the
+genuine host-monorepo layout (no container, nothing to drift from) but
+fails OPEN under the flattened in-container layout: an operator who simply
+forgot to pass the env var got silent, unchecked recording against whatever
+stale code happened to be baked in -- precisely the bug #140 exists to
+prevent. ``verify_code_stamp`` now detects the layout
+(:func:`_in_flattened_container_layout`, reusing #119's own resolution) and
+raises :class:`MissingExpectedStampError` if the stamp is unset/empty there,
+instead of skipping the check.
 """
 
 from __future__ import annotations
@@ -95,6 +109,7 @@ for _root in reversed(_agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT) +
     if _root_str not in sys.path:
         sys.path.insert(0, _root_str)
 
+import app  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.llama_server_client import LlamaServerClient  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
@@ -108,12 +123,14 @@ _CASES_DIR = _EVALS_ROOT / "cases"
 _REGRESSIONS_DIR = _EVALS_ROOT / "regressions"
 _RECORDINGS_DIR = _EVALS_ROOT / "recordings"
 
-# The SAME resolved root #119's sys.path setup picked as the live ``app``
-# package source -- whichever candidate actually has ``app/__init__.py`` on
-# disk (see ``_agent_root_candidates``'s docstring). Recomputing it here
-# (cheap, pure) rather than threading a value out of the sys.path loop above
-# keeps that loop's only job being sys.path setup.
-_RESOLVED_APP_ROOT = _agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT)[0] / "app"
+# Derived from the ACTUALLY-IMPORTED ``app`` module (see ``import app``
+# above), not by re-resolving #119's candidates a second time -- this way
+# the stamp provably describes the code this process has in memory and is
+# about to call, rather than a plausible-but-separately-recomputed guess at
+# which candidate sys.path setup picked. #119's own resolution (the loop
+# above) is unchanged; only the root the STAMP is computed over changes.
+assert app.__file__ is not None, "app package has no __file__ (unexpected namespace package)"
+_RESOLVED_APP_ROOT = Path(app.__file__).resolve().parent
 
 
 def _find_case_file(case_id: str) -> Path:
@@ -121,6 +138,35 @@ def _find_case_file(case_id: str) -> Path:
         if load_case(path).id == case_id:
             return path
     raise SystemExit(f"no case with id {case_id!r} under {_CASES_DIR} or {_REGRESSIONS_DIR}")
+
+
+class MissingExpectedStampError(RuntimeError):
+    """Raised by :func:`verify_code_stamp` when running under the flattened
+    in-container layout (#119) with ``EXPECTED_APP_STAMP`` unset or empty --
+    the gate review that followed #140's initial fix found the original
+    behavior (treat an unset env var as "check not requested" -- a no-op)
+    fails OPEN exactly in the case that matters most: an operator who simply
+    forgot ``docker exec -e EXPECTED_APP_STAMP=...`` got silent, unchecked
+    recording against whatever stale code the container happened to have
+    baked in, with zero signal anything was wrong. In that layout the stamp
+    is now REQUIRED; only the genuine host-monorepo layout (no container,
+    no baked-code drift possible) still treats an unset var as a no-op."""
+
+
+def _in_flattened_container_layout() -> bool:
+    """True when this process resolved the live ``app`` package via the
+    flattened dev-container layout (#119's ``_agent_root_candidates``
+    winning candidate is the repo root itself, not ``services/
+    copilot-agent``) -- i.e. exactly the ``development-easy-agent-1``-style
+    layout with no bind mounts, where the baked ``app/`` can silently drift
+    from the host tree an operator thinks they're recording against.
+
+    The host-monorepo layout (``_MONOREPO_AGENT_ROOT/app/__init__.py``
+    exists) is never flagged, whether or not it happens to also win the
+    candidate race -- there the live code trivially IS the working tree, so
+    ``EXPECTED_APP_STAMP`` staying optional is correct, not a gap.
+    """
+    return _agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT)[0] == _REPO_ROOT
 
 
 def verify_code_stamp() -> str:
@@ -131,9 +177,31 @@ def verify_code_stamp() -> str:
     any live model call is made. Returns the local stamp so it can be
     stamped into the recording's own metadata (an audit trail even when no
     ``EXPECTED_APP_STAMP`` was supplied, e.g. recording directly on host).
+
+    Fail CLOSED, not open (gate review on #140/PR #143): under the
+    flattened in-container layout (:func:`_in_flattened_container_layout`),
+    an unset or empty ``EXPECTED_APP_STAMP`` aborts record mode instead of
+    silently skipping the check -- see :class:`MissingExpectedStampError`.
     """
     local_stamp = compute_app_stamp(_RESOLVED_APP_ROOT)
-    check_code_stamp(local_stamp, os.environ.get("EXPECTED_APP_STAMP"))
+    expected_stamp = os.environ.get("EXPECTED_APP_STAMP") or None
+    if expected_stamp is None and _in_flattened_container_layout():
+        raise MissingExpectedStampError(
+            "recording refused: running under the flattened in-container app layout "
+            "(#119) with EXPECTED_APP_STAMP unset (or empty) -- this container has no "
+            "bind mounts, so its baked app/ code can silently drift from the host tree "
+            "you think you're recording against (#140), and the drift check would "
+            "otherwise be skipped entirely (fail-open). Set EXPECTED_APP_STAMP to the "
+            "host-computed stamp before recording, e.g.:\n"
+            "  python -c \"from pathlib import Path; import sys; "
+            "sys.path.insert(0, 'evals/runner'); from code_stamp import compute_app_stamp; "
+            "print(compute_app_stamp(Path('services/copilot-agent/app')))\"\n"
+            "then pass it through: "
+            "docker exec -e EXPECTED_APP_STAMP=<stamp from above> -it <container> "
+            "python evals/runner/record.py <case-id> -- see docs/TEST_PLAN.md Sec 9 for "
+            "the full protocol."
+        )
+    check_code_stamp(local_stamp, expected_stamp)
     return local_stamp
 
 

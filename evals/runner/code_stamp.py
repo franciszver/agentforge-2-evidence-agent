@@ -47,17 +47,30 @@ class CodeStampMismatchError(RuntimeError):
 
 
 def compute_app_stamp(app_root: Path) -> str:
-    """Deterministic sha256 hex digest over every ``*.py`` file under
-    ``app_root`` (an ``app/`` package directory): each file's POSIX-style
-    relative path plus its raw bytes, in sorted-path order so the result
-    doesn't depend on filesystem iteration order. ``__pycache__`` is
-    excluded -- compiled bytecode is a build artifact, not source, and its
-    mtime-sensitive contents would make the stamp spuriously flap between
-    two checkouts of identical source.
+    """Deterministic sha256 hex digest over every file under ``app_root``
+    (an ``app/`` package directory) -- not just ``*.py``: behavioral assets
+    the running code loads at import/runtime (e.g. ``app/data/
+    drug_interactions.db``, ``reranker_scores*.json``,
+    ``retrieval_embeddings.json``) are just as capable of silently drifting
+    between the host tree and a stale baked container as source is, and a
+    guard that only watches ``*.py`` would report "code matches" while one
+    of those assets quietly rotted. Each file's POSIX-style relative path
+    plus its raw bytes, in sorted-path order so the result doesn't depend on
+    filesystem iteration order.
+
+    Excluded: ``__pycache__`` directories and any ``*.pyc`` file (even one
+    sitting outside ``__pycache__``) -- compiled bytecode is a build
+    artifact, not source or data, and its mtime-sensitive contents would
+    make the stamp spuriously flap between two checkouts of identical
+    source.
     """
     digest = hashlib.sha256()
     files = sorted(
-        (path for path in app_root.rglob("*.py") if "__pycache__" not in path.parts),
+        (
+            path
+            for path in app_root.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+        ),
         key=lambda path: path.relative_to(app_root).as_posix(),
     )
     for path in files:

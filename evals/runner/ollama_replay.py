@@ -125,17 +125,6 @@ def load_recording(path: Path) -> list[RecordedCall]:
     return [RecordedCall.from_json(call) for call in data["calls"]]
 
 
-def read_code_stamp(path: Path) -> str | None:
-    """Read a recording's ``code_stamp`` metadata (#140) without touching
-    its calls -- for audits ("what code produced this recording?"). ``None``
-    for recordings committed before #140, which never had one; this is
-    never rewritten onto old, already-committed recordings.
-    """
-    data = json.loads(path.read_text(encoding="utf-8"))
-    stamp = data.get("code_stamp")
-    return stamp if isinstance(stamp, str) else None
-
-
 class RecordingOllamaClient:
     """Wraps a real ``OllamaClient``; forwards every call and records it in
     order. RECORD mode only -- needs the live model."""
