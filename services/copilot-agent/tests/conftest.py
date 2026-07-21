@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app.openemr_client import OpenEmrClient
+from app.schemas.ingestion import ExtractedLabRow, LabPageExtraction
 
 # Derived per run (not a hardcoded literal) so no secret-shaped string is
 # committed. The isolation store below is never asserted against by hash, so
@@ -28,6 +29,34 @@ def make_openemr_client() -> Callable[[Callable[[httpx.Request], httpx.Response]
         )
 
     return _make
+
+
+@pytest.fixture
+def fixture_pdf(tmp_path):
+    """A minimal single blank-page PDF, for tests that ingest a real file
+    through ``attach_and_extract`` without needing its actual content (the
+    scripted ``FakeVlm`` below never reads it)."""
+    import pypdfium2 as pdfium
+
+    path = tmp_path / "lab.pdf"
+    pdf = pdfium.PdfDocument.new()
+    pdf.new_page(200.0, 200.0)
+    pdf.save(str(path))
+    pdf.close()
+    return path
+
+
+class FakeVlm:
+    """Scripted single-page lab VLM double -- no live Ollama call. Always
+    returns the same ``row`` for every page ``extract``-ed."""
+
+    def __init__(self, row: ExtractedLabRow) -> None:
+        self._row = row
+        self.extract_calls: list[object] = []
+
+    def extract(self, prompt_or_messages, schema, *, options=None, images=None):
+        self.extract_calls.append(prompt_or_messages)
+        return LabPageExtraction(rows=[self._row])
 
 
 @pytest.fixture(scope="session")

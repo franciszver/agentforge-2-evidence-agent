@@ -1197,21 +1197,11 @@ def _stream_chat(
             retrieved_chunks = []
         guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
 
-        # #86 (DEMO_SCRIPT.md beat 3): this turn's bound patient's own
-        # extracted lab/intake-form fact citations, fetched HERE -- BEFORE
-        # the planner runs -- so they can feed the SAME answer-composition
-        # call `guideline_excerpts` already does (#105's mechanism), not just
-        # the post-hoc claim-extraction/verification pass further below
-        # (P3.9a, issue #46) that already used this exact lookup. Moving the
-        # fetch earlier costs nothing extra: it is the same one disk read,
-        # reused for both purposes, replacing the pre-#86 fetch that used to
-        # happen only later (see that removed call's comment, now folded into
-        # this one). Fail-soft, same discipline as evidence_retriever above:
-        # a lookup failure must never break an otherwise-working chat turn,
-        # logged by TYPE ONLY. ``conversation.patient_id`` is the SAME id
-        # already verified by the launch-patient binding and P2.16
-        # conversation binding above -- this lookup is never given any other
-        # patient's id.
+        # #86: this turn's patient's ingested fact citations, fetched HERE
+        # (before the planner runs) so this ONE disk read feeds both answer
+        # composition (`document_facts` below) and the post-hoc verification
+        # pass further below (`patient_facts`, P3.9a/#46) -- never fetched
+        # twice. Fail-soft like evidence_retriever above: logged by type only.
         try:
             patient_facts = patient_fact_provider(conversation.patient_id)
         except Exception as exc:

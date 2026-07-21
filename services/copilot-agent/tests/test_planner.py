@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
@@ -657,23 +658,54 @@ def test_finalize_answer_omits_guideline_context_block_when_no_excerpts_given():
 # byte-identical to before this fix.
 
 
-def test_finalize_answer_includes_document_facts_in_the_reasoning_call():
+_A1C_FACT = Citation(
+    source_type="lab_pdf",
+    source_id="deadbeef" * 4,
+    page_or_section="page 1",
+    field_or_chunk_id="Hemoglobin A1c#page1-row0",
+    quote_or_value="Hemoglobin A1c: 5.4",
+)
+
+# Mirrors tests/test_ingestion.py's deliberately-unreadable-field fixture:
+# Creatinine's value is legible but its collection_date is not, so
+# `_quote_for_row` never mentions a date at all for this row.
+_REDACTED_CREATININE_FACT = Citation(
+    source_type="lab_pdf",
+    source_id="cafebabe" * 4,
+    page_or_section="page 2",
+    field_or_chunk_id="Creatinine#page2-row7",
+    quote_or_value="Creatinine: 0.9",
+)
+
+
+@pytest.mark.parametrize(
+    ("fact", "question", "check_no_fabricated_date"),
+    [
+        pytest.param(_A1C_FACT, "What is her A1c?", False, id="includes_document_facts_in_the_reasoning_call"),
+        pytest.param(
+            _REDACTED_CREATININE_FACT,
+            "What was the collection date for his creatinine result?",
+            True,
+            id="never_states_a_field_the_document_fact_quote_omits",
+        ),
+    ],
+)
+def test_finalize_answer_reasoning_call_reflects_document_facts(fact, question, check_no_fabricated_date):
     """When `document_facts` is passed to `run`, the free-text reasoning call
     must receive each fact's literal citation quote -- so the model can
     answer from the patient's own ingested document instead of reporting
-    "no lab results recorded" when a relevant document actually exists."""
-    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Her A1c is 5.4%.", reason="direct")]
+    "no lab results recorded" when a relevant document actually exists.
+
+    The no-fabrication contract (`app.ingestion._quote_for_row`) guarantees
+    an unreadable field is simply ABSENT from a fact's citation quote (e.g.
+    the Creatinine case's illegible collection date). Since the reasoning
+    call only ever sees that literal quote text, verbatim, it structurally
+    cannot pass a fabricated collection date to the model."""
+    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
     ollama = _ScriptedOllamaClient(decisions)
     planner = _make_planner(ollama, registry={})
 
-    fact = Citation(
-        source_type="lab_pdf",
-        source_id="deadbeef" * 4,
-        page_or_section="page 1",
-        field_or_chunk_id="Hemoglobin A1c#page1-row0",
-        quote_or_value="Hemoglobin A1c: 5.4",
-    )
-    planner.run("What is her A1c?", document_facts=[fact])
+    planner.run(question, document_facts=[fact])
 
     assert ollama.chat_calls, "expected the reasoning (chat) call to have run"
     reasoning_messages = ollama.chat_calls[-1]
@@ -682,41 +714,11 @@ def test_finalize_answer_includes_document_facts_in_the_reasoning_call():
         "the ingested document fact's literal quote must reach the reasoning "
         "call that composes the answer"
     )
-
-
-def test_finalize_answer_never_states_a_field_the_document_fact_quote_omits():
-    """The no-fabrication contract (`app.ingestion._quote_for_row`) already
-    guarantees an unreadable field is simply ABSENT from a fact's citation
-    quote (e.g. a Creatinine row with an illegible collection date has a
-    quote of "Creatinine: 0.9" -- no date, not a guessed one). Since the
-    reasoning call only ever sees that literal quote text, verbatim, it
-    structurally cannot pass a fabricated collection date to the model --
-    this pins that the quote fed into the prompt is exactly the honest,
-    field-omitting text, never anything richer than what was actually
-    extracted."""
-    decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
-    ollama = _ScriptedOllamaClient(decisions)
-    planner = _make_planner(ollama, registry={})
-
-    # Mirrors tests/test_ingestion.py's deliberately-unreadable-field fixture:
-    # Creatinine's value is legible but its collection_date is not, so
-    # `_quote_for_row` never mentions a date at all for this row.
-    redacted_fact = Citation(
-        source_type="lab_pdf",
-        source_id="cafebabe" * 4,
-        page_or_section="page 2",
-        field_or_chunk_id="Creatinine#page2-row7",
-        quote_or_value="Creatinine: 0.9",
-    )
-    planner.run("What was the collection date for his creatinine result?", document_facts=[redacted_fact])
-
-    reasoning_messages = ollama.chat_calls[-1]
-    joined = " ".join(message["content"] for message in reasoning_messages)
-    assert redacted_fact.quote_or_value in joined
-    # No fabricated date has any way to appear: the quote fed to the model
-    # names only the test and its value, never a date the source document
-    # never actually gave up.
-    assert "2026" not in joined and "collection_date" not in joined.lower().replace("_", "")
+    if check_no_fabricated_date:
+        # No fabricated date has any way to appear: the quote fed to the
+        # model names only the test and its value, never a date the source
+        # document never actually gave up.
+        assert "2026" not in joined and "collection_date" not in joined.lower().replace("_", "")
 
 
 def test_finalize_answer_omits_document_fact_context_block_when_no_facts_given():

@@ -441,24 +441,10 @@ tool results already established it.
 /no_think\
 """
 
-# Issue #86 (DEMO_SCRIPT.md beat 3): app.chat.get_patient_fact_provider reads
-# this patient's OWN extracted lab/intake-form document facts
-# (LocalIngestionStore) -- but, before this fix, only AFTER Planner.run/
-# run_streaming already returned, feeding solely the post-hoc claim-
-# extraction/verification step (P3.9a, issue #46). The planner itself never
-# saw these facts while composing its answer, so a question only answerable
-# from an ingested document was answered from EMR chart tools alone --
-# genuinely empty for it -- as "no lab results recorded for this patient",
-# even though the document was actually ingested.
-#
-# This mirrors #105's guideline_excerpts fix exactly, at the SAME call site
+# Issue #86: mirrors #105's guideline_excerpts fix at the SAME call site
 # (the free-text reasoning call in `_finalize_answer_streaming`, never the
-# tool-dispatch decision prompt #123 found fragile): each fact's literal
-# citation quote (`app.ingestion._quote_for_row`'s own no-fabrication-safe
-# rendering -- an unreadable field is simply ABSENT from the quote, never a
-# guessed value) is appended to the reasoning call ONLY when `document_facts`
-# is non-empty. A question with no ingested documents (every case today)
-# passes `None`/empty here and this prompt addition is skipped entirely --
+# #123-fragile tool-dispatch decision prompt) -- appended ONLY when
+# `document_facts` is non-empty, so the (today, universal) empty case stays
 # byte-identical to before this fix.
 _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE = """\
 The following facts were extracted from documents this patient's clinician has \
@@ -474,12 +460,12 @@ about, say so honestly rather than reporting that no data exists at all.
 """
 
 
-def _format_document_facts(document_facts: Sequence[Citation]) -> str:
-    """Literal, deterministic rendering of each fact's own citation quote --
-    never anything beyond what ``document_facts`` itself already carries, so
-    this can only ever surface what was actually extracted (see
-    ``app.ingestion``'s no-fabrication contract)."""
-    return "\n".join(f"- {fact.quote_or_value}" for fact in document_facts)
+def _append_context_message(messages: list[dict[str, str]], template: str, **template_kwargs: str) -> None:
+    """Append one ``{"role": "user"}`` message rendering ``template`` --
+    shared by the guideline-excerpts (#105) and document-facts (#86)
+    context-injection blocks in ``_finalize_answer_streaming``, which are
+    otherwise structurally identical (guard on non-empty input -> append)."""
+    messages.append({"role": "user", "content": template.format(**template_kwargs)})
 
 
 def _coerce_arg(key: str, value: str) -> Any:
@@ -780,7 +766,7 @@ class Planner:
         ``document_facts`` (#86): when non-empty, a
         ``_DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE`` message carrying this
         patient's own ingested document facts (their literal citation quotes
-        only -- see ``_format_document_facts``) is appended AFTER the
+        only) is appended AFTER the
         guideline-excerpts message (if any) and BEFORE
         ``_FINAL_REASON_PROMPT``, so the model can answer from an ingested
         document instead of reporting no data exists for it.
@@ -800,21 +786,16 @@ class Planner:
         """
         reason_messages = list(messages)
         if guideline_excerpts:
-            excerpt_text = "\n\n".join(guideline_excerpts)
-            reason_messages.append(
-                {
-                    "role": "user",
-                    "content": _GUIDELINE_CONTEXT_PROMPT_TEMPLATE.format(excerpts=excerpt_text),
-                }
+            _append_context_message(
+                reason_messages,
+                _GUIDELINE_CONTEXT_PROMPT_TEMPLATE,
+                excerpts="\n\n".join(guideline_excerpts),
             )
         if document_facts:
-            reason_messages.append(
-                {
-                    "role": "user",
-                    "content": _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE.format(
-                        facts=_format_document_facts(document_facts)
-                    ),
-                }
+            _append_context_message(
+                reason_messages,
+                _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE,
+                facts="\n".join(f"- {fact.quote_or_value}" for fact in document_facts),
             )
         reason_messages.append({"role": "user", "content": _FINAL_REASON_PROMPT})
         chat_stream = getattr(self._ollama, "chat_stream", None)

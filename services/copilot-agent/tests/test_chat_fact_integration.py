@@ -40,9 +40,10 @@ from app.chat import (
 from app.ingestion import LocalIngestionStore, attach_and_extract
 from app.main import app
 from app.planner import PlannerResult
-from app.schemas.ingestion import DocumentCitation, ExtractedLabRow, LabPageExtraction
+from app.schemas.ingestion import DocumentCitation, ExtractedLabRow
 from app.schemas.verification import Claim
 from app.trace_store import TraceStore
+from tests.conftest import FakeVlm
 
 _TEST_HASH_KEY = "0" * 32
 
@@ -59,17 +60,6 @@ _LAB_ROW = ExtractedLabRow(
 )
 _EXPECTED_FIELD_ID = "Hemoglobin A1c#page1-row0"
 _EXPECTED_QUOTE = "Hemoglobin A1c: 5.4"
-
-
-class _FakeVlm:
-    """Scripted single-page lab VLM double -- no live Ollama call."""
-
-    def __init__(self) -> None:
-        self.extract_calls: list[object] = []
-
-    def extract(self, prompt_or_messages, schema, *, options=None, images=None):
-        self.extract_calls.append(prompt_or_messages)
-        return LabPageExtraction(rows=[_LAB_ROW])
 
 
 class _FakePlanner:
@@ -141,14 +131,14 @@ def _chat(message: str, patient_id: int):
     )
 
 
-def test_real_chat_turn_cites_a_verified_lab_fact_document_citation(tmp_path):
+def test_real_chat_turn_cites_a_verified_lab_fact_document_citation(tmp_path, fixture_pdf):
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
     ingestion = attach_and_extract(
         _PATIENT_A_ID,
-        _fixture_pdf(tmp_path),
+        fixture_pdf,
         "lab_pdf",
-        ollama_client=_FakeVlm(),
+        ollama_client=FakeVlm(_LAB_ROW),
         document_store=store,
         fact_store=store,
     )
@@ -178,7 +168,9 @@ def test_real_chat_turn_cites_a_verified_lab_fact_document_citation(tmp_path):
     assert citation["field_or_chunk_id"] == _EXPECTED_FIELD_ID
 
 
-def test_cross_patient_fact_is_never_surfaced_or_verifiable_from_the_other_patients_chat_turn(tmp_path, caplog):
+def test_cross_patient_fact_is_never_surfaced_or_verifiable_from_the_other_patients_chat_turn(
+    tmp_path, fixture_pdf, caplog
+):
     """The load-bearing security case (issue #46): patient A's document
     citation must fail closed (never verify) when the /chat turn is bound to
     patient B -- the fact-lookup scoped to patient B's OWN stored facts never
@@ -187,16 +179,15 @@ def test_cross_patient_fact_is_never_surfaced_or_verifiable_from_the_other_patie
     caplog.set_level(logging.INFO)
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
-    fixture = _fixture_pdf(tmp_path)
 
     ingestion_a = attach_and_extract(
-        _PATIENT_A_ID, fixture, "lab_pdf", ollama_client=_FakeVlm(), document_store=store, fact_store=store
+        _PATIENT_A_ID, fixture_pdf, "lab_pdf", ollama_client=FakeVlm(_LAB_ROW), document_store=store, fact_store=store
     )
     # Patient B also has their own ingested lab fact, under a DIFFERENT
     # source_id -- proves this isn't merely "no data ingested for B" but a
     # genuine cross-patient isolation check.
     attach_and_extract(
-        _PATIENT_B_ID, fixture, "lab_pdf", ollama_client=_FakeVlm(), document_store=store, fact_store=store
+        _PATIENT_B_ID, fixture_pdf, "lab_pdf", ollama_client=FakeVlm(_LAB_ROW), document_store=store, fact_store=store
     )
 
     app.dependency_overrides[get_token_validator] = lambda: (lambda token: None)
@@ -227,14 +218,3 @@ def test_cross_patient_fact_is_never_surfaced_or_verifiable_from_the_other_patie
     # Patient A's source_id must never appear anywhere in the response body
     # of patient B's turn.
     assert ingestion_a.source_id not in response.text
-
-
-def _fixture_pdf(tmp_path):
-    import pypdfium2 as pdfium
-
-    path = tmp_path / "lab.pdf"
-    pdf = pdfium.PdfDocument.new()
-    pdf.new_page(200.0, 200.0)
-    pdf.save(str(path))
-    pdf.close()
-    return path

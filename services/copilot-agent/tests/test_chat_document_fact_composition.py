@@ -36,8 +36,9 @@ from app.chat import (
 from app.ingestion import LocalIngestionStore, attach_and_extract
 from app.main import app
 from app.planner import PlannerResult
-from app.schemas.ingestion import ExtractedLabRow, LabPageExtraction
+from app.schemas.ingestion import ExtractedLabRow
 from app.trace_store import TraceStore
+from tests.conftest import FakeVlm
 
 _TEST_HASH_KEY = "0" * 32
 _PATIENT_ID = 303
@@ -63,16 +64,6 @@ _CREATININE_ROW_MISSING_DATE = ExtractedLabRow(
     collection_date=None,
     abnormal_flag="N",
 )
-
-
-class _FakeVlm:
-    """Scripted single-page lab VLM double -- no live Ollama call."""
-
-    def __init__(self, row: ExtractedLabRow) -> None:
-        self._row = row
-
-    def extract(self, prompt_or_messages, schema, *, options=None, images=None):
-        return LabPageExtraction(rows=[self._row])
 
 
 class _RecordingPlanner:
@@ -107,29 +98,18 @@ def _chat(message: str, patient_id: int):
     )
 
 
-def _fixture_pdf(tmp_path):
-    import pypdfium2 as pdfium
-
-    path = tmp_path / "lab.pdf"
-    pdf = pdfium.PdfDocument.new()
-    pdf.new_page(200.0, 200.0)
-    pdf.save(str(path))
-    pdf.close()
-    return path
-
-
-def test_planner_receives_ingested_document_facts_before_composing_answer(tmp_path):
-    """The planner must be handed this patient's ingested lab fact BEFORE it
-    composes its answer -- proving the pre-answer wiring gap (issue #86) is
-    closed, not just the post-hoc citation-verification path (issue #46,
-    already shipped)."""
+def _run_chat_with_ingested_document_fact(tmp_path, fixture_pdf, row: ExtractedLabRow, question: str):
+    """Wire a real ingested document fact (via a real ``LocalIngestionStore``
+    + ``attach_and_extract`` call, scripted VLM) and a recording planner
+    double into a real ``/chat`` turn, so each test only supplies its own
+    row + question + assertions."""
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
     attach_and_extract(
         _PATIENT_ID,
-        _fixture_pdf(tmp_path),
+        fixture_pdf,
         "lab_pdf",
-        ollama_client=_FakeVlm(_A1C_ROW),
+        ollama_client=FakeVlm(row),
         document_store=store,
         fact_store=store,
     )
@@ -143,7 +123,15 @@ def test_planner_receives_ingested_document_facts_before_composing_answer(tmp_pa
     app.dependency_overrides[get_patient_fact_provider] = lambda: store.list_citations_for_patient
     app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
 
-    response = _chat("What is her A1c?", _PATIENT_ID)
+    return _chat(question, _PATIENT_ID), planner
+
+
+def test_planner_receives_ingested_document_facts_before_composing_answer(tmp_path, fixture_pdf):
+    """The planner must be handed this patient's ingested lab fact BEFORE it
+    composes its answer -- proving the pre-answer wiring gap (issue #86) is
+    closed, not just the post-hoc citation-verification path (issue #46,
+    already shipped)."""
+    response, planner = _run_chat_with_ingested_document_fact(tmp_path, fixture_pdf, _A1C_ROW, "What is her A1c?")
 
     assert response.status_code == 200
     assert planner.received_document_facts != "NEVER CALLED", (
@@ -155,32 +143,17 @@ def test_planner_receives_ingested_document_facts_before_composing_answer(tmp_pa
     assert fact.quote_or_value == "Hemoglobin A1c: 5.4"
 
 
-def test_redacted_field_reaches_planner_as_honest_quote_never_a_fabricated_date(tmp_path):
+def test_redacted_field_reaches_planner_as_honest_quote_never_a_fabricated_date(tmp_path, fixture_pdf):
     """The redacted/unreadable collection-date field must reach the planner
     as its literal, field-omitting quote ("Creatinine: 0.9") -- never a
     guessed date -- so the planner can only ever answer honestly ("not
     recorded in the document") instead of fabricating one."""
-    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
-    store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
-    attach_and_extract(
-        _PATIENT_ID,
-        _fixture_pdf(tmp_path),
-        "lab_pdf",
-        ollama_client=_FakeVlm(_CREATININE_ROW_MISSING_DATE),
-        document_store=store,
-        fact_store=store,
+    response, planner = _run_chat_with_ingested_document_fact(
+        tmp_path,
+        fixture_pdf,
+        _CREATININE_ROW_MISSING_DATE,
+        "What was the collection date for his creatinine result?",
     )
-
-    planner = _RecordingPlanner("placeholder answer")
-
-    app.dependency_overrides[get_token_validator] = lambda: (lambda token: None)
-    app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: planner)
-    app.dependency_overrides[get_claim_extractor] = lambda: _NoOpExtractor()
-    app.dependency_overrides[get_trace_store] = lambda: trace_store
-    app.dependency_overrides[get_patient_fact_provider] = lambda: store.list_citations_for_patient
-    app.dependency_overrides[get_support_judge_provider] = lambda: _no_op_support_judge_provider
-
-    response = _chat("What was the collection date for his creatinine result?", _PATIENT_ID)
 
     assert response.status_code == 200
     facts = list(planner.received_document_facts or [])
