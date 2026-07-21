@@ -1,0 +1,28 @@
+{
+  "case_id": "dual-antiplatelet-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 30.64,
+  "answer_text": "The combination of aspirin and clopidogrel is appropriate in specific clinical scenarios, such as after a coronary stent placement, where it is used as a deliberate, time-limited therapy. This combination is generally accepted in such cases, with the bleeding risk considered an acceptable tradeoff during the defined treatment window. The duration of this therapy is typically reassessed during follow-up.",
+  "tools_dispatched": [],
+  "verdict": "blocked",
+  "total_claim_count": 4,
+  "stripped_claim_count": 4,
+  "segments": [
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    },
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

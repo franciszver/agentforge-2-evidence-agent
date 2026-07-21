@@ -1,0 +1,69 @@
+{
+  "case_id": "renal-function-ace-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 40.7,
+  "answer_text": "Based on the clinical guideline, it is recommended to recheck the patient's kidney function, specifically creatinine and eGFR, at roughly 1-2 weeks after starting or up-titrating lisinopril. This allows for monitoring of any changes in kidney function that may occur as a result of the medication.",
+  "tools_dispatched": [
+    "get_recent_labs",
+    "get_encounters",
+    "get_problems",
+    "get_medications"
+  ],
+  "verdict": "verified",
+  "total_claim_count": 3,
+  "stripped_claim_count": 0,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently taking lisinopril.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_3",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Lisinopril"
+        },
+        {
+          "tool_call_id": "call_3",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient's lisinopril is administered orally.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_3",
+          "record_id": "0",
+          "field": "route",
+          "asserted_value": "oral"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "It is recommended to recheck the patient's kidney function, specifically creatinine and eGFR, at roughly 1-2 weeks after starting or up-titrating lisinopril.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "renal-function-monitoring",
+          "page_or_section": "Renal Function Monitoring on Nephrotoxic-Risk Medications",
+          "field_or_chunk_id": "renal-function-monitoring#ace-inhibitors-and-arbs",
+          "quote_or_value": "A baseline creatinine/eGFR and potassium is typically checked before starting an ACE inhibitor or ARB, with a recheck at roughly 1-2 weeks after starting or up-titrating."
+        }
+      ],
+      "source_refs": []
+    }
+  ]
+}

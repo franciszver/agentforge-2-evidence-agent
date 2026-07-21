@@ -1,0 +1,19 @@
+{
+  "case_id": "hypertension-lifestyle-followup-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 19.1,
+  "answer_text": "Since there are no scheduled appointments or encounter history available, it would be appropriate to schedule a follow-up visit within 3-6 months to recheck the blood pressure and assess the response to lifestyle changes.",
+  "tools_dispatched": [
+    "get_appointments",
+    "get_encounters"
+  ],
+  "verdict": "blocked",
+  "total_claim_count": 1,
+  "stripped_claim_count": 1,
+  "segments": [
+    {
+      "type": "Notice",
+      "text": "Not found in record."
+    }
+  ]
+}

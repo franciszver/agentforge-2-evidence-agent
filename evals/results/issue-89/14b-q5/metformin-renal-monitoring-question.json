@@ -1,0 +1,101 @@
+{
+  "case_id": "metformin-renal-monitoring-question",
+  "model_label": "14b-q5",
+  "elapsed_seconds": 41.14,
+  "answer_text": "The patient is currently prescribed metformin. Since there are no recorded problems or conditions in the patient's history that indicate impaired kidney function, and no other medications that may affect kidney function, the general guideline is to check eGFR at least annually while on metformin. If renal function is borderline or trending down, more frequent checks may be necessary.",
+  "tools_dispatched": [
+    "get_problems",
+    "get_medications"
+  ],
+  "verdict": "verified",
+  "total_claim_count": 4,
+  "stripped_claim_count": 0,
+  "segments": [
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently prescribed metformin.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The patient is currently prescribed metformin at a dose of 500mg via the oral route.",
+      "document_citation_count": 0,
+      "all_citations_verified": true,
+      "document_citations": [],
+      "source_refs": [
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "name",
+          "asserted_value": "Metformin"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "dose",
+          "asserted_value": "500mg"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "route",
+          "asserted_value": "oral"
+        },
+        {
+          "tool_call_id": "call_1",
+          "record_id": "0",
+          "field": "status",
+          "asserted_value": "active"
+        }
+      ]
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "The general guideline is to check eGFR at least annually while on metformin.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "renal-function-monitoring",
+          "page_or_section": "Renal Function Monitoring on Nephrotoxic-Risk Medications",
+          "field_or_chunk_id": "renal-function-monitoring#metformin",
+          "quote_or_value": "eGFR is generally checked at least annually in patients on metformin"
+        }
+      ],
+      "source_refs": []
+    },
+    {
+      "type": "RenderedClaim",
+      "text": "More frequent eGFR checks may be necessary if renal function is borderline or trending down.",
+      "document_citation_count": 1,
+      "all_citations_verified": true,
+      "document_citations": [
+        {
+          "source_type": "guideline_chunk",
+          "source_id": "renal-function-monitoring",
+          "page_or_section": "Renal Function Monitoring on Nephrotoxic-Risk Medications",
+          "field_or_chunk_id": "renal-function-monitoring#metformin",
+          "quote_or_value": "more frequently if renal function is borderline or trending down"
+        }
+      ],
+      "source_refs": []
+    }
+  ]
+}
