@@ -35,6 +35,29 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
+  UPDATE (issue #123, does not supersede the #115 mechanism below -- it is
+  still current and reproduces). Issue #123 confirmed this case's root cause
+  live once more (planner trace `[get_appointments, get_encounters]`,
+  `get_vitals` never dispatched) and attempted the same fix direction that
+  worked for `dual-antiplatelet-question`: an additive planner few-shot
+  example nudging the planner to confirm a question-stated vital-sign fact
+  via `get_vitals` before answering. This vitals-domain analog was found
+  UNSAFE and declined before it was ever considered for shipping: it did
+  reach `verified` 8/8 fresh live draws, but the planner substituted
+  `get_patient_summary` (record COUNTS, not the vitals reading itself) for
+  `get_vitals`, and the extractor then cited `get_patient_summary`'s
+  `problem_count=0` field for the claim "blood pressure was elevated" -- a
+  real field/value pair with zero topical connection to blood pressure,
+  passing `check_source_ref`'s deterministic value-equality check purely by
+  coincidence, and never caught by `apply_semantic_support`'s judge (which
+  only re-judges `document_citations`, never plain `source_refs`). That is a
+  FALSE-POSITIVE `verified`, arguably worse than the original fail-closed
+  `blocked` this case already had. Removing the vitals-domain few-shot
+  example reverted this case cleanly back to its original, safe `blocked`
+  behavior (3/3 fresh draws, no false positive) -- exactly the mechanism
+  described below, unchanged. See `docs/MODEL_AND_HARDWARE_SELECTION.md`'s
+  "Issue #123 findings" section for the full trace.
+
   UPDATED (issue #115, supersedes the #100 rationale below -- that rationale
   is stale). Fresh live re-verification (`evals/runner/pipeline.run_case`
   against the real `llama-server` container, 3+ deterministic draws,

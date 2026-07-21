@@ -34,6 +34,24 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
+  UPDATE (issue #123, does not supersede the #115 mechanism below -- it is
+  still current and reproduces). Issue #123 confirmed this case's root cause
+  live once more (planner trace `[get_problems, get_allergies]`,
+  `get_medications` never dispatched) and implemented a candidate fix (an
+  additive planner few-shot example + Rules bullet nudging the planner to
+  confirm a question-stated medication fact via `get_medications` before
+  answering). The fix DID work for this case in isolation -- 8/8 fresh live
+  draws reached `verified` with `get_medications` genuinely dispatched and
+  on-topic citations -- but the mandatory 10-other-case regression check
+  found it measurably degrades `lithium-nsaid-question` (a previously
+  reliable 4/4-verified case, reproduced twice independently) via a ripple
+  effect on the shared planner system prompt every question sees. Per issue
+  #123's own conservative instruction, the fix was declined rather than
+  shipped (no net-safe improvement -- one case gained, one previously-
+  reliable case degraded), so this case remains `xfail` with the SAME
+  mechanism as before. See `docs/MODEL_AND_HARDWARE_SELECTION.md`'s
+  "Issue #123 findings" section for the full trace and the regression table.
+
   UPDATED (issue #115, supersedes the #100 rationale below -- that rationale
   is stale). Fresh live re-verification (`evals/runner/pipeline.run_case`
   against the real `llama-server` container, 6+ deterministic draws,
