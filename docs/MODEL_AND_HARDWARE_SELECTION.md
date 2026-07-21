@@ -319,6 +319,49 @@ Several of these differences are plausibly just this project's own well-document
 
 **What would be needed to revisit this safely (flagged for the maintainer, not attempted here):** a much larger live regression sample per case (4 draws is enough to catch `lithium-nsaid-question`'s clean flip, but not enough to rule out noise on borderline cases like `statin-ck-myopathy-question`) and/or a turn-scoped hint mechanism that only activates for a question actually matching the "states a chart fact directly" heuristic, rather than a permanent addition to the shared system prompt every question sees regardless of relevance — the latter is a larger architecture change (conditionally composing the system prompt per-turn) outside this issue's own scope.
 
+### Issue #130 findings: SourceRef relevance-gate measurement spike — downgrade criterion fires; gate deferred, unchanged verdicts, `citation_present` remains 7/12
+
+**Why this was measured.** `app.semantic_support`'s LLM judge (issue #47/#81) only re-judges `DocumentCitation`s (quote-based citations) for semantic support — a plain `SourceRef` citation is checked only for deterministic value-equality (`check_source_ref`), never for topical relevance. Issue #123's investigation (above) reproduced, live, exactly the shape this gap allows: a claim "blood pressure was elevated" paired with a real, provenance-valid but topically irrelevant `problem_count=0` `SourceRef` — a coincidental-match false positive the existing judge cannot catch by design. That was on a declined, off-protocol variant (proof the shape is reachable, not a standing live defect), and issues #86/#70 have since widened the `SourceRef` surface to ingested document facts, growing the exposure. Per the ADR (recorded 2026-07-21): **measure first, do not add a relevance gate to the verdict path yet.** This section records that measurement. No production code changed; no verdict changed for any case.
+
+**Pre-registered criteria (from the ADR, verbatim).** Upgrade (enable enforcement) requires ALL of: shadow false-reject rate on currently-passing claims effectively zero across ≥8 draws/case; positive control caught; a live-reproducible on-protocol occurrence found OR census shows material exposure. **Downgrade: any false-reject on a valid terse chart citation → the gate is unsafe at 8B judge reliability and the documented gap stands.**
+
+**Deliverable 1 — offline structural census** (`evals/runner/census_source_ref_claims.py`, deterministic, no LLM call, walks the 65 committed `evals/recordings/*.json` files). Of 85 total claims across every recording, **62 (73%)** are grounded ENTIRELY by `SourceRef`s (zero `DocumentCitation`s) — the unjudged-relevance exposure surface. Selected rows (full table reproducible via the script; every recording with at least one claim is a nonzero row):
+
+| Case | Total claims | SourceRef-only (exposure) |
+|---|---|---|
+| `nsaid-ace-inhibitor-question` | 6 | 6 |
+| `hypertension-lifestyle-followup-question` | 6 | 5 |
+| `factually-consistent-anticoagulant-doac` | 4 | 4 |
+| `factually-consistent-medication-dose-fact` | 4 | 4 |
+| `warfarin-aspirin-major-interaction` | 4 | 4 |
+| `compound-medication-allergy-conflict` | 3 | 3 |
+| `factually-consistent-lipid-ldl-optimal` | 3 | 3 |
+| `p32-redacted-freetext-still-verifies` | 3 | 3 |
+| `bp-stage2-question` | 3 | 2 |
+| `dual-antiplatelet-question` | 5 | 2 |
+| `warfarin-antibiotic-question` | 6 | 2 |
+| **Total (all 65 recordings)** | **85** | **62** |
+
+Material exposure, by inspection: the third upgrade-criterion clause ("census shows material exposure") holds. Every other upgrade clause is evaluated against the live spike below.
+
+**Deliverable 2 — live shadow-judge spike** (`evals/runner/issue_130_spike.py`, standalone, not wired into `run_verification` or any production path). Reused `app.semantic_support`'s judge plumbing (`SemanticSupportJudgeLike.extract`, `SemanticSupportJudgement`/`SupportVerdict`, fail-closed on `LLMEngineError`) with a NEW, SourceRef-oriented prompt (facts as `field: value` pairs, not a quote). Ran all 12 `citation_present` cases live (real `LlamaServerClient` calls against the pinned 8B-Q5 model, no replay), 8 draws each, scoped exactly to claims whose surviving citations are all `SourceRef`s (the census's exposure population) — one shadow judge call per such claim, per draw, logging a would-downgrade decision without ever touching the actual `ClaimCheckResult`/verdict. 104 total draws (96 case-draws + 8 positive-control draws), zero pipeline exceptions.
+
+**Positive control.** The reconstructed issue #123 shape — claim `"The patient's blood pressure was elevated."` paired with `SourceRef` fact `problem_count: 0` — was fed to the same judge call 8 times. **Caught 8/8 (100%)**, every time with a reason correctly identifying the fact as topically unrelated to blood pressure (e.g. *"The SOURCE FACTS provide information about the number of active problems, which is unrelated to the patient's blood pressure."*). This upgrade-criterion clause holds cleanly.
+
+**False-reject rate on currently-passing claims — this is where the downgrade criterion fires.** Of 144 shadow-judged claims (every one already scored `passed` by the live pipeline before the shadow judge ever ran), **33 would have been downgraded (false rejects)** — concentrated entirely in two cases:
+
+| Case | Judged claims | Would-downgrade (false rejects) |
+|---|---|---|
+| `statin-ck-myopathy-question` | 32 | 24 |
+| `statin-liver-monitoring-question` | 25 | 9 |
+| All other 10 `citation_present` cases (combined) | 87 | 0 |
+
+Direct inspection of the false-reject records shows a consistent, reproducible shape, not noise: both cases decompose one medication fact into several single-field claims per draw (`"...taking Simvastatin."` / `"...at a dose of 40mg."` / `"...orally."` / `"...currently on active medication..."`), each carrying only ONE bare `SourceRef` field (`name: Simvastatin`, `dose: 40mg`, `route: oral`, `status: active`) with no sibling context in the judge call. The judge reliably marks the terse, single-field claims `not_supported` — e.g. for `route: oral` against `"The patient is taking Simvastatin orally."`: *"...only indicates the route of administration but does not specify the medication name, so it does not confirm the patient is taking Simvastatin."* Every one of these citations is a genuinely valid, correctly-attributed chart fact — exactly the "valid terse chart citation" the downgrade criterion names, because the SourceRef-oriented judge (unlike `apply_semantic_support`'s established-facts context, issues #111/#128) was scoped to this spike's own claim-only prompt with no sibling-fact context wired in.
+
+**Honest conclusion: gate deferred, per the ADR's own pre-registered downgrade criterion.** The positive control is caught cleanly and the census shows material exposure, but the false-reject criterion is the one that must hold for enablement, and it does not: 33/144 (23%) of currently-passing claims would be wrongly downgraded (see the per-case breakdown above). Per the ADR, this is decisive on its own — **the gate is unsafe to enable at 8B judge reliability with this prompt shape, and the documented gap (SourceRef relevance is checked for provenance only, never semantics) stands, undefended.** No verdict changes as a result of this measurement; `citation_present` remains 7/12. Reopening requires the false-reject rate to actually reach zero (e.g. an established-facts-context fix mirroring #111/#128's fix for `DocumentCitation`s, then re-measured) — not attempted here, this issue's scope was measurement only.
+
+Artifacts: `evals/results/issue-130/draws/` (104 per-draw JSON files, incremental — a crash would have lost at most one draw) and `evals/results/issue-130/summary.json` (the aggregation above, reproducible via `python evals/runner/issue_130_spike.py --summarize-only`).
+
 ## Measured mid-tier addendum (RTX 3060 12GB desktop)
 
 **This section is measured mid-tier evidence, not a minimum-spec update.** Every

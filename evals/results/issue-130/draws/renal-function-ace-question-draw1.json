@@ -1,0 +1,19 @@
+{
+  "case_id": "renal-function-ace-question",
+  "draw_index": 1,
+  "answer_verdict": "verified",
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient has started lisinopril, an ACE inhibitor.",
+      "source_ref_facts": [
+        "name: Lisinopril",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The source fact that 'Lisinopril' is active directly supports the claim that the patient has started lisinopril, an ACE inhibitor.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

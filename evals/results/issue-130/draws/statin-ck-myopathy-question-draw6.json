@@ -1,0 +1,45 @@
+{
+  "case_id": "statin-ck-myopathy-question",
+  "draw_index": 6,
+  "answer_verdict": "partially_verified",
+  "exposure_claim_count": 4,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Simvastatin.",
+      "source_ref_facts": [
+        "name: Simvastatin"
+      ],
+      "verdict": "not_supported",
+      "reason": "The source fact only provides the name 'Simvastatin' without any information about whether the patient is currently taking it.",
+      "would_downgrade": true
+    },
+    {
+      "claim_text": "The patient is taking Simvastatin at a dose of 40mg.",
+      "source_ref_facts": [
+        "dose: 40mg"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the dose of 40mg, which matches the CLAIM about the patient taking Simvastatin at that dose.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient is taking Simvastatin orally.",
+      "source_ref_facts": [
+        "route: oral"
+      ],
+      "verdict": "not_supported",
+      "reason": "The source fact 'route: oral' only indicates the route of administration but does not specify the medication name, so it does not confirm the patient is taking Simvastatin.",
+      "would_downgrade": true
+    },
+    {
+      "claim_text": "The patient is currently on active medication for Simvastatin.",
+      "source_ref_facts": [
+        "status: active"
+      ],
+      "verdict": "not_supported",
+      "reason": "The source fact 'status: active' does not provide information about the patient's medication, specifically Simvastatin.",
+      "would_downgrade": true
+    }
+  ],
+  "exception": null
+}
