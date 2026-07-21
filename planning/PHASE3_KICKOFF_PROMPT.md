@@ -55,7 +55,7 @@ compressed map, not a replacement.
   `Claim.passed`'s own docstring — `docs/MODEL_AND_HARDWARE_SELECTION.md`
   §"Issue #123 findings").
 - **Document-fact composition surface (issue #86, PR #138 — landed
-  2026-07-21, the day before this kickoff was written)**: ingested document
+  2026-07-21, the same day as this kickoff)**: ingested document
   facts now reach the model **before** it answers, not just in the post-hoc
   verification pass. `Planner._finalize_answer_streaming` gains a
   `document_facts` kwarg; when non-empty, each fact's literal citation quote
@@ -303,7 +303,7 @@ on faith.
    construct; (b) deliberately compose a new question designed to make the
    planner dispatch a tool whose output happens to share a value with an
    unrelated true chart fact; (c) test whether the #123 vitals-domain
-   failure mode (planner substitutes a countaggregate tool for the specific
+   failure mode (planner substitutes a count-aggregate tool for the specific
    one needed) is inducible on-demand via prompt phrasing, not just
    discovered by accident.
 2. **Document-fact injection into composition, beyond the one recorded draw
