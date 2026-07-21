@@ -3,6 +3,11 @@
 Open a Claude Code session **in this repo** and paste the prompt below verbatim.
 Paths point at the copies in this `planning/` folder, so it is self-contained.
 
+**Phase 3 kickoff:** this prompt's own closing paragraph called for refining
+the Phase 3 kickoff prompt once Phase 2's real attack surface existed. That
+document is now written, against what Phase 2 actually built (not the
+planned shape below) — see `planning/PHASE3_KICKOFF_PROMPT.md`.
+
 **Prerequisite:** Phase 1 (`agentforge-1-clinical-copilot`) frozen at `v1.0` —
 close the Gate 0 gaps listed in `planning/PLAN.md` first. This repo is already a
 full-history duplicate of Phase 1 (`upstream` → the Phase 1 GitHub repo); when
