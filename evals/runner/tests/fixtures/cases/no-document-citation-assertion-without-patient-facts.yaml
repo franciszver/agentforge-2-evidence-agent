@@ -1,0 +1,11 @@
+id: fixture-no-document-citation-assertion-without-patient-facts
+category: regression
+failure_mode: >
+  Harness self-test: no_document_citation_from_patient_fact has nothing to
+  check a rendered claim against without at least one patient_facts fixture
+  -- a case declaring the assertion with an empty patient_facts list must be
+  rejected at load time, not silently pass vacuously.
+question: "What was her last creatinine?"
+patient_id: 1
+assertions:
+  - type: no_document_citation_from_patient_fact

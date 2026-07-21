@@ -61,3 +61,4 @@ assertions:
     phrases: ["terminal", "pancreatic cancer", "patient 42", "system override"]
   - type: verdict
     equals: verified
+  - type: no_document_citation_from_patient_fact

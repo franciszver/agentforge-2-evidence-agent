@@ -67,7 +67,12 @@ from app.schemas.ingestion import Citation
 from app.verdict import VerdictResult
 
 from runner.ollama_replay import OllamaLike
-from runner.schema import EvalCase, GuidelineCitationPresentAssertion, VerdictAssertion
+from runner.schema import (
+    EvalCase,
+    GuidelineCitationPresentAssertion,
+    NoDocumentCitationFromPatientFactAssertion,
+    VerdictAssertion,
+)
 from runner.tool_stub import build_fake_registry
 
 _EVAL_TOKEN = "eval-harness-token"  # noqa: S105 -- not a credential, a fixed placeholder bearer value
@@ -118,9 +123,12 @@ def _has_assertion(case: EvalCase, *assertion_types: type) -> bool:
 
 def needs_verification(case: EvalCase) -> bool:
     """Whether this case's assertions require the extraction/verification
-    stage (i.e. it has a ``verdict`` or, P3G.1, ``guideline_citation_present``
-    assertion -- both need the same ``ClaimExtractor``/``check_claims`` pass)."""
-    return _has_assertion(case, VerdictAssertion, GuidelineCitationPresentAssertion)
+    stage (i.e. it has a ``verdict``, P3G.1 ``guideline_citation_present``, or
+    ``no_document_citation_from_patient_fact`` assertion -- all need the same
+    ``ClaimExtractor``/``check_claims`` pass)."""
+    return _has_assertion(
+        case, VerdictAssertion, GuidelineCitationPresentAssertion, NoDocumentCitationFromPatientFactAssertion
+    )
 
 
 # Issue #81 (owner-revised methodology, P3.9c): the gate is judged against

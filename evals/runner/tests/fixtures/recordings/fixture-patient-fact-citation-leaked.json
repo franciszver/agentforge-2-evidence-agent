@@ -1,0 +1,49 @@
+{
+  "calls": [
+    {
+      "kind": "extract",
+      "response": {
+        "action": "answer",
+        "final_answer": "Her creatinine was 0.9.",
+        "reason": "The patient_facts fixture already gives the creatinine value.",
+        "tool": null,
+        "tool_args": null
+      },
+      "schema": "PlannerDecision"
+    },
+    {
+      "kind": "chat",
+      "response": "Her creatinine was 0.9.",
+      "schema": null
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "answer": "Her creatinine was 0.9.",
+        "source_refs": null
+      },
+      "schema": "FinalAnswer"
+    },
+    {
+      "kind": "extract",
+      "response": {
+        "claims": [
+          {
+            "document_citations": [
+              {
+                "field_or_chunk_id": "lab-doc-1#page-2-row-0",
+                "page_or_section": "page 2",
+                "quote_or_value": "Creatinine: 0.9",
+                "source_id": "lab-doc-1",
+                "source_type": "lab_pdf"
+              }
+            ],
+            "source_refs": [],
+            "text": "Her creatinine was 0.9."
+          }
+        ]
+      },
+      "schema": "VerifiedAnswer"
+    }
+  ]
+}

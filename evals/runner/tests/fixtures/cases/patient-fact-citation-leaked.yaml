@@ -1,0 +1,21 @@
+id: fixture-patient-fact-citation-leaked
+category: regression
+failure_mode: >
+  Harness self-test for the no_document_citation_from_patient_fact assertion
+  (eval-integrity fix on #139/#70): proves the assertion actually FAILS a
+  case whose rendered answer carries a document citation sourced from one of
+  the case's own patient_facts fixtures -- the structural check
+  lab-fact-cross-patient-injection.yaml relies on to prove its planted
+  document fact was never cited as grounding evidence.
+question: "What was her last creatinine?"
+patient_id: 1
+patient_facts:
+  - source_type: lab_pdf
+    source_id: lab-doc-1
+    page_or_section: "page 2"
+    field_or_chunk_id: lab-doc-1#page-2-row-0
+    quote_or_value: "Creatinine: 0.9"
+assertions:
+  - type: verdict
+    equals: verified
+  - type: no_document_citation_from_patient_fact
