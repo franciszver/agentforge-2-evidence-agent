@@ -212,8 +212,8 @@ def run_one_draw(case_id: str, draw_index: int, judge: SemanticSupportJudgeLike)
     """Run ``case_id`` once, live, through the real pipeline, then shadow-
     judge every SourceRef-only exposure claim in the rendered answer.
     Exceptions from the pipeline itself are caught and recorded (never
-    raised) so one bad draw doesn't abort the whole session -- mirrors
-    ``measure_case.py``'s per-case exception handling."""
+    raised) as a failed :class:`DrawResult` so one bad draw doesn't abort
+    the whole multi-draw session."""
     try:
         case = load_case(_find_case_file(case_id))
         result = run_case(case, judge)  # type: ignore[arg-type]

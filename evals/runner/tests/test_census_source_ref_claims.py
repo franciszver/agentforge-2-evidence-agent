@@ -1,15 +1,8 @@
 """Red-first tests for ``evals/runner/census_source_ref_claims.py`` (issue
 #130): the offline, deterministic (no LLM, no I/O beyond reading the
-committed recordings) structural census over ``evals/recordings/*.json``
-that counts, per case, how many claims are grounded ENTIRELY by ``SourceRef``
-citations (zero ``DocumentCitation``s) -- the unjudged-relevance exposure
-surface a SourceRef relevance gate would need to cover, per the issue #130
-ADR (measurement spike, no verdict-path change).
-
-A claim counts toward ``source_ref_only_claims`` only when it has AT LEAST
-ONE citation and NONE of them are ``DocumentCitation``s -- a claim with zero
-citations of either kind has nothing to judge relevance of, so it is tracked
-separately (``uncited_claims``) rather than folded into the exposure count.
+committed recordings) structural census over ``evals/recordings/*.json``.
+See that module's docstring for the exposure-vs.-uncited invariant this
+suite's cases lock down.
 """
 
 from __future__ import annotations
@@ -23,6 +16,7 @@ from runner.census_source_ref_claims import (
     count_claims_in_calls,
     render_table,
 )
+from runner.ollama_replay import RecordedCall
 
 _ONLY_SOURCE_REF_CLAIM = {
     "document_citations": [],
@@ -75,54 +69,60 @@ def _planner_decision_call() -> dict:
     return {"kind": "extract", "schema": "PlannerDecision", "response": {"action": "answer"}}
 
 
+def _recorded(*calls: dict) -> list[RecordedCall]:
+    """Adapt the JSON-shaped call fixtures above into the typed
+    ``RecordedCall`` list ``count_claims_in_calls`` now consumes."""
+    return [RecordedCall.from_json(call) for call in calls]
+
+
 # --- count_claims_in_calls: per-recording counting -------------------------
 
 
 def test_count_claims_in_calls_counts_source_ref_only_claim() -> None:
-    calls = [_planner_decision_call(), _verified_answer_call([_ONLY_SOURCE_REF_CLAIM])]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 1
-    assert row.source_ref_only_claims == 1
-    assert row.uncited_claims == 0
+    calls = _recorded(_planner_decision_call(), _verified_answer_call([_ONLY_SOURCE_REF_CLAIM]))
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 1
+    assert counts.source_ref_only_claims == 1
+    assert counts.uncited_claims == 0
 
 
 def test_count_claims_in_calls_document_cited_claim_not_counted_as_exposure() -> None:
-    calls = [_verified_answer_call([_DOCUMENT_CITED_CLAIM])]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 1
-    assert row.source_ref_only_claims == 0
+    calls = _recorded(_verified_answer_call([_DOCUMENT_CITED_CLAIM]))
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 1
+    assert counts.source_ref_only_claims == 0
 
 
 def test_count_claims_in_calls_mixed_claim_not_counted_as_exposure() -> None:
     # Has a DocumentCitation alongside a SourceRef -- NOT "all SourceRefs".
-    calls = [_verified_answer_call([_MIXED_CLAIM])]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 1
-    assert row.source_ref_only_claims == 0
+    calls = _recorded(_verified_answer_call([_MIXED_CLAIM]))
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 1
+    assert counts.source_ref_only_claims == 0
 
 
 def test_count_claims_in_calls_uncited_claim_counted_separately() -> None:
-    calls = [_verified_answer_call([_UNCITED_CLAIM])]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 1
-    assert row.source_ref_only_claims == 0
-    assert row.uncited_claims == 1
+    calls = _recorded(_verified_answer_call([_UNCITED_CLAIM]))
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 1
+    assert counts.source_ref_only_claims == 0
+    assert counts.uncited_claims == 1
 
 
 def test_count_claims_in_calls_no_verified_answer_call_reports_zero() -> None:
-    calls = [_planner_decision_call()]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 0
-    assert row.source_ref_only_claims == 0
-    assert row.uncited_claims == 0
+    calls = _recorded(_planner_decision_call())
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 0
+    assert counts.source_ref_only_claims == 0
+    assert counts.uncited_claims == 0
 
 
 def test_count_claims_in_calls_mixed_population_across_claims() -> None:
-    calls = [_verified_answer_call([_ONLY_SOURCE_REF_CLAIM, _DOCUMENT_CITED_CLAIM, _UNCITED_CLAIM])]
-    row = count_claims_in_calls(calls)
-    assert row.total_claims == 3
-    assert row.source_ref_only_claims == 1
-    assert row.uncited_claims == 1
+    calls = _recorded(_verified_answer_call([_ONLY_SOURCE_REF_CLAIM, _DOCUMENT_CITED_CLAIM, _UNCITED_CLAIM]))
+    counts = count_claims_in_calls(calls)
+    assert counts.total_claims == 3
+    assert counts.source_ref_only_claims == 1
+    assert counts.uncited_claims == 1
 
 
 # --- census_all: walking a recordings directory -----------------------------
