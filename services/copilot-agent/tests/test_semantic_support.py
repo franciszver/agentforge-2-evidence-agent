@@ -285,6 +285,162 @@ def test_duplicate_claims_citing_identical_evidence_both_fail_together():
     assert results[1].citation_results[0].status is CitationStatus.NOT_SEMANTICALLY_SUPPORTED
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# issues #111/#128: the judge sees only a single, narrow (claim, quote) pair
+# and has no visibility into a claim's OTHER citations, or into sibling
+# claims from the same answer that already establish facts the current
+# claim's assertion depends on. Both shapes reproduced below with a scripted
+# judge that inspects the actual prompt content it was given.
+# ---------------------------------------------------------------------------
+
+
+def _bp_source_refs() -> list[SourceRef]:
+    return [
+        SourceRef(tool_call_id="call_0", record_id="0", field="blood_pressure_systolic", asserted_value="148"),
+        SourceRef(tool_call_id="call_0", record_id="1", field="blood_pressure_diastolic", asserted_value="94"),
+    ]
+
+
+class _InspectingJudge:
+    """A test double that records the full rendered prompt text (not just the
+    claim/quote) for each call, and returns one scripted verdict per call."""
+
+    def __init__(self, responses: list[SemanticSupportJudgement]) -> None:
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+
+    def extract(self, prompt_or_messages: object, schema: type[BaseModel], *, options: object = None) -> BaseModel:
+        assert schema is SemanticSupportJudgement
+        assert isinstance(prompt_or_messages, list)
+        self.prompts.append(prompt_or_messages[-1]["content"])
+        return self._responses.pop(0)
+
+
+def test_issue_111_sibling_citation_on_same_claim_is_surfaced_as_context():
+    """#111 shape: ONE claim, TWO citations -- a chart-data SourceRef (148/94
+    mmHg, already deterministically re-validated) and a guideline
+    DocumentCitation categorizing that reading. The guideline quote alone
+    never restates the patient's specific value -- that value lives on the
+    claim's OTHER (SourceRef) citation. The judge call for the guideline
+    citation must be given that sibling value as established context."""
+    guideline = _guideline_citation("Stage 2 hypertension: systolic 140 mmHg or higher OR diastolic 90 mmHg or higher.")
+    claim = Claim(
+        text="His blood pressure falls into the category of Stage 2 hypertension.",
+        source_refs=_bp_source_refs(),
+        document_citations=[guideline],
+    )
+    claim_result = ClaimCheckResult(
+        claim=claim,
+        citation_results=[
+            CitationCheckResult(source_ref=claim.source_refs[0], status=CitationStatus.VALID),
+            CitationCheckResult(source_ref=claim.source_refs[1], status=CitationStatus.VALID),
+            DocumentCitationCheckResult(document_citation=guideline, status=CitationStatus.VALID),
+        ],
+    )
+    judge = _InspectingJudge([_supported()])
+
+    apply_semantic_support([claim_result], judge)
+
+    assert len(judge.prompts) == 1
+    prompt = judge.prompts[0]
+    assert "148" in prompt
+    assert "94" in prompt
+
+
+def test_issue_128_sibling_claims_value_is_surfaced_as_context():
+    """#128 shape: TWO separate claims -- one citing a chart value (SourceRef,
+    "172 mg/dL"), another citing a guideline category chunk that only makes
+    sense combined with that value. The second claim's judge call must be
+    given the first (already-verified, SourceRef-only) claim's value as
+    established context."""
+    value_ref = SourceRef(tool_call_id="call_0", record_id="0", field="value", asserted_value="172")
+    value_claim = Claim(text="The patient's LDL cholesterol level is 172 mg/dL.", source_refs=[value_ref])
+    value_result = ClaimCheckResult(
+        claim=value_claim,
+        citation_results=[CitationCheckResult(source_ref=value_ref, status=CitationStatus.VALID)],
+    )
+    guideline = _guideline_citation(
+        "LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL; "
+        "borderline-high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or above."
+    )
+    category_claim = Claim(text="The patient's LDL cholesterol level is considered high.", document_citations=[guideline])
+    category_result = ClaimCheckResult(
+        claim=category_claim,
+        citation_results=[DocumentCitationCheckResult(document_citation=guideline, status=CitationStatus.VALID)],
+    )
+    judge = _InspectingJudge([_supported()])
+
+    apply_semantic_support([value_result, category_result], judge)
+
+    assert len(judge.prompts) == 1
+    assert "172" in judge.prompts[0]
+
+
+def test_sibling_fact_excluded_when_sibling_claim_has_not_passed():
+    """Safety invariant: a sibling claim's value is only ever surfaced as
+    established context when that sibling has ALREADY fully passed
+    (deterministic re-validation, no outstanding LLM judgment). A sibling
+    that failed provenance must never leak its (unverified) asserted value
+    into another claim's judge context."""
+    bad_ref = SourceRef(tool_call_id="call_0", record_id="0", field="value", asserted_value="999")
+    bad_claim = Claim(text="The patient's LDL cholesterol level is 999 mg/dL.", source_refs=[bad_ref])
+    bad_result = ClaimCheckResult(
+        claim=bad_claim,
+        citation_results=[CitationCheckResult(source_ref=bad_ref, status=CitationStatus.VALUE_MISMATCH)],
+    )
+    guideline = _guideline_citation("LDL cholesterol: high 160-189 mg/dL.")
+    category_claim = Claim(text="The patient's LDL cholesterol level is considered high.", document_citations=[guideline])
+    category_result = ClaimCheckResult(
+        claim=category_claim,
+        citation_results=[DocumentCitationCheckResult(document_citation=guideline, status=CitationStatus.VALID)],
+    )
+    judge = _InspectingJudge([_supported()])
+
+    apply_semantic_support([bad_result, category_result], judge)
+
+    assert len(judge.prompts) == 1
+    assert "999" not in judge.prompts[0]
+
+
+def test_sibling_fact_excluded_when_sibling_claim_still_carries_document_citations():
+    """Safety invariant: a sibling claim whose OWN citations include a
+    DocumentCitation (i.e. its fact is itself only established via an LLM
+    judgment, not purely deterministic re-validation) must never be used as
+    ground-truth context for another claim -- only claims backed purely by
+    already-passed SourceRefs count as established facts, avoiding any
+    circularity risk."""
+    mixed_ref = SourceRef(tool_call_id="call_0", record_id="0", field="value", asserted_value="172")
+    mixed_guideline = _guideline_citation("some unrelated guideline text")
+    mixed_claim = Claim(
+        text="The patient's LDL cholesterol level is 172 mg/dL, per guideline X.",
+        source_refs=[mixed_ref],
+        document_citations=[mixed_guideline],
+    )
+    mixed_result = ClaimCheckResult(
+        claim=mixed_claim,
+        citation_results=[
+            CitationCheckResult(source_ref=mixed_ref, status=CitationStatus.VALID),
+            DocumentCitationCheckResult(document_citation=mixed_guideline, status=CitationStatus.VALID),
+        ],
+    )
+    guideline = _guideline_citation("LDL cholesterol: high 160-189 mg/dL.")
+    category_claim = Claim(text="The patient's LDL cholesterol level is considered high.", document_citations=[guideline])
+    category_result = ClaimCheckResult(
+        claim=category_claim,
+        citation_results=[DocumentCitationCheckResult(document_citation=guideline, status=CitationStatus.VALID)],
+    )
+    judge = _InspectingJudge([_supported(), _supported()])
+
+    apply_semantic_support([mixed_result, category_result], judge)
+
+    assert len(judge.prompts) == 2
+    category_prompt = judge.prompts[1]
+    assert "172" not in category_prompt
+
+
 def test_distinct_citations_are_not_conflated_by_dedup():
     """The dedup key is the citation's full identity (source_type,
     source_id, field_or_chunk_id, quote_or_value) -- two claims citing

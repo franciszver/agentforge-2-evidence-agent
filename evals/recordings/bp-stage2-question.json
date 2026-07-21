@@ -103,8 +103,8 @@
     {
       "kind": "extract",
       "response": {
-        "reason": "The QUOTE defines Stage 2 hypertension but does not provide the patient's blood pressure reading, so it does not support the specific claim about the patient's condition.",
-        "verdict": "not_supported"
+        "reason": "The patient's blood pressure readings (148.0 systolic and 94.0 diastolic) meet the criteria for Stage 2 hypertension as defined in the quote.",
+        "verdict": "supported"
       },
       "schema": "SemanticSupportJudgement"
     }

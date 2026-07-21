@@ -92,8 +92,8 @@
     {
       "kind": "extract",
       "response": {
-        "reason": "The QUOTE provides LDL cholesterol categories but does not specify the patient's LDL level, so it does not support the claim that the patient's LDL cholesterol level is considered high.",
-        "verdict": "not_supported"
+        "reason": "The ESTABLISHED FACTS indicate the patient's LDL cholesterol is 172 mg/dL, which falls within the 'high' range as defined in the QUOTE.",
+        "verdict": "supported"
       },
       "schema": "SemanticSupportJudgement"
     }
