@@ -55,6 +55,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.schemas.ingestion import Citation
 from app.schemas.planner import ToolName
 from app.schemas.reranking import RerankedChunk
 from app.schemas.tools import (
@@ -224,6 +225,46 @@ class RetrievedChunkFixture(BaseModel):
         )
 
 
+class PatientFactFixture(BaseModel):
+    """Canned stand-in for one patient-scoped ingested document fact (issue
+    #70, following #86's ``document_facts``/P3.9a's ``patient_facts``) -- the
+    VLM-extracted lab/intake-form ``Citation`` a case declares as already
+    ingested for its bound patient, exactly the way ``tool_data`` cans a
+    structured-tool result and ``RetrievedChunkFixture`` cans a guideline
+    chunk. Fed to BOTH consumers a real turn feeds from this one source
+    (``app.chat``'s #86 fetch-once-use-twice convention, mirrored by
+    ``runner.pipeline.run_case``):
+
+    * ``Planner.run``'s ``document_facts`` kwarg -- reaches the answer-
+      composition (reasoning) call itself, so the model can only ever
+      restate what it was actually shown.
+    * ``app.extraction.run_verification``'s ``patient_facts`` kwarg -- builds
+      the ``DocumentFactIndex`` any resulting ``lab_pdf``/``intake_form``
+      ``DocumentCitation`` is re-validated against; a citation naming a fact
+      this patient does not have (hallucinated, or a cross-patient reference)
+      fails closed as ``UNKNOWN_SOURCE``/``UNKNOWN_FIELD``.
+
+    Field names mirror ``app.schemas.ingestion.Citation`` exactly (the same
+    convention ``RetrievedChunkFixture`` follows for ``RerankedChunk``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: Literal["lab_pdf", "intake_form"]
+    source_id: str = Field(min_length=1)
+    page_or_section: str = Field(min_length=1)
+    field_or_chunk_id: str = Field(min_length=1)
+    quote_or_value: str = Field(min_length=1)
+
+    def to_citation(self) -> Citation:
+        return Citation(
+            source_type=self.source_type,
+            source_id=self.source_id,
+            page_or_section=self.page_or_section,
+            field_or_chunk_id=self.field_or_chunk_id,
+            quote_or_value=self.quote_or_value,
+        )
+
+
 class EvalCase(BaseModel):
     """One YAML eval case -- see module docstring for the assertion vocabulary."""
 
@@ -273,6 +314,18 @@ class EvalCase(BaseModel):
             "-- see RetrievedChunkFixture. Empty for cases with no guideline-"
             "citation surface, mirroring a chart-data-only turn that retrieves "
             "nothing on the live /chat path."
+        ),
+    )
+    patient_facts: list[PatientFactFixture] = Field(
+        default_factory=list,
+        description=(
+            "Issue #70: canned patient-scoped ingested document-fact "
+            "citations for this case's bound patient -- see "
+            "PatientFactFixture. Empty (the default) for cases with no "
+            "document-fact surface, mirroring a chart-data-only turn where "
+            "app.chat.get_patient_fact_provider's live fetch returns nothing "
+            "for that patient -- byte-identical to the pre-#70 harness, so "
+            "every existing case YAML stays valid unmodified."
         ),
     )
     assertions: list[Assertion] = Field(min_length=1)

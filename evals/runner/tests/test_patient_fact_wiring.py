@@ -55,6 +55,7 @@ class _ReasoningCaptureOllamaClient:
                             DocumentCitation(
                                 source_type="lab_pdf",
                                 source_id="lab-doc-1",
+                                page_or_section="page 2",
                                 field_or_chunk_id="lab-doc-1#page-2-row-0",
                                 quote_or_value="Creatinine: 0.9",
                             )

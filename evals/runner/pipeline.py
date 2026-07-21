@@ -63,6 +63,7 @@ from app.extraction import (
 from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer
+from app.schemas.ingestion import Citation
 from app.verdict import VerdictResult
 
 from runner.ollama_replay import OllamaLike
@@ -175,6 +176,13 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # cross-patient-refusal case (where it goes unused) costs nothing.
     retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
     guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
+    # Issue #70, mirroring #86's `app.chat` wiring: this patient's canned
+    # ingested document-fact citations, computed here (before the planner
+    # runs, alongside `retrieved_chunks`/`guideline_excerpts` above) so the
+    # SAME list feeds both consumers a real turn feeds from one fetch --
+    # `Planner.run`'s `document_facts` kwarg below, and `run_verification`'s
+    # `patient_facts` kwarg further down. See `runner.schema.PatientFactFixture`.
+    patient_facts: list[Citation] = [fixture.to_citation() for fixture in case.patient_facts]
 
     if detect_foreign_patient_reference(
         case.question,
@@ -192,7 +200,14 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
             patient_id=case.patient_id,
             registry=registry,
         )
-        planner_result = planner.run(case.question, guideline_excerpts)
+        # Threaded ONLY when non-empty -- the same conditional-kwarg
+        # convention `app.chat._stream_chat` and `run_verification` below use
+        # for this same list, so a case with no patient_facts fixture exactly
+        # mirrors the pre-#70 harness (byte-identical `Planner.run` call).
+        planner_kwargs: dict[str, list[Citation]] = {}
+        if patient_facts:
+            planner_kwargs["document_facts"] = patient_facts
+        planner_result = planner.run(case.question, guideline_excerpts, **planner_kwargs)
         # apply_subject_check runs BEFORE apply_recency_notice -- see
         # app.chat's wiring comment for why (it must only ever scan the
         # model's own prose, never text a later deterministic step appends).
@@ -222,7 +237,14 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # needs one (`get_support_judge_provider`) -- see `needs_semantic_support`
     # for which cases actually exercise the judge call.
     support_judge = ollama_client if needs_semantic_support(case) else None
+    # `patient_facts` (issue #70): the SAME list already threaded into
+    # `Planner.run` above, reused here for `run_verification`'s citation-
+    # attachment pass -- mirrors `retrieved_chunks`'s reuse pattern exactly.
     verdict_result, rendered = run_verification(
-        extractor, planner_result, retrieved_chunks=retrieved_chunks, support_judge=support_judge
+        extractor,
+        planner_result,
+        retrieved_chunks=retrieved_chunks,
+        patient_facts=patient_facts,
+        support_judge=support_judge,
     )
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)
