@@ -35,31 +35,32 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #113, qwen3-8b via llama-server): the prior
-  "chart-data-only" rationale (re-recorded #58) is STALE -- it does not
-  reproduce. Fresh live re-verification (10 draws, evals.runner.pipeline.
-  run_case, production LlamaServerClient, no replay; extraction is
-  temperature=0 and every draw was byte-identical) shows the model DOES
-  surface and quote the LDL reference-range guideline passage verbatim in
-  its final answer every time ("...according to the clinical guideline").
-  The claim extractor also attempts a citation for it every time -- but
-  misroutes it as a source_ref (tool_call_id="lipid-panel-reference",
-  record_id="lipid-panel-reference", field="text") instead of emitting a
-  proper document_citations entry. This is a NEW variant of the #85-lineage
-  SourceRef-misrouting defect: #85's existing coercion
-  (_coerce_misrouted_guideline_refs in app/extraction.py) only reconstructs
-  a chunk id from tool_call_id="<doc_id>" + record_id="<section-slug>", but
-  here the model puts the doc_id in BOTH fields (no section slug), so the
-  reconstructed id ("lipid-panel-reference#lipid-panel-reference") never
-  matches the real chunk id
-  ("lipid-panel-reference#general-reference-categories") and the ref is
-  correctly left failing UNKNOWN_TOOL_CALL. check_claim's AND-aggregation
-  then fails the whole "considered high" claim despite the guideline quote
-  being genuine and verbatim (not fabricated, unlike #115's finding for
-  other cases) -- so citation_present never fires, 10/10 draws
-  partially_verified. Filed as a new tracked defect, issue #125, rather
-  than fixed here -- issue #113 itself is scoped to the relevance-floor
-  question, and this extraction-layer coercion gap is a distinct concern
-  from that. citation_present remains 3/12; this case does not qualify to
-  un-xfail. The assertions are the correct target and are deliberately not
-  weakened.
+  OBSERVED (re-recorded #125, qwen3-8b via llama-server): issue #125 fixed
+  the SourceRef-misrouting defect this case's PRIOR xfail rationale (#113)
+  described -- _coerce_misrouted_guideline_refs (app/extraction.py) now also
+  recognizes the doc_id-used-twice shape (tool_call_id="lipid-panel-reference",
+  record_id="lipid-panel-reference", no section slug) and reconstructs the
+  real chunk id ("lipid-panel-reference#general-reference-categories")
+  whenever it identifies exactly one retrieved chunk's doc_id unambiguously.
+  Live re-verification (18 fresh draws total -- 10 full evals.runner.pipeline.
+  run_case draws + 8 isolated extraction/provenance-focused draws, production
+  LlamaServerClient, no replay, extraction/judge calls at temperature=0 and
+  byte-identical every draw) confirms the fix: 18/18 draws now produce a real,
+  verbatim guideline_chunk DocumentCitation that passes check_document_citation
+  (CitationStatus.VALID) -- the #125 defect no longer blocks this case.
+  However, the case STILL does not reach verified -- a separate, newly
+  discovered defect in app.semantic_support's post-provenance judge gate
+  (issue #47/#81) now blocks it instead, filed as issue #128. The claim
+  extractor splits the answer into two claims ("...LDL cholesterol level is
+  172 mg/dL" citing the chart value, and "...is considered high" citing the
+  guideline categories chunk) -- apply_semantic_support judges the SECOND
+  claim's citation in isolation, without the first claim's "172 mg/dL" value,
+  so the judge (reasonably, given only what it's shown) downgrades it to
+  NOT_SEMANTICALLY_SUPPORTED every time (8/8), with the live-captured reason:
+  "The QUOTE provides LDL cholesterol categories but does not specify the
+  patient's LDL level, so it does not support the claim that the patient's
+  LDL cholesterol level is considered high." End to end, all 10 full-pipeline
+  draws land on partially_verified, 0/10 verified. Issue #128 is filed for
+  this new judge-input-scoping defect (out of #125's own scope). This case
+  does not qualify to un-xfail; citation_present remains 4/12. The assertions
+  are the correct target and are deliberately not weakened.

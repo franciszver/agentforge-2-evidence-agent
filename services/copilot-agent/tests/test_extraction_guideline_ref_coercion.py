@@ -139,6 +139,152 @@ def test_misrouted_guideline_source_ref_is_reclassified_as_a_document_citation()
     )
 
 
+def _lipid_chunk() -> RerankedChunk:
+    """The exact chunk shape from issue #125's live repro
+    (``lipid-panel-ldl-question``, see ``evals/cases/citation_present/
+    lipid-panel-ldl-question.yaml``)."""
+    return RerankedChunk(
+        chunk_id="lipid-panel-reference#general-reference-categories",
+        doc_id="lipid-panel-reference",
+        title="Lipid Panel Reference Ranges and Follow-Up",
+        section="General Reference Categories",
+        text=(
+            "LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL; "
+            "borderline-high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or above."
+        ),
+        scores={"hybrid": 0.9},
+        rerank_score=0.9,
+    )
+
+
+def _live_observed_doubled_doc_id_verified_answer() -> VerifiedAnswer:
+    """The exact ``VerifiedAnswer`` shape captured live 10/10 times for
+    ``lipid-panel-ldl-question`` (issue #125) -- the doc_id is reused for
+    BOTH ``tool_call_id`` and ``record_id``, unlike #85's
+    ``<doc_id>`` + ``<section-slug>`` shape."""
+    return VerifiedAnswer(
+        claims=[
+            Claim(
+                text="Her LDL cholesterol was 172 mg/dL.",
+                source_refs=[
+                    SourceRef(tool_call_id="call_0", record_id="0", field="value", asserted_value="172"),
+                ],
+            ),
+            Claim(
+                text="This is considered high per the lipid panel reference guideline.",
+                source_refs=[
+                    SourceRef(tool_call_id="call_0", record_id="0", field="value", asserted_value="172"),
+                    SourceRef(
+                        tool_call_id="lipid-panel-reference",
+                        record_id="lipid-panel-reference",
+                        field="text",
+                        asserted_value=(
+                            "LDL cholesterol: optimal below 100 mg/dL; near-optimal 100-129 mg/dL; "
+                            "borderline-high 130-159 mg/dL; high 160-189 mg/dL; very high 190 mg/dL or above."
+                        ),
+                    ),
+                ],
+            ),
+        ]
+    )
+
+
+def test_doubled_doc_id_misrouted_guideline_source_ref_is_reclassified_as_a_document_citation():
+    """RED before the fix / GREEN after (issue #125): a source_ref where
+    ``tool_call_id == record_id == doc_id`` (no section slug at all -- the
+    NEW variant #85's original coercion does not recognize, since its exact
+    ``f"{tool_call_id}#{record_id}"`` reconstruction produces
+    ``"lipid-panel-reference#lipid-panel-reference"``, which never matches
+    the real chunk id ``"lipid-panel-reference#general-reference-
+    categories"``) must still be pulled OUT of source_refs and turned into a
+    real ``document_citations`` entry, provided it identifies exactly one
+    retrieved chunk's doc_id unambiguously."""
+    chunk = _lipid_chunk()
+    extractor = ClaimExtractor(ollama_client=_FakeExtractOllama(_live_observed_doubled_doc_id_verified_answer()))
+
+    claims = extractor.extract_claims(
+        answer="irrelevant for this test",
+        tools=[ToolName.GET_RECENT_LABS],
+        raw_results=[{"items": [{"test_name": "LDL Cholesterol", "value": "172", "unit": "mg/dL"}]}],
+        retrieved_chunks=[chunk],
+    )
+
+    high_claim = next(c for c in claims if "considered high" in c.text)
+    assert not any(
+        ref.tool_call_id == "lipid-panel-reference" for ref in high_claim.source_refs
+    ), "the malformed doubled-doc_id guideline source_ref must not remain in source_refs"
+    guideline_citations = [dc for dc in high_claim.document_citations if dc.source_type == "guideline_chunk"]
+    assert len(guideline_citations) == 1
+    assert guideline_citations[0].source_id == "lipid-panel-reference"
+    assert guideline_citations[0].field_or_chunk_id == "lipid-panel-reference#general-reference-categories"
+    assert "LDL cholesterol" in guideline_citations[0].quote_or_value
+
+    # And it must actually verify end to end against the real checker, using
+    # the SAME retrieved chunk as the corpus index -- not merely be present.
+    raw_results = [{"items": [{"test_name": "LDL Cholesterol", "value": "172", "unit": "mg/dL"}]}]
+    index = CacheIndex.from_raw_results(raw_results)
+    corpus_index = CorpusChunkIndex.from_chunks([chunk])
+    results = check_claims(claims, index, corpus_index=corpus_index)
+    high_result = next(r for r in results if "considered high" in r.claim.text)
+    assert high_result.passed, (
+        f"expected the 'considered high' claim to verify once its guideline citation is properly "
+        f"shaped; statuses={[r.status.value for r in high_result.citation_results]}"
+    )
+
+
+def test_ambiguous_doubled_doc_id_with_multiple_matching_chunks_is_never_coerced():
+    """Safety guard (issue #125): if MORE THAN ONE retrieved chunk shares the
+    same doc_id, the doubled-doc_id shape must NOT be coerced -- there is no
+    way to know which chunk/section the model actually meant, so guessing
+    would risk fabricating a citation. The ref is left to fail
+    ``UNKNOWN_TOOL_CALL`` exactly as before, same fail-closed posture as an
+    unrecoverable hallucination."""
+    chunk_a = RerankedChunk(
+        chunk_id="lipid-panel-reference#section-a",
+        doc_id="lipid-panel-reference",
+        title="Lipid Panel Reference Ranges and Follow-Up",
+        section="Section A",
+        text="Section A text.",
+        scores={"hybrid": 0.9},
+        rerank_score=0.9,
+    )
+    chunk_b = RerankedChunk(
+        chunk_id="lipid-panel-reference#section-b",
+        doc_id="lipid-panel-reference",
+        title="Lipid Panel Reference Ranges and Follow-Up",
+        section="Section B",
+        text="Section B text.",
+        scores={"hybrid": 0.9},
+        rerank_score=0.9,
+    )
+    verified = VerifiedAnswer(
+        claims=[
+            Claim(
+                text="ambiguous claim",
+                source_refs=[
+                    SourceRef(
+                        tool_call_id="lipid-panel-reference",
+                        record_id="lipid-panel-reference",
+                        field="text",
+                        asserted_value="Section A text.",
+                    ),
+                ],
+            )
+        ]
+    )
+    extractor = ClaimExtractor(ollama_client=_FakeExtractOllama(verified))
+    claims = extractor.extract_claims(
+        answer="irrelevant",
+        tools=[ToolName.GET_RECENT_LABS],
+        raw_results=[{"items": [{"test_name": "LDL Cholesterol", "value": "172"}]}],
+        retrieved_chunks=[chunk_a, chunk_b],
+    )
+    claim = claims[0]
+    assert claim.document_citations == []
+    assert len(claim.source_refs) == 1
+    assert claim.source_refs[0].tool_call_id == "lipid-panel-reference"
+
+
 def test_a_real_tool_call_id_is_never_mistaken_for_a_guideline_chunk():
     """Safety guard: the coercion must never touch a genuine ``call_<i>``
     source_ref -- even adversarially, when a retrieved chunk's reconstructed

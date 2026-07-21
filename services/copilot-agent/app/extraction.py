@@ -437,7 +437,8 @@ _REAL_TOOL_CALL_ID_RE = re.compile(r"^call_\d+$")
 
 def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[RerankedChunk]) -> list[Claim]:
     """Reclassify a ``source_ref`` that is actually a misrouted guideline
-    citation into a proper ``DocumentCitation`` (issue #85 root cause).
+    citation into a proper ``DocumentCitation`` (issue #85 root cause, issue
+    #125 follow-up variant).
 
     **Observed live, deterministically** (see issue #85's PR description for
     the full live-run trace): qwen3-8b, asked to cite a retrieved guideline
@@ -447,23 +448,40 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
     documented format) across TWO ``source_refs`` fields --
     ``tool_call_id="<doc_id>"`` + ``record_id="<section-slug>"`` -- with
     ``field="text"`` and the verbatim quote as ``asserted_value``, rather
-    than emitting one ``document_citations`` entry. ``check_source_ref``
-    correctly fails this ``UNKNOWN_TOOL_CALL`` (no real tool call has that
-    id) -- but ``check_claim`` ANDs across every citation on a claim, so this
-    ONE malformed ref drags the WHOLE claim down with it, including any
-    valid chart-data citations bundled in the same claim. The guideline
-    quote itself is genuine and verbatim; it simply never reaches
+    than emitting one ``document_citations`` entry.
+
+    **Issue #125's variant, also observed live, deterministically** (10/10
+    fresh draws of ``lipid-panel-ldl-question`` via ``evals.runner.pipeline.
+    run_case`` against the real ``llama-server`` container): the SAME
+    misrouting, but the model puts the doc_id in BOTH fields instead of
+    ``<doc_id>`` + ``<section-slug>`` -- ``tool_call_id="<doc_id>"`` +
+    ``record_id="<doc_id>"`` -- with no section slug at all. The #85 shape's
+    exact ``f"{tool_call_id}#{record_id}"`` chunk-id reconstruction never
+    matches a real chunk id for this variant (it produces
+    ``"<doc_id>#<doc_id>"``, not ``"<doc_id>#<section-slug>"``), so it falls
+    through unhandled without this second check.
+
+    In both shapes, ``check_source_ref`` correctly fails this
+    ``UNKNOWN_TOOL_CALL`` (no real tool call has that id) -- but
+    ``check_claim`` ANDs across every citation on a claim, so this ONE
+    malformed ref drags the WHOLE claim down with it, including any valid
+    chart-data citations bundled in the same claim. The guideline quote
+    itself is genuine and verbatim; it simply never reaches
     ``document_citations`` where it could verify.
 
     Narrowly scoped to avoid ever touching a genuine tool citation: real
     ``tool_call_id``s are always ``call_<i>`` (``_REAL_TOOL_CALL_ID_RE``),
-    which can never equal a corpus ``doc_id``, AND the reconstructed id must
-    exactly match a chunk THIS turn actually retrieved (never invented, never
-    a stale/different turn's chunk) -- so a genuine tool ref is never at risk
-    of reclassification, and a hallucinated doc_id/section that doesn't
-    match any retrieved chunk is left as-is (still fails ``UNKNOWN_TOOL_CALL``
-    exactly as before, same fail-closed behavior for a real hallucination).
-    A no-op (returns ``claims`` unchanged) when ``chunks`` is empty."""
+    which can never equal a corpus ``doc_id``, AND a chunk match must be
+    UNAMBIGUOUS -- either the exact reconstructed chunk id (#85's shape)
+    matches a chunk THIS turn actually retrieved, or (#125's shape)
+    ``tool_call_id == record_id`` and it identifies EXACTLY ONE retrieved
+    chunk's ``doc_id`` (never invented, never a stale/different turn's
+    chunk, and never guessed when more than one retrieved chunk shares that
+    doc_id) -- so a genuine tool ref is never at risk of reclassification,
+    and a hallucinated doc_id/section that doesn't match any retrieved chunk
+    unambiguously is left as-is (still fails ``UNKNOWN_TOOL_CALL`` exactly as
+    before, same fail-closed behavior for a real hallucination). A no-op
+    (returns ``claims`` unchanged) when ``chunks`` is empty."""
     if not chunks:
         return claims
     # Last-wins on a duplicate chunk_id would silently mis-associate a quote
@@ -474,6 +492,10 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
     # convention of raising loudly on a collision rather than picking one
     # silently -- same defensive posture, same reason (issue #40).
     chunk_by_id: dict[str, RerankedChunk] = {}
+    # Grouped by doc_id (NOT deduped -- issue #125's shape only coerces when
+    # exactly one chunk shares a doc_id; ambiguity must block the coercion,
+    # not silently pick a chunk).
+    chunks_by_doc_id: dict[str, list[RerankedChunk]] = {}
     for chunk in chunks:
         if chunk.chunk_id in chunk_by_id:
             raise ValueError(
@@ -481,6 +503,21 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
                 "retrieved_chunks -- refusing to silently pick one over the other"
             )
         chunk_by_id[chunk.chunk_id] = chunk
+        chunks_by_doc_id.setdefault(chunk.doc_id, []).append(chunk)
+
+    def _matched_chunk(ref: SourceRef) -> RerankedChunk | None:
+        # #85's shape: tool_call_id="<doc_id>", record_id="<section-slug>".
+        exact = chunk_by_id.get(f"{ref.tool_call_id}#{ref.record_id}")
+        if exact is not None:
+            return exact
+        # #125's shape: tool_call_id and record_id are both the doc_id
+        # (no section slug). Only coerce when that doc_id identifies exactly
+        # one retrieved chunk -- ambiguity must fail closed, not guess.
+        if ref.tool_call_id == ref.record_id:
+            candidates = chunks_by_doc_id.get(ref.tool_call_id, [])
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
 
     coerced: list[Claim] = []
     for claim in claims:
@@ -491,7 +528,7 @@ def _coerce_misrouted_guideline_refs(claims: list[Claim], chunks: Sequence[Reran
             if _REAL_TOOL_CALL_ID_RE.match(ref.tool_call_id):
                 kept_refs.append(ref)
                 continue
-            matched_chunk = chunk_by_id.get(f"{ref.tool_call_id}#{ref.record_id}")
+            matched_chunk = _matched_chunk(ref)
             if matched_chunk is None or not ref.asserted_value or not ref.asserted_value.strip():
                 kept_refs.append(ref)
                 continue
