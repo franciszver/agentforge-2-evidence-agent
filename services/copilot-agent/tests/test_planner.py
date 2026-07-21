@@ -19,7 +19,15 @@ import pytest
 
 from app.ollama_client import LlmCallStats
 from app.openemr_client import ErrorCategory, OpenEmrApiError
-from app.planner import _FEW_SHOT_EXAMPLES, _FINAL_REASON_PROMPT, Planner, ToolSpec
+from app.planner import (
+    _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE,
+    _FEW_SHOT_EXAMPLES,
+    _FINAL_REASON_PROMPT,
+    _GUIDELINE_CONTEXT_PROMPT_TEMPLATE,
+    _build_system_prompt,
+    Planner,
+    ToolSpec,
+)
 from app.quarantine import REDACTED_SENTINEL, QuarantineSummary
 from app.schemas.ingestion import Citation
 from app.schemas.planner import FinalAnswer, PlannerAction, PlannerDecision, ToolName
@@ -630,15 +638,37 @@ def test_finalize_answer_includes_guideline_excerpts_in_the_reasoning_call():
 def test_finalize_answer_omits_guideline_context_block_when_no_excerpts_given():
     """No guideline_excerpts (the default, e.g. a chart-data-only question)
     must be a complete no-op -- the reasoning call's prompt stays exactly
-    what it was before #105."""
+    what it was before #105.
+
+    Pinned against an explicit known-good baseline (full message list, every
+    role/content pair) rather than only checking the last message -- a
+    regression that unconditionally appended the guideline-context block
+    would insert it BEFORE ``_FINAL_REASON_PROMPT`` (see
+    ``_finalize_answer_streaming``), so a last-message-only check would still
+    pass even with the block present. This also asserts a fragment unique to
+    ``_GUIDELINE_CONTEXT_PROMPT_TEMPLATE`` never appears, so the test fails
+    for the actual reason (an unwanted context block), not merely because
+    some unrelated message changed."""
     decisions = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
     ollama = _ScriptedOllamaClient(decisions)
     planner = _make_planner(ollama, registry={})
 
-    planner.run("What meds is she on?")
+    question = "What meds is she on?"
+    planner.run(question)
 
     reasoning_messages = ollama.chat_calls[-1]
-    assert reasoning_messages[-1]["content"] == _FINAL_REASON_PROMPT
+    assert reasoning_messages == [
+        {"role": "system", "content": _build_system_prompt(BOUND_PATIENT_ID, {})},
+        {"role": "user", "content": question},
+        {"role": "user", "content": _FINAL_REASON_PROMPT},
+    ]
+
+    guideline_fragment = _GUIDELINE_CONTEXT_PROMPT_TEMPLATE.splitlines()[0]
+    joined = "\n".join(message["content"] for message in reasoning_messages)
+    assert guideline_fragment not in joined, (
+        "the guideline-context block must not be appended when no "
+        "guideline_excerpts were given"
+    )
 
 
 # --- issue #86: ingested document facts feed answer composition ------------
@@ -724,9 +754,19 @@ def test_finalize_answer_reasoning_call_reflects_document_facts(fact, question, 
 def test_finalize_answer_omits_document_fact_context_block_when_no_facts_given():
     """No document_facts (the default -- every turn today, since nothing in
     the citation_present eval suite has an ingested document) must be a
-    complete no-op: the reasoning call's prompt is BYTE-IDENTICAL to a call
-    with no document_facts argument at all -- the entire safety argument for
-    this being a prompt-neutral change for every existing case."""
+    complete no-op: the reasoning call's prompt is BYTE-IDENTICAL to before
+    #86 -- the entire safety argument for this being a prompt-neutral change
+    for every existing case.
+
+    Pinned against an explicit known-good baseline (full message list, every
+    role/content pair for both the omitted-argument call and the explicit
+    ``document_facts=None`` call) rather than comparing two empty-case runs
+    against EACH OTHER: a regression that unconditionally appends the
+    document-fact context block would alter both sides of that comparison
+    identically, so equality between them would still hold. Also asserts a
+    fragment unique to ``_DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE`` never
+    appears, since the block is inserted BEFORE ``_FINAL_REASON_PROMPT`` --
+    a last-message-only check would miss it entirely."""
     decisions_a = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
     decisions_b = [PlannerDecision(action=PlannerAction.ANSWER, final_answer="Answer.", reason="direct")]
     ollama_a = _ScriptedOllamaClient(decisions_a)
@@ -734,8 +774,22 @@ def test_finalize_answer_omits_document_fact_context_block_when_no_facts_given()
     planner_a = _make_planner(ollama_a, registry={})
     planner_b = _make_planner(ollama_b, registry={})
 
-    planner_a.run("What meds is she on?")
-    planner_b.run("What meds is she on?", document_facts=None)
+    question = "What meds is she on?"
+    planner_a.run(question)
+    planner_b.run(question, document_facts=None)
 
-    assert ollama_a.chat_calls[-1] == ollama_b.chat_calls[-1]
-    assert ollama_b.chat_calls[-1][-1]["content"] == _FINAL_REASON_PROMPT
+    expected_baseline = [
+        {"role": "system", "content": _build_system_prompt(BOUND_PATIENT_ID, {})},
+        {"role": "user", "content": question},
+        {"role": "user", "content": _FINAL_REASON_PROMPT},
+    ]
+    assert ollama_a.chat_calls[-1] == expected_baseline
+    assert ollama_b.chat_calls[-1] == expected_baseline
+
+    document_fact_fragment = _DOCUMENT_FACT_CONTEXT_PROMPT_TEMPLATE.splitlines()[0]
+    for reasoning_messages in (ollama_a.chat_calls[-1], ollama_b.chat_calls[-1]):
+        joined = "\n".join(message["content"] for message in reasoning_messages)
+        assert document_fact_fragment not in joined, (
+            "the document-fact context block must not be appended when no "
+            "document_facts were given"
+        )
