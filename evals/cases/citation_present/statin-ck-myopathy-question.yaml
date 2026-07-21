@@ -35,33 +35,48 @@ assertions:
 # engine"), which `app.extraction.ClaimExtractor.extract_claims`'s except
 # clause already catches -- confirmed live, 4/4 fresh draws via
 # `evals/runner/record.py` against the real llama_server-engine qwen3-8b-q5
-# stack completed and recorded cleanly, no uncaught exception. This case is
-# now re-recorded against the CURRENT model/engine (qwen3-8b-q5,
-# llama_server) below, replacing the stale qwen3:4b-era recording #58 left
-# in place. Original blocker, kept for history: under the llama_server
-# engine, the model's claim extraction call for this turn used to
-# deterministically emit a claim with an empty `source_refs` list ("There
-# are no recent lab results available for CK levels."), which failed
-# VerifiedAnswer's "every claim needs >=1 SourceRef or DocumentCitation"
-# validator both retry attempts (temperature=0, byte-identical output each
-# time) -- `LlamaServerClient.extract` then raised `LlamaServerError` after
-# exhausting retries, and since it wasn't an `OllamaError` subclass at the
-# time, it propagated uncaught and no recording could be produced at all.
-xfail: >
-  RE-OBSERVED (issue #106, live re-verification against current main,
-  qwen3-8b-q5 / llama_server engine): re-recorded 4/4 times via
-  `evals/runner/record.py` (production `LlamaServerClient`, no replay).
-  The `#85` citation-routing bug does not apply -- the model never attempts
-  a guideline citation of any shape here. Same pattern as its qwen3:4b-era
-  predecessor, now confirmed live on the current production model: given
-  BOTH real chart-data tool results and a retrieved guideline chunk for the
-  same turn, the model consistently answers only from the chart data and
-  never surfaces or quotes the `statin-monitoring#muscle-symptoms-and-ck`
-  guideline passage in its final answer -- so the claim extractor has no
-  guideline text to cite and produces zero guideline_chunk document
-  citations (verdict stays `partially_verified` on the chart-data claims
-  alone 4/4 times; `citation_present` never fires). An honest, reproducible
-  P3G.1 finding about the current production model's tendency to prioritize
-  structured chart data over retrieved guideline evidence when both are
-  available in one turn, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+# stack completed and recorded cleanly, no uncaught exception. Original
+# blocker, kept for history: under the llama_server engine, the model's
+# claim extraction call for this turn used to deterministically emit a
+# claim with an empty `source_refs` list ("There are no recent lab results
+# available for CK levels."), which failed VerifiedAnswer's "every claim
+# needs >=1 SourceRef or DocumentCitation" validator both retry attempts
+# (temperature=0, byte-identical output each time) -- `LlamaServerClient
+# .extract` then raised `LlamaServerError` after exhausting retries, and
+# since it wasn't an `OllamaError` subclass at the time, it propagated
+# uncaught and no recording could be produced at all.
+#
+# RE-OBSERVED then RESOLVED (issue #106, then issue #114): #106's 4/4 live
+# re-draws found the model never attempted a guideline citation of any
+# shape here -- given both real chart-data tool results and a retrieved
+# guideline chunk in one turn, it answered only from the chart data. Issue
+# #109 flagged this case again as one where the model "sometimes ignores
+# evidence directly in front of it," and issue #114 asked for a larger
+# live sample to confirm the rate precisely and, if it was a genuine
+# prompting gap, a narrowly-scoped fix.
+#
+# Issue #114's live re-verification found the opposite of what a
+# small sample suggested: across THREE separate live batches (10 + 10 + 5
+# = 25 draws total, production `LlamaServerClient`, `evals.runner.pipeline
+# .run_case`, no replay), the case reached `verified` with a real,
+# verbatim `statin-monitoring` `guideline_chunk` `DocumentCitation` on
+# 23/25 draws (92%) -- already highly reliable against CURRENT `main`,
+# with NO prompting or extraction-code change. The 2 non-passing draws (in
+# the first batch) were not root-caused: a scripting mistake in the
+# diagnostic script (piping through `tail -80` inside a backgrounded
+# shell command) destroyed those 2 draws' individual detail before they
+# could be inspected, so their exact failure mode is honestly unknown --
+# only the aggregate rate survived. Per this issue's own conservative
+# instruction not to force a fix without reproducing the mechanism it is
+# meant to address, NO prompting change was made: the described
+# inconsistency (originally 1/3, i.e. one small sample) does not reproduce
+# at this larger scale, so there is no currently-reproducible gap to
+# safely target with a prompting nudge. The most likely explanation is
+# that other work already merged in this citation-repair sequence (#105's
+# `guideline_excerpts`-into-planner-composition fix, #108's duplicate-
+# claim semantic-support fix) improved this case as a side effect without
+# it being specifically re-measured since #106/#109's smaller samples --
+# the same "small-sample finding turned out stale" pattern #113/#116 also
+# found elsewhere in this batch. Un-xfailed on the strength of this
+# result; the fresh, first-attempt recording below landed on `verified`,
+# consistent with the now-typical (92%) outcome, not a cherry-picked draw.
