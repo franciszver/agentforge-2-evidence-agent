@@ -245,6 +245,52 @@ rich sibling context?) has not been measured.
   together under real adversarial pressure across many draws" as two
   different claims; only the second is what Phase 3 needs to establish.
 
+### (g) Authorization boundary: two independent guards, and a shipped-OFF ACL default
+
+Two separate, independently-implemented guards exist against cross-patient
+access: `app/authz.py`'s `enforce_patient_binding` (tool-layer — raises
+`PatientBindingViolation` if a dispatched tool's patient id ever diverges
+from the conversation's anchored `patient_id`), and `app/chat.py`'s
+`_stream_chat`, which runs `detect_foreign_patient_reference` **before any
+tool dispatch or model call at all** — a text-level pre-check against the
+raw user message, using the conversation's bound patient id, an optionally
+resolved patient display name (`Planner.resolve_patient_name`), and a
+lazily-fetched roster of every other patient's name
+(`Planner.resolve_patient_roster`, only fetched once a "switch to `<Name>`"
+construction is actually seen) so a conversation that never names another
+patient never pays that round trip. Per `planning/PLAN.md`'s own "big trap"
+callout: **per-user OAuth/ACL is built and proven live end-to-end but ships
+`copilot_per_user_token_enabled=False` by default** (`app/config.py`) — the
+shared "dev token bridge" (`app/dev_token_bridge.py`) is what actually serves
+every request unless that flag is explicitly flipped. A red-team engagement
+should decide up front, and record like every other Phase 1/2 decision,
+whether it attacks the ACL-ON path (the harder, more realistic target the
+project itself already verified) or treats the ACL-OFF shipped default
+itself as the finding (any two authenticated users share one token's scope
+regardless of the text-level/tool-layer guards above, which bind a
+*conversation* to a patient but do not themselves enforce *user*-level
+authorization).
+
+### (h) Bounded-input DoS guards and path-traversal defenses — narrow, but real, and worth a direct probe rather than an assumption
+
+Three specific, narrow guards exist and are each a legitimate probe target
+in their own right (has anyone actually tried to defeat them, versus reading
+the code and trusting the comment?): (1) `app/retrieval.py`'s
+`MAX_QUERY_CHARS` (2000) / `_MAX_QUERY_TOKENS` (64) bound how large a
+free-text query can grow into an FTS5 `MATCH` expression before
+`RetrievalError` rejects it outright; (2) `app/ingestion.py`'s `MAX_PAGES`
+(50) / `MAX_PAGE_POINTS` (8000pt per side) reject an oversized or
+malformed-dimension PDF with `IngestionError` **before** any page is
+rendered or stored (validate-then-store ordering, so a rejected upload never
+leaves an orphaned partial artifact); (3) `LocalIngestionStore
+.read_source_document`'s `source_id` re-validation (exact 32-lowercase-hex
+match) before it ever reaches `Path.glob`, specifically closing a
+cross-patient IDOR/path-traversal path a caller bypassing the endpoint's own
+check might otherwise reach. None of these have a known live bypass on
+record — they are exactly the kind of "should hold, per the code and its
+own tests" claim a red team exists to independently confirm rather than take
+on faith.
+
 ## 3. Suggested Phase 3 red-team workstreams, priority-ordered by the evidence
 
 1. **Adversarial `SourceRef`-shape probes (highest priority — 73% exposure, #130).**
@@ -286,9 +332,29 @@ rich sibling context?) has not been measured.
    planner-affecting change, record without rebuilding) and confirm exactly
    how silently it currently fails — establishes the baseline #140's fix
    will be measured against.
-6. **Prompt-extraction / system-prompt-disclosure attacks.** Lowest priority
+6. **Authorization-boundary probes (§2(g)): ACL-OFF default + the two
+   independent binding guards.** First probes: (a) decide and record
+   ACL-ON vs. ACL-OFF scope, per §2(g); (b) if ACL-OFF, demonstrate
+   concretely what a second authenticated user can reach under the shared
+   dev-token bridge that per-user ACL would have blocked; (c) if ACL-ON,
+   attempt to defeat `detect_foreign_patient_reference`'s text-level
+   pre-check (e.g. an indirect patient reference the numeric/named/roster
+   signals don't cover) or `enforce_patient_binding`'s tool-layer check
+   independently, since a bypass of either alone is a distinct finding from
+   a bypass of both together.
+7. **Bounded-input DoS / path-traversal confirmation (§2(h)).** First
+   probes: (a) attempt to exceed `MAX_QUERY_CHARS`/`_MAX_QUERY_TOKENS` via a
+   query source that doesn't pass through the documented character check
+   first; (b) attempt a crafted PDF that exercises `MAX_PAGES`/
+   `MAX_PAGE_POINTS`'s edges (e.g. a page count or dimension exactly at the
+   boundary, or a corrupt MediaBox); (c) attempt to reach
+   `LocalIngestionStore.read_source_document`/`read_source_patient_id` with
+   a `source_id` that never passes through the endpoint's own hex-pattern
+   gate, to test whether the method's own independent re-validation actually
+   holds as a second line of defense.
+8. **Prompt-extraction / system-prompt-disclosure attacks.** Lowest priority
    of the listed workstreams — no committed finding suggests this is a live
-   gap the way (1)-(5) are documented gaps; include only after the above are
+   gap the way (1)-(7) are documented gaps; include only after the above are
    exhausted, since the evidence base does not support ranking it higher.
 
 ## 4. Non-goals / rules of engagement
@@ -344,5 +410,15 @@ model to follow):
   one existing live adversarial recording against the #86 surface.
 - Issue #140 (open) — container image drift risk for any new Phase 3
   recording.
+- `services/copilot-agent/app/authz.py` (`enforce_patient_binding`) and
+  `app/chat.py` (`detect_foreign_patient_reference`,
+  `Planner.resolve_patient_name`/`resolve_patient_roster`) — the two
+  independent cross-patient guards §2(g) probes.
+- `planning/PLAN.md` — "Phase 1 as-built vs the brief" section, source of
+  the per-user-ACL-shipped-OFF-by-default decision §2(g) references.
+- `app/retrieval.py` (`MAX_QUERY_CHARS`/`_MAX_QUERY_TOKENS`),
+  `app/ingestion.py` (`MAX_PAGES`/`MAX_PAGE_POINTS`,
+  `LocalIngestionStore.read_source_document`/`read_source_patient_id`) —
+  the bounded-input/path-traversal guards §2(h) probes.
 - `planning/KICKOFF_PROMPT.md` — the Phase 2 kickoff prompt this document
   supersedes for Phase 3 purposes; see the pointer added there.
