@@ -301,6 +301,40 @@ def test_few_shot_examples_include_a_vitals_domain_example():
     assert "blood pressure" in _FEW_SHOT_EXAMPLES.lower()
 
 
+def test_few_shot_examples_include_a_stated_fact_confirmation_example_for_medications_and_vitals():
+    """Issue #123 fix: live re-verification (production ``LlamaServerClient``,
+    ``evals.runner.pipeline.run_case``, deterministic at temperature=0) found
+    the planner never dispatching ``get_medications``/``get_vitals`` when the
+    clinician's question already states the relevant chart fact directly --
+    e.g. ``dual-antiplatelet-question``'s "She's on both aspirin and
+    clopidogrel" (trace: ``[get_problems, get_allergies]``, ``get_medications``
+    never called) and ``hypertension-lifestyle-followup-question``'s "His
+    blood pressure was elevated at his last visit" (trace:
+    ``[get_appointments, get_encounters]``, ``get_vitals`` never called). With
+    no real tool-result record to cite, the claim extractor then fabricates a
+    plausible-looking but nonexistent ``SourceRef``, which ``check_source_ref``
+    correctly rejects -- but that means the answer can never reach `verified`
+    even though it is clinically accurate. See docs/MODEL_AND_HARDWARE_
+    SELECTION.md's "Issue #123 findings" for the full live trace.
+
+    This pins the mitigation: two dedicated few-shot examples (a medications
+    one and a vitals one, deliberately worded differently from the two eval
+    questions above so the fix teaches the general pattern rather than
+    memorizing those specific questions) explicitly modeling "the question
+    already states this fact -- confirm it via the tool before answering
+    anyway," in the same ``call_tool`` -> ``get_medications``/``get_vitals``
+    shape as every other domain example."""
+    assert "already established" in _FEW_SHOT_EXAMPLES.lower()
+    medications_examples = [
+        line
+        for line in _FEW_SHOT_EXAMPLES.split("\n\n")
+        if '"tool": "get_medications"' in line
+    ]
+    vitals_examples = [line for line in _FEW_SHOT_EXAMPLES.split("\n\n") if '"tool": "get_vitals"' in line]
+    assert any("already established" in example.lower() for example in medications_examples)
+    assert any("already established" in example.lower() for example in vitals_examples)
+
+
 # --- verifier-only raw channel + safety boundary (P3.2 / #130) -----------------
 
 
