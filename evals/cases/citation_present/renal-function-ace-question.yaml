@@ -32,17 +32,40 @@ assertions:
     equals: verified
   - type: guideline_citation_present
 xfail: >
-  OBSERVED (re-recorded #58, qwen3-8b-q5): a genuine near-miss, a DIFFERENT
-  failure mode than this case showed under qwen3:4b. The model DOES surface
-  a guideline_chunk DocumentCitation this time, quoting the ACE-inhibitor
-  monitoring passage in a claim that survives citation re-validation --
-  guideline_citation_present alone would pass here. But the overall verdict
-  still fails to reach ``verified``: 1 of the 6 extracted claims (an
-  unrelated chart-data claim) lacks a valid source ref and gets stripped
-  ("Not found in record"), so the citation axis lands on SOME_VERIFIED and
-  the verdict stays partially_verified. citation_present's actual assertion
-  (a claim carrying a verified guideline_chunk citation) genuinely fires,
-  but the case as a whole still doesn't meet the combined bar (``verdict
-  equals verified`` AND ``guideline_citation_present``). An honest,
-  reproducible P3G.1 finding, not a harness bug -- the assertions are the
-  correct target and are deliberately not weakened.
+  RE-OBSERVED (issue #133, live re-verification against current `main`, 8
+  fresh draws through `evals.runner.pipeline.run_case`, production
+  `LlamaServerClient`, no replay, inspecting `document_citations`/claim
+  structure directly, not just the verdict): the OLD rationale above (an
+  unrelated chart-data claim losing its source ref) does not reproduce --
+  every claim in every draw carries a valid source ref, and
+  `guideline_citation_present` passes 8/8 (a real, verbatim
+  `renal-function-monitoring#ace-inhibitors-and-arbs` DocumentCitation is
+  always attached). Issue #133's own hypothesized "5th SourceRef-misrouting
+  shape" was also NOT observed -- there is no misrouted `source_refs` entry
+  in any draw for the coercion to recover.
+
+  The actual, currently-live blocker is a DIFFERENT mechanism: the model
+  splits its answer so that the sentence citing the guideline's recheck
+  timing ("A recheck is typically recommended at roughly 1-2 weeks after
+  starting or up-titrating the medication") never itself names WHAT is
+  being rechecked (kidney function/creatinine/eGFR) -- that antecedent lives
+  only in the guideline's fuller sentence, which the model's own quoted
+  span ("with a recheck at roughly 1-2 weeks after starting or
+  up-titrating") does not include. The issue #47/#81 semantic-support judge,
+  given only that claim text and that truncated quote (plus this claim's own
+  chart-data facts, which are just the medication name/status -- no
+  kidney-function fact to supply the missing antecedent), correctly cannot
+  confirm support and downgrades it to NOT_SEMANTICALLY_SUPPORTED, 7/8
+  draws (the judge's job working as intended on a citation that is
+  provenance-valid but was quoted incompletely by the model -- not a
+  verification-layer bug). This is the same general shape as issue #118's
+  "gate correctly catching an under-supported claim" finding, not a new
+  defect, and per this issue's own conservative instruction no fix is forced
+  here. The 1/8 outlier draw phrased the same claim as "A recheck of kidney
+  function should be done ..." (naming the antecedent explicitly) and passed
+  the judge -- consistent with ordinary planner/extraction wording variance,
+  not a different mechanism. The committed recording below captures the
+  typical (7/8, still-failing) `partially_verified` outcome -- 3 consecutive
+  re-record attempts all landed on it, so it is not a cherry-picked draw.
+  citation_present's actual assertion (`guideline_citation_present`) now
+  passes reliably; `verdict` does not, so the case remains honestly `xfail`.
