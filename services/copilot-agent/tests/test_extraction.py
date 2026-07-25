@@ -26,6 +26,8 @@ import datetime
 import inspect
 from typing import Any
 
+import pytest
+
 from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
@@ -479,6 +481,71 @@ def test_run_verification_folds_allergy_conflict_into_blocked():
 
     assert verdict_result.verdict is Verdict.BLOCKED
     assert [c.medication_name for c in verdict_result.allergy_conflicts] == ["Ibuprofen"]
+
+
+def _vitals_raw_with_weight_and_respiratory_rate() -> dict[str, Any]:
+    return VitalsOutput(
+        items=[
+            VitalReadingItem(
+                vital_type=VitalType.WEIGHT,
+                value=220.0,
+                unit="lb_av",
+                date=datetime.datetime(2026, 1, 1, 9, 0),
+            ),
+            VitalReadingItem(
+                vital_type=VitalType.RESPIRATORY_RATE,
+                value=16.0,
+                unit="breaths/min",
+                date=datetime.datetime(2026, 1, 1, 9, 0),
+            ),
+        ]
+    ).model_dump(mode="json")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#149: no deterministic check that a Claim.text corresponds to a "
+        "proposition actually present in the answer. check_source_ref only "
+        "re-validates (tool_call_id, record_id, field, asserted_value) "
+        "against the raw record -- it has no notion of the answer text at "
+        "all. A citation to a REAL, correctly-valued field the answer never "
+        "mentioned still passes provenance, so run_verification currently "
+        "verifies this claim (ALL_VERIFIED -> VERIFIED). Fix TBD (owner has "
+        "not chosen an approach); this documents the gap as a known, "
+        "tracked failure rather than a flake. strict=True: remove this "
+        "marker the moment a fix makes the assertion below true."
+    ),
+)
+def test_run_verification_rejects_claim_citing_a_field_the_answer_never_mentions():
+    """Desired contract for #149: an answer that asserts nothing about
+    ``respiratory_rate`` must not be certified as verified merely because a
+    claim cites a real ``respiratory_rate`` record/field that happens to
+    match the raw tool data. The tool result here DOES contain
+    ``respiratory_rate`` (record 1, alongside ``weight`` at record 0), so
+    the citation is byte-for-byte valid against the raw record -- but the
+    answer only ever talks about weight. Today nothing in the pipeline
+    checks the claim's text (or its citation) against the answer string, so
+    this currently verifies; it should instead fail to verify (BLOCKED, or
+    at minimum not VERIFIED)."""
+    result = _planner_result(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw_with_weight_and_respiratory_rate(),
+    )
+    claim = Claim(
+        text="Her respiratory rate is 16 breaths/min.",
+        source_refs=[
+            SourceRef(
+                tool_call_id="call_0", record_id="1", field="respiratory_rate", asserted_value="16"
+            )
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, _rendered = run_verification(extractor, result)
+
+    assert verdict_result.verdict is not Verdict.VERIFIED
 
 
 def test_run_verification_normalizes_vitals_before_checking():
