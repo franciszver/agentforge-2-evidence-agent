@@ -789,14 +789,14 @@ def test_claim_is_not_grounded_when_claim_has_no_significant_tokens():
     assert not claim_is_grounded_in_answer("It is her.", "It is her.")
 
 
-def test_claim_is_grounded_respects_a_custom_overlap_ratio():
-    # Only 1 of 2 significant claim tokens ("metformin") appears in the
-    # answer -- 0.5 overlap. The default threshold (0.5) accepts it; a
-    # stricter threshold rejects it.
-    claim_text = "Metformin unchanged."
+def test_claim_is_grounded_exactly_at_but_not_below_the_half_overlap_boundary():
     answer = "Metformin is on the list."
-    assert claim_is_grounded_in_answer(claim_text, answer, min_overlap_ratio=0.5)
-    assert not claim_is_grounded_in_answer(claim_text, answer, min_overlap_ratio=0.9)
+    # 1 of 2 significant claim tokens ("metformin") appears -- exactly 0.5
+    # overlap, the threshold's own boundary (>=, not >): accepted.
+    assert claim_is_grounded_in_answer("Metformin unchanged.", answer)
+    # 1 of 3 significant claim tokens ("metformin") appears -- 0.33 overlap,
+    # below the threshold: rejected.
+    assert not claim_is_grounded_in_answer("Metformin dosage increased.", answer)
 
 
 def test_apply_answer_grounding_downgrades_an_ungrounded_claim_to_not_grounded_in_answer():

@@ -217,10 +217,28 @@ class Settings(BaseSettings):
     # question about blood pressure) no longer counts toward a VERIFIED
     # verdict just because its citation resolves against raw tool data.
     # Deterministic, no LLM call -- unlike copilot_semantic_support_enabled
-    # above. Default OFF: byte-identical to today. The owner decides whether
-    # to flip the default after reviewing the eval suite's per-category
-    # measurement of how many legitimate claims the gate strips (see issue
-    # #153) -- this PR intentionally does not flip it.
+    # above. Default OFF: byte-identical to today.
+    #
+    # An adversarial review (issue #153) found the heuristic NOT fit to
+    # enable as shipped: negation is unhandled (the stopword list drops
+    # "not"/"no", so "Patient is not allergic to penicillin." is judged
+    # grounded by a claim asserting the patient IS allergic), short claims
+    # bypass the ratio easily, wrong-record numeric values pass, and routine
+    # clinical abbreviations ("HR 72" vs "heart rate") cause false rejections
+    # of legitimate claims -- see app.answer_grounding's module docstring for
+    # the full list with examples. This flag stays OFF until that is
+    # addressed; do not flip it based on this comment alone.
+    #
+    # `evals/runner/pipeline.py`'s `run_case` now threads this setting
+    # through to `run_verification` (reading it fresh from the environment),
+    # so re-running the eval suite with
+    # `COPILOT_CLAIM_ANSWER_GROUNDING_ENABLED=true` does exercise the gate
+    # against the existing recordings and surfaces per-category pass/fail
+    # deltas -- but the committed recordings/assertions were authored
+    # assuming the gate is off, so doing so today will show failures, not a
+    # clean per-category strip-rate report. The owner is deciding the design
+    # fix; only after that should recordings/assertions be revisited and an
+    # actual per-category measurement taken before flipping this default.
     copilot_claim_answer_grounding_enabled: bool = False
 
 
