@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -71,12 +72,20 @@ from runner.issue_160_live_chat_harness import (
     BP_QUESTION,
     ClaimSegmentRecord,
     DrawRecord,
+    DuplicateCorrelationIdError,
     Question,
     ToolCallRecord,
+    _assert_correlation_ids_unique,
+    aggregate_orphan_data_lines,
     attribute_mechanisms,
     build_draw_record,
     build_report,
+    build_run_metadata,
+    compute_session_windows,
+    count_duplicate_draw_indices,
+    count_orphan_data_lines,
     group_by_session,
+    is_run_valid,
     parse_sse_lines,
     sequence_label,
     summarize_question,
@@ -116,6 +125,7 @@ class TestSchema:
             patient_id=1,
             draw_index=0,
             session_id="session-a",
+            started_at="2026-01-01T00:00:00+00:00",
             correlation_id="corr-1",
             conversation_id="conv-1",
             tool_calls=[ToolCallRecord(order=0, tool="get_vitals", args={}, error=None)],
@@ -126,6 +136,7 @@ class TestSchema:
             verdict="partially_verified",
             latency_seconds=1.23,
             http_status=200,
+            orphan_data_line_count=0,
             error=None,
         )
         # #163 artifact-discipline parity: the schema has no field that
@@ -201,14 +212,18 @@ class TestBuildDrawRecord:
             question=BP_QUESTION,
             draw_index=0,
             session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
             events=_bp_events(),
             latency_seconds=2.5,
             http_status=200,
+            orphan_data_line_count=0,
             error=None,
         )
 
         assert draw.question_id == BP_QUESTION.id
         assert draw.session_id == "session-test"
+        assert draw.started_at == "2026-01-01T00:00:00+00:00"
+        assert draw.orphan_data_line_count == 0
         assert draw.patient_id == 1
         assert draw.conversation_id == "conv-1"
         assert draw.correlation_id == "corr-1"
@@ -239,9 +254,11 @@ class TestBuildDrawRecord:
             question=ALLERGY_QUESTION,
             draw_index=1,
             session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
             events=events,
             latency_seconds=1.0,
             http_status=200,
+            orphan_data_line_count=0,
             error=None,
         )
 
@@ -253,9 +270,11 @@ class TestBuildDrawRecord:
             question=BP_QUESTION,
             draw_index=2,
             session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
             events=[],
             latency_seconds=180.0,
             http_status=None,
+            orphan_data_line_count=None,
             error="ConnectTimeout",
         )
 
@@ -266,6 +285,7 @@ class TestBuildDrawRecord:
         assert draw.claim_count is None
         assert draw.tool_calls == []
         assert draw.claims == []
+        assert draw.orphan_data_line_count is None
 
 
 # --- tool_sequence_of / sequence_label ----------------------------------------
@@ -277,9 +297,11 @@ class TestToolSequence:
             question=BP_QUESTION,
             draw_index=0,
             session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
             events=_bp_events(),
             latency_seconds=1.0,
             http_status=200,
+            orphan_data_line_count=0,
             error=None,
         )
 
@@ -290,9 +312,11 @@ class TestToolSequence:
             question=BP_QUESTION,
             draw_index=0,
             session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
             events=[],
             latency_seconds=1.0,
             http_status=None,
+            orphan_data_line_count=None,
             error="boom",
         )
 
@@ -322,6 +346,7 @@ def _draw(
             patient_id=1,
             draw_index=draw_index,
             session_id=session_id,
+            started_at=None,
             correlation_id=None,
             conversation_id=None,
             tool_calls=[],
@@ -332,6 +357,7 @@ def _draw(
             verdict=None,
             latency_seconds=1.0,
             http_status=None,
+            orphan_data_line_count=None,
             error=error,
         )
     return DrawRecord(
@@ -339,7 +365,8 @@ def _draw(
         patient_id=1,
         draw_index=draw_index,
         session_id=session_id,
-        correlation_id=f"corr-{draw_index}",
+        started_at=f"2026-01-01T00:00:{draw_index:02d}+00:00",
+        correlation_id=f"corr-{session_id}-{draw_index}",
         conversation_id=f"conv-{draw_index}",
         tool_calls=tool_calls,
         answer_hash=hashlib.sha256(answer_text.encode()).hexdigest(),
@@ -349,6 +376,7 @@ def _draw(
         verdict=verdict,
         latency_seconds=1.0,
         http_status=200,
+        orphan_data_line_count=0,
         error=None,
     )
 
@@ -475,6 +503,209 @@ class TestBuildReportCombinedAndBySession:
         # of combined-only, session-a's own (stable) picture would be lost --
         # confirmed this assertion fails without the by_session key at all.
         assert "by_session" in report["q"]
+
+
+# --- run_valid gate (gate-3/Opus MINOR 3) --------------------------------------
+
+
+class TestRunValidGate:
+    def test_run_valid_true_when_no_errors_and_all_fields_present(self) -> None:
+        assert is_run_valid([_draw(0), _draw(1)]) is True
+
+    def test_run_valid_false_when_any_error_present(self) -> None:
+        assert is_run_valid([_draw(0), _draw(1, error="boom")]) is False
+
+    def test_run_valid_false_when_a_counted_draw_missing_verdict(self) -> None:
+        """A malformed-but-not-erroring draw (error=None, verdict=None)
+        shouldn't be producible by build_draw_record in practice (see its
+        own gate-1 simplify comment on the analogous claim_count ambiguity),
+        but is_run_valid must catch it defensively rather than assume
+        build_draw_record is the only caller."""
+        malformed = replace(_draw(0), verdict=None)
+
+        assert is_run_valid([malformed]) is False
+
+    def test_mechanism_booleans_are_null_not_false_when_run_invalid(self) -> None:
+        """Mutation checked: if attribute_mechanisms computed the three
+        mechanism booleans unconditionally (ignoring run_valid), an invalid
+        run (one error draw + one stable draw) would render
+        tool_selection_variance=False instead of None -- confirmed this
+        assertion fails under that mutation (reads False, `is None` fails)."""
+        report = attribute_mechanisms([_draw(0), _draw(1, error="boom")])
+
+        assert report["run_valid"] is False
+        assert report["mechanism"]["tool_selection_variance"] is None
+        assert report["mechanism"]["generation_nondeterminism"] is None
+        assert report["mechanism"]["downstream_variance"] is None
+
+    def test_mechanism_booleans_stay_boolean_when_run_valid(self) -> None:
+        report = attribute_mechanisms([_draw(0), _draw(1)])
+
+        assert report["run_valid"] is True
+        assert report["mechanism"]["tool_selection_variance"] is False
+
+
+# --- duplicate draw-index detection (gate-3/Opus MINOR 2) -----------------------
+
+
+class TestDuplicateDrawIndices:
+    def test_zero_when_all_indices_unique_within_session(self) -> None:
+        draws = [_draw(0, session_id="s"), _draw(1, session_id="s")]
+
+        assert count_duplicate_draw_indices(draws) == 0
+
+    def test_counts_repeats_within_one_session_not_across_sessions(self) -> None:
+        """Mutation checked: using bare draw_index (not (session_id,
+        draw_index)) as the dedup key would falsely flag session-a's
+        draw_index=0 and session-b's draw_index=0 as a duplicate -- two
+        DIFFERENT sessions legitimately both starting at index 0 must NOT be
+        counted; only session-a's own genuinely repeated index 0 must be."""
+        draws = [
+            _draw(0, session_id="session-a"),
+            _draw(0, session_id="session-a"),  # genuine duplicate within session-a
+            _draw(0, session_id="session-b"),  # different session, same index -- not a duplicate
+        ]
+
+        assert count_duplicate_draw_indices(draws) == 1
+
+
+# --- orphan SSE data-line detection (gate-3/Opus MINOR 3) ------------------------
+
+
+class TestOrphanDataLines:
+    def test_count_orphan_data_lines_skips_paired_lines(self) -> None:
+        assert count_orphan_data_lines(["event: done", "data: {}", ""]) == 0
+
+    def test_count_orphan_data_lines_counts_unpaired_data(self) -> None:
+        """Mutation checked: dropping the 'pending_event is None' guard
+        (counting every data: line unconditionally) makes this assertion
+        fail (would report 2, not 1) -- the well-formed 'event: done'/
+        'data: {}' pair must not be counted as orphaned."""
+        lines = ['data: {"stray": true}', "event: done", "data: {}"]
+
+        assert count_orphan_data_lines(lines) == 1
+
+    def test_aggregate_orphan_data_lines_separates_known_from_unknown(self) -> None:
+        known_zero = _draw(0)  # orphan_data_line_count=0 (see _draw's default)
+        known_three = replace(_draw(1), orphan_data_line_count=3)
+        unknown = replace(_draw(2), orphan_data_line_count=None)
+
+        result = aggregate_orphan_data_lines([known_zero, known_three, unknown])
+
+        assert result == {"total": 3, "draws_with_unknown_count": 1}
+
+
+# --- correlation_id uniqueness (gate-3/Opus MINOR 2) -----------------------------
+
+
+class TestCorrelationIdUniqueness:
+    def test_passes_when_all_unique(self) -> None:
+        _assert_correlation_ids_unique("q", [_draw(0), _draw(1)])  # must not raise
+
+    def test_raises_on_duplicate_correlation_id_among_non_error_draws(self) -> None:
+        """Mutation checked: removing this uniqueness check entirely (a
+        no-op function body) makes this test fail -- no exception is raised
+        where one is expected. The duplicate here is a genuine data-
+        corruption shape: two different draw_index rows sharing one
+        server-generated correlation_id."""
+        d0 = _draw(0)
+        d1 = replace(_draw(1), correlation_id=d0.correlation_id)
+
+        with pytest.raises(DuplicateCorrelationIdError) as exc_info:
+            _assert_correlation_ids_unique("q", [d0, d1])
+
+        assert d0.correlation_id in str(exc_info.value)
+
+    def test_error_draws_are_exempt_from_uniqueness_check(self) -> None:
+        """Error draws all carry correlation_id=None (build_draw_record's
+        error branch) -- None must never collide with itself as a
+        'duplicate,' or every multi-error run would falsely raise."""
+        _assert_correlation_ids_unique(
+            "q", [_draw(0, error="boom"), _draw(1, error="boom")]
+        )  # must not raise
+
+
+# --- session windows / run_metadata (gate-3/Opus MAJOR 2) -----------------------
+
+
+def _draw_record(*, session_id: str, draw_index: int, started_at: str | None, latency_seconds: float = 1.0, orphan: int | None = 0) -> DrawRecord:
+    return DrawRecord(
+        question_id="q",
+        patient_id=1,
+        draw_index=draw_index,
+        session_id=session_id,
+        started_at=started_at,
+        correlation_id=f"c-{session_id}-{draw_index}",
+        conversation_id=f"conv-{session_id}-{draw_index}",
+        tool_calls=[],
+        answer_hash="h",
+        answer_length=1,
+        claim_count=0,
+        claims=[],
+        verdict="verified",
+        latency_seconds=latency_seconds,
+        http_status=200,
+        orphan_data_line_count=orphan,
+        error=None,
+    )
+
+
+class TestComputeSessionWindows:
+    def test_computes_earliest_start_and_latest_finish(self) -> None:
+        d0 = _draw_record(session_id="s1", draw_index=0, started_at="2026-01-01T00:00:00+00:00", latency_seconds=10.0)
+        d1 = _draw_record(session_id="s1", draw_index=1, started_at="2026-01-01T00:00:20+00:00", latency_seconds=5.0)
+
+        windows = compute_session_windows([d0, d1])
+
+        assert windows["s1"]["started_at"] == "2026-01-01T00:00:00+00:00"
+        # ended_at = latest (started_at + latency): d1's 00:00:20 + 5s = 00:00:25,
+        # which beats d0's 00:00:00 + 10s = 00:00:10.
+        assert windows["s1"]["ended_at"] == "2026-01-01T00:00:25+00:00"
+
+    def test_none_when_no_draw_in_session_has_started_at(self) -> None:
+        d0 = _draw_record(session_id="old-session", draw_index=0, started_at=None)
+
+        windows = compute_session_windows([d0])
+
+        assert windows["old-session"] == {"started_at": None, "ended_at": None}
+
+
+class TestBuildRunMetadata:
+    def test_manual_session_windows_fill_unknown_sessions_only(self) -> None:
+        """Mutation checked: dropping the 'windows[session_id]["started_at"]
+        is None' guard (always overwriting with manual data regardless)
+        would let a manual window silently clobber a real, live-derived
+        window -- confirmed this test's live-session assertion would then
+        read the manual placeholder instead of the real timestamp."""
+        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+        old = _draw_record(session_id="old-session", draw_index=0, started_at=None, orphan=None)
+
+        metadata = build_run_metadata(
+            {"q": [live, old]},
+            backfilled=True,
+            app_git_sha="deadbeef",
+            engine="llama_server",
+            model="qwen3-8b",
+            flags={
+                "evidence_retrieval_enabled": False,
+                "semantic_support_enabled": True,
+                "answer_grounding_enabled": False,
+                "tool_call_scoping_enabled": False,
+            },
+            loop_order="sequential-per-question",
+            parallel=1,
+            temperature="0",
+            manual_session_windows={
+                "old-session": {"started_at": "approx-start", "ended_at": "approx-end"},
+                "live-session": {"started_at": "SHOULD-NOT-BE-USED", "ended_at": "SHOULD-NOT-BE-USED"},
+            },
+        )
+
+        assert metadata["sessions"]["old-session"] == {"started_at": "approx-start", "ended_at": "approx-end"}
+        assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
+        assert metadata["backfilled"] is True
+        assert metadata["app_git_sha"] == "deadbeef"
+        assert metadata["flags"]["semantic_support_enabled"] is True
 
 
 # --- no-tool-stub property -----------------------------------------------------

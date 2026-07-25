@@ -99,6 +99,63 @@ mechanisms are not mutually exclusive within one question's N draws; the
 report surfaces all three independently rather than picking one "primary"
 cause.
 
+**Interpretation of a committed run -- read this before citing a
+``report.json`` number (gate-3/Opus MAJOR 1, corrected framing).** The
+first committed run (``evals/results/issue-160/report.json``, 48 draws
+across two sessions, 24 per question) found BOTH questions
+``partially_verified`` on literally every draw -- the BP question answered
+the blood pressure reading every time, the allergy question stripped
+exactly the same 2 claims every time. **This outcome regime matches
+NEITHER #149's observed mixture (1/4 answered, 3/4 declined) NOR #150's
+(5 verified / 1 blocked across 6 draws).** A prior draft of this docstring
+argued that non-observation of variance at N=24 was reasonably strong
+evidence the ORIGINAL 1-in-6-ish instability was "still present but
+unluckily not observed" -- citing a binomial miss-probability calculation
+((5/6)^24 ~= 1.3%). **That argument is invalid, and the data itself is why:
+a (5/6)^24 miss-probability calculation only supports "not reproduced, low
+power to rule out" if the underlying MIXTURE (draws split between two or
+more distinct outcomes) is still what would be sampled from.** This run
+did not observe a mixture that happened to land on one side 24 times running
+-- it observed no mixture at all, a completely different, single, stable
+outcome from anything #149/#150 recorded. Between when #149/#150 were filed
+and this branch's base commit, several changes plausibly touch exactly this
+behavior: #154's retry-exhaustion instrumentation and its N=8
+downstream-stability measurement (0/16 extraction failures, stable
+verdicts -- see ``issue_154_stability_harness.py``), and the judge-context/
+``answer_pre_notice`` fixes referenced in #149/#150's own follow-up
+discussion. **The supported claim is:** on this build, config, and warm
+stack, via the API path, both questions are perfectly deterministic across
+24 draws each, AND the deterministic outcome observed differs from
+anything #149 or #150 recorded -- i.e. the originally-reported behavior
+appears **superseded by intervening changes, not merely unluckily
+unobserved**. This is evidence FOR a fix having landed, not proof of one
+(a single warm-stack session, one build, no controlled before/after
+comparison -- see the next paragraph for a related power caveat). Do not
+re-cite the (5/6)^24 framing from this run without re-deriving whether it
+still applies to whatever NEW data you're looking at.
+
+**Warm-slot caveat (gate-3/Opus MAJOR 3) -- read this before trusting a
+"stable" result.** The first two committed batches ran with the DEFAULT
+ordering at the time: every draw of one question, back-to-back, before
+moving to the next question -- i.e. all 24 BP draws hit the SAME warm
+inference slot consecutively, then all 24 allergy draws did. temp=0,
+``--parallel`` effectively 1 (one draw in flight at a time, one process,
+one model load). This ordering is near-zero-power against ANY
+nondeterminism that only shows up on a cold/reloaded slot, a
+context-window-boundary effect, or state that drifts only across a longer
+gap between calls -- by construction, this loop never produces that gap
+within one question's run. ``main()``'s default is now ``--interleave``
+(question A draw 0, question B draw 0, question A draw 1, ... -- see its
+own ``argparse`` help text): still temp=0, still one process, but
+consecutive calls never share a question, which at least breaks up a
+single unbroken run of identical-question calls. This does NOT eliminate
+the warm-slot limitation (it's still one continuously-warm process/model
+load for the whole run) -- it only weakens the SPECIFIC "same question
+twenty-four times in a row" pattern. A genuinely fresh-boot-per-batch
+comparison (rule out warm-state suppression entirely) is a further,
+NOT-yet-run step -- see the report's own written interpretation for
+whether it's warranted.
+
 **Auth.** ``app.chat._default_token_validator`` (the flag-OFF default,
 ``copilot_per_user_token_enabled=False`` -- this dev stack's setting)
 accepts any non-empty bearer token; no real OAuth dance is needed to POST
@@ -117,10 +174,19 @@ that copy step's documentation here. Then, from the repo root:
 
     bash scripts/bootstrap-copilot-dev-client.sh   # one-time per agent container
     python evals/fixtures/seed.py                  # confirms patients 1/2 exist
-    docker exec development-easy-agent-1 mkdir -p /data/repo_ingest/evals/runner
-    docker cp evals/runner development-easy-agent-1:/data/repo_ingest/evals/runner
+    docker exec development-easy-agent-1 mkdir -p /data/repo_ingest/evals
+    docker cp evals/runner development-easy-agent-1:/data/repo_ingest/evals/
     docker exec -w /data/repo_ingest development-easy-agent-1 \
         python evals/runner/issue_160_live_chat_harness.py --draws 8
+
+(Gate-3/Opus MINOR 1: the destination directory must be ``.../evals``, NOT
+``.../evals/runner`` -- pre-creating ``.../evals/runner`` and THEN
+``docker cp``-ing the ``evals/runner`` source directory into it lands the
+contents nested one level too deep, ``.../evals/runner/runner/...``, and
+silently leaves whatever was already at ``.../evals/runner`` stale/
+unreplaced underneath. ``docker cp SRC DST/`` with a trailing-slash,
+already-existing ``DST`` and a non-existent ``DST/basename(SRC)`` is what
+correctly lands the copy at ``.../evals/runner``.)
 
 (``httpx`` is already present in the image -- it's ``app.chat``'s/
 ``app.openemr_client``'s own HTTP client dependency.) The script talks to
@@ -164,17 +230,27 @@ agent-1:...`` (copy IN), not only when a crash is already suspected.
 draw completes (crash-safe, same discipline as #154's per-draw files). A
 final ``evals/results/issue-160/report.json`` aggregates every question's
 verdict distribution, tool-sequence distribution, answer-hash distribution,
-latency stats, and the three-way mechanism attribution."""
+latency stats, and the three-way mechanism attribution -- each gated by
+``run_valid`` (gate-3/Opus MINOR 3: ``null``, not ``False``, when the run
+had any error or incomplete draw -- see ``attribute_mechanisms``'s
+docstring) -- plus a top-level ``run_metadata`` block (gate-3/Opus MAJOR 2:
+app git SHA, engine/model, the four feature-flag booleans, loop order/
+parallelism/temperature, and each session's observed wall-clock window --
+see ``build_run_metadata``'s docstring for exactly how each field is
+derived, and what ``backfilled: true`` means for the two pre-schema
+committed batches)."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -248,12 +324,23 @@ class DrawRecord:
     ``session_id``/``draw_index``; ``attribute_mechanisms``/
     ``summarize_question`` are session-agnostic (a caller decides whether to
     pass them one session's draws or several combined -- see
-    ``build_report``'s ``combined``/``by_session`` split)."""
+    ``build_report``'s ``combined``/``by_session`` split).
+
+    ``started_at`` and ``orphan_data_line_count`` (gate-3/Opus MAJOR 2 and
+    MINOR 3): added after the first two committed batches (#160
+    16-more-draws follow-up). ``None`` on those pre-existing draws means
+    GENUINELY UNKNOWN -- not "computed as zero/empty" -- because no run
+    metadata existed at the time to derive them from; the migration that
+    added these fields to the committed artifact left both explicitly
+    ``null`` rather than inventing a value (see ``report.json``'s top-level
+    ``run_metadata.backfilled``). Every draw from a run using this schema
+    version onward gets a real value for both."""
 
     question_id: str
     patient_id: int
     draw_index: int
     session_id: str
+    started_at: str | None
     correlation_id: str | None
     conversation_id: str | None
     tool_calls: list[ToolCallRecord]
@@ -264,6 +351,7 @@ class DrawRecord:
     verdict: str | None
     latency_seconds: float
     http_status: int | None
+    orphan_data_line_count: int | None
     error: str | None
 
 
@@ -292,6 +380,33 @@ def parse_sse_lines(lines: Iterable[str]) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+def count_orphan_data_lines(lines: Iterable[str]) -> int:
+    """Count ``data:`` lines that ``parse_sse_lines`` silently drops because
+    no ``event:`` line preceded them (gate-3/Opus MINOR 3). A well-formed
+    SSE stream from ``app/chat.py``'s own ``_sse`` writer never produces
+    this -- every ``data:`` line is always immediately preceded by its own
+    ``event:`` line, one pair per frame -- so a nonzero count here would
+    mean either a malformed/truncated response or a parsing assumption this
+    module doesn't yet handle, either of which the reader should know about
+    rather than have silently swallowed. Mirrors ``parse_sse_lines``'s exact
+    skip condition (same ``pending_event is not None`` gate) so the two
+    functions can never disagree about what counts as orphaned. Pure --
+    accepts the same raw line iterable ``parse_sse_lines`` does; a caller
+    that wants both must materialize ``lines`` once and pass the same list
+    to each (see ``post_chat_draw``)."""
+    orphan_count = 0
+    pending_event: str | None = None
+    for line in lines:
+        if line.startswith("event:"):
+            pending_event = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            if pending_event is None:
+                orphan_count += 1
+            else:
+                pending_event = None
+    return orphan_count
+
+
 # --- pure draw-record construction --------------------------------------------
 
 
@@ -300,24 +415,27 @@ def build_draw_record(
     question: Question,
     draw_index: int,
     session_id: str,
+    started_at: str | None,
     events: list[tuple[str, dict[str, Any]]],
     latency_seconds: float,
     http_status: int | None,
+    orphan_data_line_count: int | None,
     error: str | None,
 ) -> DrawRecord:
     """Turn one draw's parsed SSE events into a :class:`DrawRecord`. Pure --
     no network, no hashing side effects beyond ``hashlib`` on already-
     in-memory text (never persisted). ``error`` non-``None`` means the HTTP
     call itself failed or never completed; every downstream field is then
-    left ``None``/empty rather than guessing. ``session_id`` is caller-
-    supplied (one value per live-run invocation -- see ``main()``), never
-    derived here."""
+    left ``None``/empty rather than guessing. ``session_id``/``started_at``/
+    ``orphan_data_line_count`` are all caller-supplied (computed once per
+    draw by ``post_chat_draw`` -- see its docstring), never derived here."""
     if error is not None:
         return DrawRecord(
             question_id=question.id,
             patient_id=question.patient_id,
             draw_index=draw_index,
             session_id=session_id,
+            started_at=started_at,
             correlation_id=None,
             conversation_id=None,
             tool_calls=[],
@@ -328,6 +446,7 @@ def build_draw_record(
             verdict=None,
             latency_seconds=latency_seconds,
             http_status=http_status,
+            orphan_data_line_count=orphan_data_line_count,
             error=error,
         )
 
@@ -394,6 +513,7 @@ def build_draw_record(
         patient_id=question.patient_id,
         draw_index=draw_index,
         session_id=session_id,
+        started_at=started_at,
         correlation_id=correlation_id,
         conversation_id=conversation_id,
         tool_calls=tool_calls,
@@ -404,6 +524,7 @@ def build_draw_record(
         verdict=verdict,
         latency_seconds=latency_seconds,
         http_status=http_status,
+        orphan_data_line_count=orphan_data_line_count,
         error=None,
     )
 
@@ -422,6 +543,44 @@ def sequence_label(sequence: tuple[str, ...]) -> str:
 # --- three-way mechanism attribution -------------------------------------------
 
 
+def is_run_valid(draws: list[DrawRecord]) -> bool:
+    """Gate-3/Opus MINOR 3: a run is "valid" (its mechanism flags trustworthy)
+    iff there were zero errors AND every draw produced a real ``answer_hash``
+    and ``verdict``. An invalid run is NOT bad data -- errors are data, never
+    discarded (see the module docstring's live-run discipline) -- it just
+    means the three-way mechanism BOOLEANS below cannot be read as a clean
+    signal: an error draw contributes no tool_sequence/answer_hash/verdict
+    to attribute against, silently shrinking the N actually compared. See
+    ``attribute_mechanisms`` for how this gates the ``mechanism`` dict."""
+    if any(d.error is not None for d in draws):
+        return False
+    return all(d.answer_hash is not None and d.verdict is not None for d in draws)
+
+
+def count_duplicate_draw_indices(draws: list[DrawRecord]) -> int:
+    """Gate-3/Opus MINOR 2: counts ``(session_id, draw_index)`` pairs that
+    appear more than once -- a signal of an accidental relaunch/re-run
+    overwriting-in-effect the same slot within one session's own index
+    space. Two DIFFERENT sessions legitimately reusing the same
+    ``draw_index`` (e.g. both starting at 0) is NOT counted here -- only a
+    repeat WITHIN one session is, since that is the case that actually
+    indicates a bug (a launch re-running indices it already covered)."""
+    pair_counts = Counter((d.session_id, d.draw_index) for d in draws)
+    return sum(1 for count in pair_counts.values() if count > 1)
+
+
+def aggregate_orphan_data_lines(draws: list[DrawRecord]) -> dict[str, int]:
+    """Gate-3/Opus MINOR 3: sums ``DrawRecord.orphan_data_line_count`` across
+    draws where it's known, and separately counts how many draws don't know
+    it at all (``None`` -- pre-schema/backfilled draws, see ``DrawRecord``'s
+    own docstring). Keeping these separate means a reader never mistakes
+    "0 known orphans, but we didn't check most draws" for "checked
+    everything, found zero.\""""
+    known = [d.orphan_data_line_count for d in draws if d.orphan_data_line_count is not None]
+    unknown = sum(1 for d in draws if d.orphan_data_line_count is None)
+    return {"total": sum(known), "draws_with_unknown_count": unknown}
+
+
 def attribute_mechanisms(draws: list[DrawRecord]) -> dict[str, Any]:
     """The entire point of this harness (see module docstring). Groups
     non-error draws by exact ``tool_sequence``, then within each sequence by
@@ -438,7 +597,15 @@ def attribute_mechanisms(draws: list[DrawRecord]) -> dict[str, Any]:
     question's draws can trip more than one flag at once. Error draws
     (``DrawRecord.error is not None``) are counted in ``n_errors`` but
     excluded from every grouping (they carry no tool sequence, answer hash,
-    or verdict to group by)."""
+    or verdict to group by).
+
+    **Gate-3/Opus MINOR 3 -- ``run_valid`` gates the three booleans above.**
+    If ``is_run_valid(draws)`` is ``False`` (any error draw, or any counted
+    draw missing ``answer_hash``/``verdict``), ``tool_selection_variance``/
+    ``generation_nondeterminism``/``downstream_variance`` are all ``None``
+    (JSON ``null``), not ``False`` -- an invalid run must never render as
+    "checked, found stable." The distribution dicts/lists are still
+    computed and returned regardless (raw data, not a trust claim)."""
     errors = [d for d in draws if d.error is not None]
     counted = [d for d in draws if d.error is None]
 
@@ -472,19 +639,35 @@ def attribute_mechanisms(draws: list[DrawRecord]) -> dict[str, Any]:
 
     verdict_distribution: Counter[str] = Counter(d.verdict or "<no-verdict>" for d in counted)
 
+    run_valid = is_run_valid(draws)
+    # Gate-3/Opus MINOR 3: when the run is NOT valid (any error, or any
+    # counted draw missing answer_hash/verdict), the three mechanism
+    # BOOLEANS report None/null rather than False -- "we observed no
+    # variance" and "we can't trust what we observed" must never render
+    # identically. The underlying distributions/lists above are left
+    # exactly as computed either way -- they're raw counts, not a verdict
+    # on trustworthiness, and a reader who wants to inspect them despite an
+    # invalid run still can.
+    tool_selection_variance: bool | None = len(by_sequence) > 1 if run_valid else None
+    generation_nondeterminism: bool | None = len(generation_nondeterminism_sequences) > 0 if run_valid else None
+    downstream_variance: bool | None = len(downstream_variance_keys) > 0 if run_valid else None
+
     return {
         "n_draws": len(draws),
         "n_errors": len(errors),
         "n_counted": len(counted),
+        "run_valid": run_valid,
+        "n_duplicate_indices": count_duplicate_draw_indices(draws),
+        "orphan_data_lines": aggregate_orphan_data_lines(draws),
         "distinct_tool_sequences": len(by_sequence),
         "tool_sequence_distribution": tool_sequence_distribution,
         "answer_hash_distribution": answer_hash_distribution,
         "verdict_distribution": dict(verdict_distribution),
         "verdict_distribution_by_sequence_hash": verdict_distribution_by_sequence_hash,
         "mechanism": {
-            "tool_selection_variance": len(by_sequence) > 1,
-            "generation_nondeterminism": len(generation_nondeterminism_sequences) > 0,
-            "downstream_variance": len(downstream_variance_keys) > 0,
+            "tool_selection_variance": tool_selection_variance,
+            "generation_nondeterminism": generation_nondeterminism,
+            "downstream_variance": downstream_variance,
             "generation_nondeterminism_sequences": generation_nondeterminism_sequences,
             "downstream_variance_keys": downstream_variance_keys,
         },
@@ -537,6 +720,119 @@ def build_report(per_question: dict[str, list[DrawRecord]]) -> dict[str, Any]:
     return report
 
 
+def compute_session_windows(draws: list[DrawRecord]) -> dict[str, dict[str, str | None]]:
+    """Derive each session's observed wall-clock window from its OWN draws'
+    ``started_at`` (gate-3/Opus MAJOR 2) -- no external run-time bookkeeping
+    needed, since the draws themselves carry the timestamp once a run uses
+    the current schema. ``started_at`` for the window is the earliest
+    draw's ``started_at``; ``ended_at`` is the latest draw's
+    ``started_at + latency_seconds`` (the draw's own measured completion,
+    not just when the LAST draw began -- a session's true end is when its
+    slowest/last-finishing draw actually completed). A session where every
+    draw has ``started_at is None`` (pre-schema/backfilled -- see
+    ``DrawRecord``'s docstring) yields ``{"started_at": None, "ended_at":
+    None}`` here; ``build_run_metadata``'s ``manual_session_windows``
+    parameter is the ONLY sanctioned way to fill those in, and only with
+    windows explicitly labeled approximate."""
+    windows: dict[str, dict[str, str | None]] = {}
+    for session_id, session_draws in group_by_session(draws).items():
+        starts: list[datetime] = []
+        ends: list[datetime] = []
+        for draw in session_draws:
+            if draw.started_at is None:
+                continue
+            start_dt = datetime.fromisoformat(draw.started_at)
+            starts.append(start_dt)
+            ends.append(start_dt + timedelta(seconds=draw.latency_seconds))
+        windows[session_id] = {
+            "started_at": min(starts).isoformat() if starts else None,
+            "ended_at": max(ends).isoformat() if ends else None,
+        }
+    return windows
+
+
+def _read_env_bool(name: str, default: bool) -> bool:
+    """Reads an env var the same name pydantic-settings would bind
+    ``app.config.Settings``'s matching field to (case-insensitive match to
+    the field name) -- WITHOUT importing ``app.config`` (this module has no
+    ``app.*`` import path at all, by design -- see ``TestNoToolStub``).
+    Falls back to the LITERAL default recorded here, which mirrors that
+    field's declared default as of this harness's own commit -- if
+    ``app/config.py``'s default ever changes, this fallback can go stale;
+    it is a recorded snapshot, not a live query (see ``build_run_metadata``'s
+    ``flags_source`` string, which says exactly this to any report reader)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_env_str(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+_FLAGS_SOURCE = (
+    "environment variable override if set (matching app.config.Settings' pydantic-settings "
+    "field-name-uppercased convention), else the field default AS RECORDED IN THIS HARNESS "
+    "(snapshot of app/config.py at the harness's own commit, not a live query -- this module "
+    "has zero app.* import path by design, see TestNoToolStub)"
+)
+
+
+def build_run_metadata(
+    per_question: dict[str, list[DrawRecord]],
+    *,
+    backfilled: bool,
+    app_git_sha: str | None,
+    engine: str,
+    model: str | None,
+    flags: dict[str, bool],
+    loop_order: str,
+    parallel: int,
+    temperature: str,
+    manual_session_windows: dict[str, dict[str, str | None]] | None = None,
+) -> dict[str, Any]:
+    """Assembles the report-level provenance block (gate-3/Opus MAJOR 2):
+    what app tree, engine/model, and feature-flag config produced these
+    draws, plus each session's observed wall-clock window and the run's
+    determinism-relevant execution facts (``loop_order``/``parallel``/
+    ``temperature`` -- gate-3/Opus MAJOR 3's warm-slot caveat, made
+    machine-readable here rather than living only in the docstring).
+
+    ``manual_session_windows`` lets a caller (only ever the one-time
+    backfill migration for the two pre-schema committed batches -- see
+    ``evals/results/issue-160/report.json``'s own ``run_metadata.backfilled``)
+    supply an approximate window for a session whose draws all predate
+    ``started_at`` and therefore compute to ``{None, None}`` on their own;
+    ordinary live ``main()`` runs never pass this -- every session they
+    produce has real per-draw timestamps."""
+    all_draws = [draw for draws in per_question.values() for draw in draws]
+    windows = compute_session_windows(all_draws)
+    if manual_session_windows:
+        for session_id, manual in manual_session_windows.items():
+            if session_id in windows and windows[session_id]["started_at"] is None:
+                windows[session_id] = dict(manual)
+    return {
+        "backfilled": backfilled,
+        "app_git_sha": app_git_sha,
+        "engine": engine,
+        "model": model,
+        "flags": flags,
+        "flags_source": _FLAGS_SOURCE,
+        "loop_order": loop_order,
+        "parallel": parallel,
+        "temperature": temperature,
+        "sessions": windows,
+        "session_windows_note": (
+            "started_at = earliest draw's started_at; ended_at = latest draw's "
+            "(started_at + latency_seconds) -- i.e. when that draw actually finished, not "
+            "just when it began. A session with {started_at: null, ended_at: null} predates "
+            "the started_at field entirely (backfilled=true runs); see manual_session_windows "
+            "for how those two sessions' approximate windows were supplied instead."
+        ),
+    }
+
+
 # --- live run (network I/O -- never exercised by the unit-test suite) ---------
 
 
@@ -552,6 +848,32 @@ def append_draw(draw: DrawRecord) -> Path:
     return path
 
 
+class DuplicateCorrelationIdError(Exception):
+    """Raised by :func:`load_draws` when two non-error draws in the same
+    question's ``*.jsonl`` share a ``correlation_id`` (gate-3/Opus MINOR 2).
+    ``correlation_id`` is server-generated per turn (``app.correlation
+    .get_correlation_id()``, a fresh UUID every ``POST /chat`` call) -- a
+    duplicate is not a benign coincidence, it means either the same response
+    was appended twice (an ``append_draw`` bug or a re-run over the exact
+    same in-flight state) or the server itself failed to generate a fresh
+    id. Either way it's data corruption worth stopping on, not silently
+    aggregating over."""
+
+
+def _assert_correlation_ids_unique(question_id: str, draws: list[DrawRecord]) -> None:
+    seen: dict[str, int] = {}
+    for draw in draws:
+        if draw.error is not None or draw.correlation_id is None:
+            continue
+        if draw.correlation_id in seen:
+            raise DuplicateCorrelationIdError(
+                f"{question_id}: correlation_id {draw.correlation_id!r} appears on both "
+                f"draw_index={seen[draw.correlation_id]} and draw_index={draw.draw_index} "
+                "(session_id may differ) -- see DuplicateCorrelationIdError's docstring"
+            )
+        seen[draw.correlation_id] = draw.draw_index
+
+
 def load_draws(question_id: str) -> list[DrawRecord]:
     path = _draws_path(question_id)
     if not path.exists():
@@ -565,6 +887,7 @@ def load_draws(question_id: str) -> list[DrawRecord]:
         claims = [ClaimSegmentRecord(**c) for c in payload["claims"]]
         payload = {**payload, "tool_calls": tool_calls, "claims": claims}
         draws.append(DrawRecord(**payload))
+    _assert_correlation_ids_unique(question_id, draws)
     return draws
 
 
@@ -585,9 +908,19 @@ def post_chat_draw(
     instead, alongside every other live-run-only dependency). Never raises --
     a request exception is caught and turned into an error :class:`DrawRecord`
     so one bad draw does not abort the whole run (same discipline as #154's
-    ``run_one_draw``)."""
+    ``run_one_draw``).
+
+    ``started_at`` is stamped (UTC, ISO 8601) immediately before the request
+    fires -- gate-3/Opus MAJOR 2, so FUTURE runs carry a real per-draw
+    timestamp (the two already-committed batches predate this field and
+    carry ``started_at: null`` -- see ``DrawRecord``'s docstring). The raw
+    SSE lines are materialized into a list ONCE (``response.iter_lines()``
+    is a one-shot generator) so both ``parse_sse_lines`` and
+    ``count_orphan_data_lines`` (gate-3/Opus MINOR 3) can walk the identical
+    line sequence without either consuming what the other needs."""
     payload = {"message": question.question, "patient_id": question.patient_id}
     headers = {"Authorization": f"Bearer {token}"}
+    started_at = datetime.now(timezone.utc).isoformat()
     started = time.monotonic()
     try:
         with client.stream("POST", f"{base_url}/chat", json=payload, headers=headers) as response:
@@ -599,20 +932,26 @@ def post_chat_draw(
                     question=question,
                     draw_index=draw_index,
                     session_id=session_id,
+                    started_at=started_at,
                     events=[],
                     latency_seconds=latency,
                     http_status=status,
+                    orphan_data_line_count=None,
                     error=f"HTTP {status}: {response.text[:500]}",
                 )
-            events = parse_sse_lines(response.iter_lines())
+            lines = list(response.iter_lines())
+            events = parse_sse_lines(lines)
+            orphan_count = count_orphan_data_lines(lines)
         latency = time.monotonic() - started
         return build_draw_record(
             question=question,
             draw_index=draw_index,
             session_id=session_id,
+            started_at=started_at,
             events=events,
             latency_seconds=latency,
             http_status=status,
+            orphan_data_line_count=orphan_count,
             error=None,
         )
     except Exception as exc:  # noqa: BLE001 -- harness run: record failure, keep going
@@ -621,9 +960,11 @@ def post_chat_draw(
             question=question,
             draw_index=draw_index,
             session_id=session_id,
+            started_at=started_at,
             events=[],
             latency_seconds=latency,
             http_status=None,
+            orphan_data_line_count=None,
             error=repr(exc),
         )
 
@@ -637,6 +978,25 @@ def main() -> None:
     parser.add_argument("--base-url", default=_DEFAULT_BASE_URL, help="agent base URL (default in-container localhost:8000)")
     parser.add_argument("--token", default=_DEFAULT_TOKEN, help="bearer token (flag-OFF stub validator accepts any non-empty value)")
     parser.add_argument("--session-id", default=None, help="label for this run's draws (default: a fresh random id) -- distinguishes this batch from any prior batch appended to the same *.jsonl, so report.json's by_session never silently mixes them")
+    parser.add_argument(
+        "--no-interleave",
+        dest="interleave",
+        action="store_false",
+        default=True,
+        help=(
+            "gate-3/Opus MAJOR 3: by default draws are INTERLEAVED across questions "
+            "(question A draw 0, question B draw 0, question A draw 1, ...) rather than run "
+            "back-to-back per question -- back-to-back-per-question is a warm-single-slot loop "
+            "that gives near-zero power against nondeterminism by construction (see module "
+            "docstring's warm-slot caveat). Pass --no-interleave to reproduce the OLD "
+            "back-to-back-per-question ordering the first two committed batches used."
+        ),
+    )
+    parser.add_argument(
+        "--app-git-sha",
+        default=None,
+        help="git SHA of the app tree under test (this harness has no app.* import path, so it cannot detect this itself -- pass $(git rev-parse HEAD) from the host, or set APP_GIT_SHA in the environment)",
+    )
     parser.add_argument("--summarize-only", action="store_true", help="skip live runs; just re-aggregate evals/results/issue-160/*.jsonl")
     args = parser.parse_args()
 
@@ -644,25 +1004,60 @@ def main() -> None:
         import httpx  # live-run-only dependency -- see post_chat_draw's docstring
 
         session_id = args.session_id or f"session-{uuid.uuid4().hex[:12]}"
-        print(f"[issue-160] session_id={session_id}")
+        print(f"[issue-160] session_id={session_id} interleave={args.interleave}")
 
-        for question in TARGET_QUESTIONS:
-            for draw_index in range(args.start_index, args.start_index + args.draws):
-                with httpx.Client(timeout=180.0) as client:
-                    draw = post_chat_draw(
-                        client,
-                        base_url=args.base_url,
-                        question=question,
-                        draw_index=draw_index,
-                        session_id=session_id,
-                        token=args.token,
-                    )
-                path = append_draw(draw)
-                status = f"ERROR {draw.error}" if draw.error else f"verdict={draw.verdict} tools={tool_sequence_of(draw)}"
-                print(f"[issue-160] {question.id} draw {draw_index} ({session_id}): {status} -> {path}")
+        draw_indices = range(args.start_index, args.start_index + args.draws)
+        # gate-3/Opus MAJOR 3: interleaved is now the default ordering --
+        # question, then draw_index, in the outer loop -- so consecutive
+        # live calls never share a question (breaking up any single warm
+        # inference slot's run of identical-question calls). --no-interleave
+        # keeps the OLD per-question-back-to-back ordering for comparison.
+        run_plan = (
+            [(draw_index, question) for draw_index in draw_indices for question in TARGET_QUESTIONS]
+            if args.interleave
+            else [(draw_index, question) for question in TARGET_QUESTIONS for draw_index in draw_indices]
+        )
+
+        for draw_index, question in run_plan:
+            with httpx.Client(timeout=180.0) as client:
+                draw = post_chat_draw(
+                    client,
+                    base_url=args.base_url,
+                    question=question,
+                    draw_index=draw_index,
+                    session_id=session_id,
+                    token=args.token,
+                )
+            path = append_draw(draw)
+            status = f"ERROR {draw.error}" if draw.error else f"verdict={draw.verdict} tools={tool_sequence_of(draw)}"
+            print(f"[issue-160] {question.id} draw {draw_index} ({session_id}): {status} -> {path}")
 
     per_question = {q.id: load_draws(q.id) for q in TARGET_QUESTIONS}
     report = build_report(per_question)
+    engine = _read_env_str("COPILOT_LLM_ENGINE", "llama_server")
+    model = (
+        _read_env_str("LLAMA_SERVER_MODEL", "qwen3-8b")
+        if engine == "llama_server"
+        else _read_env_str("OLLAMA_MODEL", "qwen3:4b")
+    )
+    report["run_metadata"] = build_run_metadata(
+        per_question,
+        backfilled=False,
+        app_git_sha=args.app_git_sha or os.environ.get("APP_GIT_SHA"),
+        engine=engine,
+        model=model,
+        flags={
+            "evidence_retrieval_enabled": _read_env_bool("COPILOT_EVIDENCE_RETRIEVAL_ENABLED", False),
+            "semantic_support_enabled": _read_env_bool("COPILOT_SEMANTIC_SUPPORT_ENABLED", True),
+            "answer_grounding_enabled": _read_env_bool("COPILOT_CLAIM_ANSWER_GROUNDING_ENABLED", False),
+            "tool_call_scoping_enabled": _read_env_bool("COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED", False),
+        },
+        loop_order="interleaved (round-robin across questions per draw index)"
+        if (args.summarize_only or args.interleave)
+        else "sequential-per-question (all draws of one question back-to-back, warm single slot)",
+        parallel=1,
+        temperature="0 (llama_server_client.py source-confirmed default; not runtime-verified by this harness)",
+    )
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = _RESULTS_DIR / "report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
