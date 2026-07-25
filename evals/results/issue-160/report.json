@@ -274,31 +274,45 @@
     }
   },
   "run_metadata": {
-    "backfilled": true,
-    "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
-    "engine": "llama_server",
-    "model": "qwen3-8b",
-    "flags": {
-      "evidence_retrieval_enabled": false,
-      "semantic_support_enabled": true,
-      "answer_grounding_enabled": false,
-      "tool_call_scoping_enabled": false
-    },
-    "flags_source": "environment variable override if set (matching app.config.Settings' pydantic-settings field-name-uppercased convention), else the field default AS RECORDED IN THIS HARNESS (snapshot of app/config.py at the harness's own commit, not a live query -- this module has zero app.* import path by design, see TestNoToolStub)",
-    "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
-    "parallel": 1,
-    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
     "sessions": {
       "session-1-initial-n8": {
         "started_at": "2026-07-25T18:22:53+00:00",
-        "ended_at": "2026-07-25T18:29:06+00:00"
+        "ended_at": "2026-07-25T18:29:06+00:00",
+        "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+        "backfilled": true,
+        "engine": "llama_server",
+        "flags": {
+          "answer_grounding_enabled": false,
+          "evidence_retrieval_enabled": true,
+          "semantic_support_enabled": true,
+          "tool_call_scoping_enabled": false
+        },
+        "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+        "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+        "model": "qwen3-8b",
+        "parallel": 1,
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
       },
       "session-2-sixteen-more-1785004556": {
         "started_at": "2026-07-25T18:43:50+00:00",
-        "ended_at": "2026-07-25T18:56:18+00:00"
+        "ended_at": "2026-07-25T18:56:18+00:00",
+        "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+        "backfilled": true,
+        "engine": "llama_server",
+        "flags": {
+          "answer_grounding_enabled": false,
+          "evidence_retrieval_enabled": true,
+          "semantic_support_enabled": true,
+          "tool_call_scoping_enabled": false
+        },
+        "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+        "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+        "model": "qwen3-8b",
+        "parallel": 1,
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
       }
     },
-    "session_windows_note": "started_at = earliest draw's started_at; ended_at = latest draw's (started_at + latency_seconds) -- i.e. when that draw actually finished, not just when it began. A session with {started_at: null, ended_at: null} predates the started_at field entirely (backfilled=true runs); see manual_session_windows for how those two sessions' approximate windows were supplied instead.",
-    "backfill_provenance_note": "app_git_sha = merge-base of this branch with main at the time these draws ran (git merge-base HEAD main, confirmed = the #165 merge commit bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a) -- the app/ tree copied into development-easy-agent-1 was not touched between that merge and this run. flags = app.config.Settings field DEFAULTS as of that commit (grep-confirmed; no env-var overrides were set on this dev stack at run time -- not independently re-verified live, since this harness has zero app.* import path). Session windows are APPROXIMATE (+/- a few minutes): ended_at values are real container file mtimes observed after the fact (docker exec stat); started_at values are derived by subtracting each session's total measured draw latency (sum of latency_seconds across its draws) from its observed end time, cross-checked against nearby git commit timestamps. No per-draw started_at was ever captured for these two sessions (the field didn't exist yet) -- see each draw's own started_at: null."
+    "session_windows_note": "started_at = earliest draw's started_at; ended_at = latest draw's (started_at + latency_seconds) -- i.e. when that draw actually finished, not just when it began. A session with {started_at: null, ended_at: null} predates the started_at field entirely; manual_session_windows is the only sanctioned way to backfill an approximate one (see the two pre-schema committed sessions).",
+    "session_provenance_note": "app_git_sha/engine/model/flags/flags_source/loop_order/parallel/temperature/backfilled are PERSISTED per-session facts (evals/results/issue-160/session_metadata.json), captured once by the live run that produced that session and never re-derived on a later --summarize-only regeneration. A session showing loop_order starting with \"unknown\" has no persisted entry."
   }
 }

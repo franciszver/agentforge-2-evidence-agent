@@ -1,0 +1,34 @@
+{
+  "session-1-initial-n8": {
+    "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+    "backfilled": true,
+    "engine": "llama_server",
+    "flags": {
+      "answer_grounding_enabled": false,
+      "evidence_retrieval_enabled": true,
+      "semantic_support_enabled": true,
+      "tool_call_scoping_enabled": false
+    },
+    "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+    "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+    "model": "qwen3-8b",
+    "parallel": 1,
+    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+  },
+  "session-2-sixteen-more-1785004556": {
+    "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+    "backfilled": true,
+    "engine": "llama_server",
+    "flags": {
+      "answer_grounding_enabled": false,
+      "evidence_retrieval_enabled": true,
+      "semantic_support_enabled": true,
+      "tool_call_scoping_enabled": false
+    },
+    "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+    "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+    "model": "qwen3-8b",
+    "parallel": 1,
+    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+  }
+}
