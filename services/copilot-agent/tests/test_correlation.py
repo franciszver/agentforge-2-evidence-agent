@@ -365,7 +365,7 @@ def test_run_verification_logs_with_the_active_correlation_id(caplog):
     caplog.set_level(logging.INFO, logger="app.extraction")
 
     class _EmptyExtractor:
-        def extract_claims(self, *, answer, tools, raw_results):
+        def extract_claims(self, *, answer, tools, raw_results, **_):
             return []
 
     result = PlannerResult(answer="ok", trace=[], raw_results=[])

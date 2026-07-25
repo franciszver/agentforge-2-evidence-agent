@@ -8,8 +8,10 @@ service is ever contacted. See ``app/chat.py`` for the seams.
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,14 +25,23 @@ from app.chat import (
     get_claim_extractor,
     get_conversation_store,
     get_planner_factory,
+    get_require_tool_call_scoping,
     get_token_validator,
 )
+from app.extraction import ClaimExtractor
 from app.main import app
 from app.planner import PlannerResult, ToolCallTrace
-from app.schemas.common import MedicationStatus, SourceRef
+from app.schemas.common import AllergySeverity, MedicationStatus, SourceRef, VitalType
 from app.schemas.planner import ToolName
-from app.schemas.tools import MedicationItem, MedicationsOutput
-from app.schemas.verification import Claim
+from app.schemas.tools import (
+    AllergiesOutput,
+    AllergyItem,
+    MedicationItem,
+    MedicationsOutput,
+    VitalReadingItem,
+    VitalsOutput,
+)
+from app.schemas.verification import Claim, VerifiedAnswer
 
 
 class FakePlanner:
@@ -59,7 +70,12 @@ class FakeExtractor:
     def __init__(self, claims: list[Claim] | None = None) -> None:
         self._claims = claims or []
 
-    def extract_claims(self, *, answer, tools, raw_results) -> list[Claim]:
+    def extract_claims(self, *, answer, tools, raw_results, **_: Any) -> list[Claim]:
+        # ``**_: Any`` tolerates additive keyword-only capabilities
+        # (``retrieved_chunks``, ``patient_facts``, issue #158's
+        # ``engaged``, ...) without this double needing to track each one --
+        # it ignores every catalog/narrowing input and returns the same
+        # canned claims regardless, same as it always has.
         return list(self._claims)
 
 
@@ -732,3 +748,111 @@ def test_stream_emits_populated_verification_frame_with_real_claim():
         }
     ]
     assert verification_data["warnings"]["allergy_conflicts"] == []
+
+
+class _ScriptedOllamaLikeIgnoresCatalog:
+    """A REAL ``ClaimExtractor``'s underlying LLM client, scripted: records
+    every ``messages`` list it is called with, and always returns ONE claim
+    citing call_1 (the allergy record), REGARDLESS of what catalog/messages
+    it actually received.
+
+    Used by ``test_chat_tool_call_scoping_flag_on_exercises_prevention_and_
+    enforcement_end_to_end`` below to prove BOTH halves of the #158 gate in
+    one real ``POST /chat`` turn: PREVENTION is checked by inspecting the
+    messages this double actually recorded (call_1/"Penicillin"/"substance"
+    must be ABSENT -- the narrowed catalog never reached here), and
+    ENFORCEMENT is checked by the SSE verification frame (the returned
+    claim, citing an unengaged call, must still fail to verify -- proving
+    the checker rejects it independent of whether the extractor itself
+    "saw" call_1)."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[dict[str, str]]] = []
+
+    def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None) -> Any:
+        self.calls.append(list(prompt_or_messages))
+        return VerifiedAnswer(
+            claims=[
+                Claim(
+                    text="She is allergic to Penicillin.",
+                    source_refs=[
+                        SourceRef(
+                            tool_call_id="call_1",
+                            record_id="0",
+                            field="substance",
+                            asserted_value="Penicillin",
+                        )
+                    ],
+                )
+            ]
+        )
+
+
+def test_chat_tool_call_scoping_flag_on_exercises_prevention_and_enforcement_end_to_end():
+    """MINOR 1 (gate-3 review): the #158 flag-ON configuration was otherwise
+    untested at the ``/chat`` level -- every other test in this file uses a
+    ``FakeExtractor`` that ignores its inputs entirely, which exercises
+    ENFORCEMENT but can never prove PREVENTION (the catalog/messages the
+    extractor actually receives). This test drives a REAL ``ClaimExtractor``
+    (not a scripted double) through the full endpoint with
+    ``get_require_tool_call_scoping`` overridden ON, so both halves of the
+    gate run for real:
+
+      - call_0 (``GET_VITALS``, weight 220) is ENGAGED -- the answer says
+        "Her weight is 220 lb."
+      - call_1 (``GET_ALLERGIES``, Penicillin) is UNENGAGED -- the answer
+        never mentions it at all.
+
+    PREVENTION: the scripted LLM client's recorded messages must never
+    mention call_1/"Penicillin"/"substance" -- the extractor's own catalog
+    was narrowed before it ever saw them.
+
+    ENFORCEMENT: the scripted client nonetheless RETURNS a claim citing
+    call_1 (as if it had hallucinated or somehow still cited it) -- the SSE
+    verification frame must show it did NOT verify, proving the checker
+    rejects an unengaged-call citation independent of prevention."""
+    vitals_raw = VitalsOutput(
+        items=[
+            VitalReadingItem(
+                vital_type=VitalType.WEIGHT,
+                value=220.0,
+                unit="lb_av",
+                date=datetime.datetime(2026, 1, 1, 9, 0),
+            )
+        ]
+    ).model_dump(mode="json")
+    allergies_raw = AllergiesOutput(
+        items=[AllergyItem(substance="Penicillin", severity=AllergySeverity.SEVERE)]
+    ).model_dump(mode="json")
+    trace = [
+        ToolCallTrace(tool=ToolName.GET_VITALS, args={}, result={"summary": "q"}, error=None),
+        ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None),
+    ]
+    fake_planner = FakePlanner(trace=trace, answer="Her weight is 220 lb.", raw_results=[vitals_raw, allergies_raw])
+
+    ollama_double = _ScriptedOllamaLikeIgnoresCatalog()
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+    app.dependency_overrides[get_claim_extractor] = lambda: ClaimExtractor(ollama_client=ollama_double)
+    app.dependency_overrides[get_require_tool_call_scoping] = lambda: True
+
+    response = client.post(
+        "/chat",
+        json={"message": "How much does she weigh?", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    # PREVENTION: the narrowed catalog/messages never mention the unengaged
+    # call's id, field, or value.
+    assert ollama_double.calls, "expected the real ClaimExtractor to invoke the scripted LLM client"
+    sent_messages = ollama_double.calls[0]
+    sent_text = json.dumps(sent_messages)
+    assert "call_1" not in sent_text
+    assert "Penicillin" not in sent_text
+    assert "substance" not in sent_text
+    assert "call_0" in sent_text  # the engaged call is still present
+
+    # ENFORCEMENT: the claim citing the unengaged call still fails to verify.
+    events = _iter_sse_events(response.text)
+    verification_data = json.loads(next(data for name, data in events if name == "verification"))
+    assert verification_data["verdict"] != "verified"

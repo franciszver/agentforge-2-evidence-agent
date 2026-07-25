@@ -21,6 +21,7 @@ as ``error_type``, never the message text.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,7 +73,7 @@ class _FakeExtractor:
     ``CorpusChunkIndex`` built from the SAME chunk, without needing a live
     extraction-model call."""
 
-    def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=()) -> list[Claim]:
+    def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=(), **_: Any) -> list[Claim]:
         assert retrieved_chunks, "expected the real supervisor's retrieved chunks to reach the extractor"
         return [
             Claim(
@@ -214,7 +215,7 @@ def test_evidence_retrieval_failure_is_fail_soft_and_logs_only_the_error_type(tm
     # A plain no-claims extractor so the failing retriever path is what's
     # under test, not the fake claim's own assertion.
     class _NoClaimsExtractor:
-        def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=()) -> list[Claim]:
+        def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=(), **_: Any) -> list[Claim]:
             return []
 
     app.dependency_overrides[get_claim_extractor] = lambda: _NoClaimsExtractor()

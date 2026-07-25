@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -79,7 +80,9 @@ def _make_fact_citing_extractor(source_id: str):
     needing a live extraction-model call."""
 
     class _FakeExtractor:
-        def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=(), patient_facts=()) -> list[Claim]:
+        def extract_claims(
+            self, *, answer, tools, raw_results, retrieved_chunks=(), patient_facts=(), **_: Any
+        ) -> list[Claim]:
             return [
                 Claim(
                     text="Her A1c is 5.4%.",
