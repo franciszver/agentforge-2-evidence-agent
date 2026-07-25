@@ -138,7 +138,9 @@ class _FakeStreamingPlanner:
 
 
 class _FakeExtractor:
-    def extract_claims(self, *, answer: str, tools: list[object], raw_results: list[object | None]) -> list[object]:
+    def extract_claims(
+        self, *, answer: str, tools: list[object], raw_results: list[object | None], **_: object
+    ) -> list[object]:
         return []
 
 

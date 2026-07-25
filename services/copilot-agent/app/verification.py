@@ -370,6 +370,19 @@ class CitationStatus(StrEnum):
     # existing AND-aggregation picks it up for free, with no changes to this
     # module's own checking functions.
     NOT_GROUNDED_IN_ANSWER = "not_grounded_in_answer"
+    # Tool-call scoping extension (issue #158, app.tool_call_scoping) -- see
+    # that module's docstring. Set ONLY by
+    # ``apply_tool_call_scoping`` downgrading an otherwise-passing
+    # ``SourceRef`` citation whose ``tool_call_id`` names a real tool call the
+    # answer never lexically engaged with (per-CALL, coarser than
+    # ``NOT_GROUNDED_IN_ANSWER`` above's per-CLAIM-text check). Never produced
+    # by ``check_source_ref`` itself -- same posture as
+    # ``NOT_SEMANTICALLY_SUPPORTED``/``NOT_GROUNDED_IN_ANSWER``: this module
+    # still has no LLM call and no notion of "engagement," the value exists
+    # here only so ``ClaimCheckResult.passed``'s existing AND-aggregation
+    # picks it up for free. Never set on a ``DocumentCitationCheckResult``
+    # (guideline/patient-fact citations are not tied to a tool call).
+    TOOL_CALL_NOT_ENGAGED = "tool_call_not_engaged"
 
 
 @dataclass(frozen=True)
@@ -466,6 +479,31 @@ def _extract_records(result: dict[str, Any] | None) -> list[dict[str, Any]]:
     items = result.get("items")
     if isinstance(items, list):
         return items
+    return [result]
+
+
+def records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The citable records within one tool call's raw result -- an ``items``
+    list (non-dict entries dropped), or the single-object result treated as
+    one record.
+
+    Public (not module-private): shared by ``app.extraction`` (catalog /
+    tool-result-message construction) and ``app.tool_call_scoping``
+    (engagement-token construction) -- both already import this module and
+    neither is imported BY it, so this is a cycle-safe home for the one
+    definition both need, rather than each keeping its own copy.
+
+    Deliberately a SEPARATE function from ``_extract_records`` above, not a
+    replacement for it: ``_extract_records`` feeds ``CacheIndex`` (the
+    provenance re-validation index) and does not filter non-dict ``items``
+    entries, matching that index's own long-standing contract; changing its
+    filtering to match this function is out of scope for issue #158 and
+    was not what this dedup was asked to fix."""
+    if result is None:
+        return []
+    items = result.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
     return [result]
 
 

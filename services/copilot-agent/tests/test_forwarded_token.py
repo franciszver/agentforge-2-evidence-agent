@@ -146,7 +146,7 @@ def test_endpoint_active_token_reaches_planner():
             return PlannerResult(answer="ok", trace=[], raw_results=[])
 
     class _NoClaims:
-        def extract_claims(self, *, answer, tools, raw_results):
+        def extract_claims(self, *, answer, tools, raw_results, **_):
             return []
 
     ok_planner = _OkPlanner()

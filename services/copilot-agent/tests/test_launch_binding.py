@@ -237,7 +237,7 @@ class _SpyPlanner:
 
 
 class _NoClaimsExtractor:
-    def extract_claims(self, *, answer, tools, raw_results):
+    def extract_claims(self, *, answer, tools, raw_results, **_):
         return []
 
 

@@ -20,6 +20,7 @@ not just for verification afterward.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -163,5 +164,5 @@ def test_redacted_field_reaches_planner_as_honest_quote_never_a_fabricated_date(
 
 
 class _NoOpExtractor:
-    def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=(), patient_facts=()):
+    def extract_claims(self, *, answer, tools, raw_results, retrieved_chunks=(), patient_facts=(), **_: Any):
         return []

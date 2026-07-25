@@ -47,7 +47,7 @@ class _FakePlanner:
 
 
 class _FakeExtractor:
-    def extract_claims(self, *, answer, tools, raw_results):  # type: ignore[no-untyped-def]
+    def extract_claims(self, *, answer, tools, raw_results, **_):  # type: ignore[no-untyped-def]
         return []
 
 
