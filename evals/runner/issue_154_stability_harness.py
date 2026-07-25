@@ -38,6 +38,31 @@ whether run from a full monorepo checkout or inside the
 ``development-easy-agent-1`` flattened container -- same as
 ``issue_130_spike.py``.
 
+**Downstream-only: tool data is pinned, never fetched from the real chart --
+this is a hard scope limit, not a footnote.** Both target cases carry a
+canned ``tool_data`` mapping (the BP case's ``tool_data`` block in
+``evals/cases/citation_present/bp-stage2-question.yaml``; ``_ALLERGY_CONFLICT
+_CASE``'s literal above) that ``runner.pipeline.run_case`` feeds straight
+into ``runner.tool_stub.build_fake_registry`` -- every tool dispatch in
+every draw returns that SAME canned payload; ``run_case``'s
+``_offline_openemr_client`` raises if the real ``OpenEmrClient`` is ever
+reached at all, by construction. So although the MODEL call each draw makes
+is genuinely live (see "Live, not replay" above), the TOOL-RESULT INPUT to
+that call is not -- it is byte-identical across all N draws for a given
+question. This harness therefore measures variance strictly DOWNSTREAM of
+tool results: planner answer-composition given fixed tool data, extraction,
+and verification. **It does not and cannot reproduce or refute variance
+that originates upstream, in the planner's live tool-calling against the
+real chart** -- which tool gets called, with what arguments, or the chart
+data itself changing between calls -- because that layer never runs here;
+the tool layer is a fixture, not a measurement. The originally-reported
+#149/#150 verdict-flip observations came from live ``POST /chat`` draws that
+DID exercise real tool calls end to end against the real chart. A stable
+(or unstable) result from this harness says something about the downstream
+layer only; it says nothing about whether that upstream, real-tool-calling
+layer is stable, because this harness does not exercise it. Read this
+harness's numbers as bounding one layer, not as a verdict on the other.
+
 **Live-model runs stay OUT of CI (hard requirement, repeated here for
 anyone auditing this file in isolation).** This module:
 
