@@ -209,6 +209,20 @@ class Settings(BaseSettings):
     # support in production. See app/semantic_support.py.
     copilot_semantic_support_enabled: bool = True
 
+    # Issue #153: when true, run_verification additionally requires that each
+    # extracted claim's own TEXT be deterministically grounded in the
+    # planner's answer (app.answer_grounding.claim_is_grounded_in_answer) --
+    # a claim citing a real, correctly-valued record the answer never
+    # actually asserted (e.g. a hallucinated respiratory_rate claim on a
+    # question about blood pressure) no longer counts toward a VERIFIED
+    # verdict just because its citation resolves against raw tool data.
+    # Deterministic, no LLM call -- unlike copilot_semantic_support_enabled
+    # above. Default OFF: byte-identical to today. The owner decides whether
+    # to flip the default after reviewing the eval suite's per-category
+    # measurement of how many legitimate claims the gate strips (see issue
+    # #153) -- this PR intentionally does not flip it.
+    copilot_claim_answer_grounding_enabled: bool = False
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""

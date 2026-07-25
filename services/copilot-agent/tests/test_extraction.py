@@ -26,8 +26,7 @@ import datetime
 import inspect
 from typing import Any
 
-import pytest
-
+from app.answer_grounding import apply_answer_grounding, claim_is_grounded_in_answer
 from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
@@ -502,32 +501,19 @@ def _vitals_raw_with_weight_and_respiratory_rate() -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#149: no deterministic check that a Claim.text corresponds to a "
-        "proposition actually present in the answer. check_source_ref only "
-        "re-validates (tool_call_id, record_id, field, asserted_value) "
-        "against the raw record -- it has no notion of the answer text at "
-        "all. A citation to a REAL, correctly-valued field the answer never "
-        "mentioned still passes provenance, so run_verification currently "
-        "verifies this claim (ALL_VERIFIED -> VERIFIED). Fix TBD (owner has "
-        "not chosen an approach); this documents the gap as a known, "
-        "tracked failure rather than a flake. strict=True: remove this "
-        "marker the moment a fix makes the assertion below true."
-    ),
-)
-def test_run_verification_rejects_claim_citing_a_field_the_answer_never_mentions():
-    """Desired contract for #149: an answer that asserts nothing about
-    ``respiratory_rate`` must not be certified as verified merely because a
-    claim cites a real ``respiratory_rate`` record/field that happens to
-    match the raw tool data. The tool result here DOES contain
-    ``respiratory_rate`` (record 1, alongside ``weight`` at record 0), so
-    the citation is byte-for-byte valid against the raw record -- but the
-    answer only ever talks about weight. Today nothing in the pipeline
-    checks the claim's text (or its citation) against the answer string, so
-    this currently verifies; it should instead fail to verify (BLOCKED, or
-    at minimum not VERIFIED)."""
+def test_run_verification_flag_off_still_verifies_claim_citing_a_field_the_answer_never_mentions():
+    """#149's gap, DOCUMENTED (not xfail) with the #153 gate's flag at its
+    default (``require_answer_grounding=False``): ``check_source_ref`` only
+    re-validates ``(tool_call_id, record_id, field, asserted_value)`` against
+    the raw record -- it has no notion of the answer text at all, and with
+    the gate off, ``run_verification`` runs byte-identical to before #153.
+    The tool result here DOES contain ``respiratory_rate`` (record 1,
+    alongside ``weight`` at record 0), so the citation is byte-for-byte valid
+    against the raw record -- but the answer only ever talks about weight.
+    This currently (flag off) still verifies; this is the known, accepted
+    default-OFF behavior (see ``Settings.copilot_claim_answer_grounding_enabled``
+    and issue #153) -- ``test_run_verification_flag_on_rejects_claim_citing_a_field_the_answer_never_mentions``
+    below is the fixed behavior with the gate enabled."""
     result = _planner_result(
         "Her weight is 220 lb.",
         ToolName.GET_VITALS,
@@ -545,7 +531,61 @@ def test_run_verification_rejects_claim_citing_a_field_the_answer_never_mentions
 
     verdict_result, _rendered = run_verification(extractor, result)
 
+    assert verdict_result.verdict is Verdict.VERIFIED
+
+
+def test_run_verification_flag_on_rejects_claim_citing_a_field_the_answer_never_mentions():
+    """The #153 contract, with the deterministic grounding gate ENABLED
+    (``require_answer_grounding=True``): a claim citing a real, correctly-
+    valued ``respiratory_rate`` record must not be certified as verified when
+    the answer never asserted anything about it -- the claim's own text
+    (``"Her respiratory rate is 16 breaths/min."``) shares no significant
+    vocabulary with the answer (``"Her weight is 220 lb."``), so
+    ``app.answer_grounding.apply_answer_grounding`` downgrades it and the
+    verdict must not be VERIFIED. This is the ONE test in this file whose
+    assertion flips depending on the flag -- see the flag-off twin
+    immediately above, which pins the unchanged default behavior."""
+    result = _planner_result(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw_with_weight_and_respiratory_rate(),
+    )
+    claim = Claim(
+        text="Her respiratory rate is 16 breaths/min.",
+        source_refs=[
+            SourceRef(
+                tool_call_id="call_0", record_id="1", field="respiratory_rate", asserted_value="16"
+            )
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_answer_grounding=True)
+
     assert verdict_result.verdict is not Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], Notice)
+
+
+def test_run_verification_flag_on_still_verifies_a_grounded_claim():
+    """The gate must not be a blanket claim-killer: with
+    ``require_answer_grounding=True``, a claim whose text IS grounded in the
+    answer (shares its significant vocabulary) verifies exactly as it does
+    with the flag off -- the weight claim from
+    ``test_run_verification_normalizes_vitals_before_checking``, re-run with
+    the gate on."""
+    result = _planner_result("Her weight is 220 lb.", ToolName.GET_VITALS, _vitals_raw())
+    claim = Claim(
+        text="Her weight is 220 lb.",
+        source_refs=[
+            SourceRef(tool_call_id="call_0", record_id="0", field="weight", asserted_value="220")
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_answer_grounding=True)
+
+    assert verdict_result.verdict is Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], RenderedClaim)
 
 
 def test_run_verification_normalizes_vitals_before_checking():
@@ -699,6 +739,107 @@ def test_run_verification_fails_closed_instead_of_crashing_on_a_malformed_patien
 
     assert verdict_result.verdict is Verdict.BLOCKED
     assert isinstance(rendered.segments[0], Notice)
+
+
+# --------------------------------------------------------------------------
+# 5b. app.answer_grounding (#153) -- deterministic, no LLM, claim-in-answer
+#     lexical grounding gate. Unit tests for the gate itself, isolated from
+#     run_verification's orchestration (already covered in section 5 above).
+# --------------------------------------------------------------------------
+
+
+def test_claim_is_grounded_when_claim_text_matches_the_answer_verbatim():
+    assert claim_is_grounded_in_answer("She is on Lisinopril 10 mg.", "She is on Lisinopril 10 mg.")
+
+
+def test_claim_is_not_grounded_for_an_unrelated_topic():
+    # The exact #153/#149 shape: the claim asserts something about a
+    # different vital the answer never discussed.
+    assert not claim_is_grounded_in_answer(
+        "Her respiratory rate is 16 breaths/min.", "Her weight is 220 lb."
+    )
+
+
+def test_claim_is_grounded_for_a_paraphrase_of_a_field_name():
+    # The issue's own paraphrase warning: the field is "blood_pressure_
+    # systolic" but the answer (and the claim) both say "blood pressure" --
+    # pure field-name substring matching would miss this; comparing the
+    # claim's own words against the answer's words does not.
+    assert claim_is_grounded_in_answer(
+        "Her blood pressure is elevated.",
+        "Her blood pressure was elevated today, at 148 systolic.",
+    )
+
+
+def test_claim_is_grounded_for_a_reworded_paraphrase():
+    assert claim_is_grounded_in_answer(
+        "The patient takes Lisinopril.",
+        "Current medications include Lisinopril 10 mg, taken by the patient.",
+    )
+
+
+def test_claim_is_not_grounded_when_only_stopwords_overlap():
+    # Shares only function words ("she", "is", "on") with the answer --
+    # none of the claim's significant vocabulary appears in it.
+    assert not claim_is_grounded_in_answer("She is on Metformin.", "She is on Lisinopril.")
+
+
+def test_claim_is_not_grounded_when_claim_has_no_significant_tokens():
+    # Fail-closed: nothing left to check after stopword removal.
+    assert not claim_is_grounded_in_answer("It is her.", "It is her.")
+
+
+def test_claim_is_grounded_respects_a_custom_overlap_ratio():
+    # Only 1 of 2 significant claim tokens ("metformin") appears in the
+    # answer -- 0.5 overlap. The default threshold (0.5) accepts it; a
+    # stricter threshold rejects it.
+    claim_text = "Metformin unchanged."
+    answer = "Metformin is on the list."
+    assert claim_is_grounded_in_answer(claim_text, answer, min_overlap_ratio=0.5)
+    assert not claim_is_grounded_in_answer(claim_text, answer, min_overlap_ratio=0.9)
+
+
+def test_apply_answer_grounding_downgrades_an_ungrounded_claim_to_not_grounded_in_answer():
+    grounded_claim = Claim(
+        text="Her weight is 220 lb.",
+        source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="weight", asserted_value="220")],
+    )
+    ungrounded_claim = Claim(
+        text="Her respiratory rate is 16 breaths/min.",
+        source_refs=[
+            SourceRef(tool_call_id="call_0", record_id="1", field="respiratory_rate", asserted_value="16")
+        ],
+    )
+    index = CacheIndex.from_raw_results(
+        normalize_raw_results(
+            [ToolName.GET_VITALS], [_vitals_raw_with_weight_and_respiratory_rate()]
+        )
+    )
+    claim_results = check_claims([grounded_claim, ungrounded_claim], index)
+    assert all(result.passed for result in claim_results)  # both pass provenance before the gate
+
+    gated = apply_answer_grounding(claim_results, "Her weight is 220 lb.")
+
+    assert gated[0].passed  # the grounded claim is untouched
+    assert not gated[1].passed  # the ungrounded claim is downgraded
+    assert gated[1].citation_results[0].status is CitationStatus.NOT_GROUNDED_IN_ANSWER
+
+
+def test_apply_answer_grounding_leaves_an_already_failed_claim_unchanged():
+    # A claim that already failed provenance re-validation (VALUE_MISMATCH)
+    # must be passed through untouched -- nothing to re-check, and
+    # re-checking would only obscure why it already failed.
+    index = CacheIndex.from_raw_results([_meds_raw(_lisinopril())])
+    claim = Claim(
+        text="She is on Metformin.",
+        source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="name", asserted_value="Metformin")],
+    )
+    claim_results = check_claims([claim], index)
+    assert not claim_results[0].passed
+
+    gated = apply_answer_grounding(claim_results, "She is on Lisinopril.")
+
+    assert gated == claim_results
 
 
 # --------------------------------------------------------------------------

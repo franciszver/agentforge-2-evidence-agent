@@ -873,6 +873,22 @@ def get_support_judge_provider(settings: Settings = Depends(get_settings)) -> Su
     return _provide
 
 
+def get_require_answer_grounding(settings: Settings = Depends(get_settings)) -> bool:
+    """FastAPI dependency: whether ``run_verification`` should run the issue
+    #153 claim-in-answer grounding gate this request. Override in tests.
+
+    Deterministic, no LLM call -- unlike ``get_support_judge_provider`` above,
+    this needs no lazily-constructed client, just the flag's current value.
+
+    Flag ON (``copilot_claim_answer_grounding_enabled``): every claim whose
+    citations already passed provenance is additionally re-checked against
+    the answer text (``app.answer_grounding.apply_answer_grounding``).
+
+    Flag OFF (default): ``False`` -- ``run_verification`` skips the gate,
+    byte-identical to today."""
+    return settings.copilot_claim_answer_grounding_enabled
+
+
 PatientFactProvider = Callable[[int], Sequence[Citation]]
 
 
@@ -1112,6 +1128,7 @@ def _stream_chat(
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
     patient_fact_provider: PatientFactProvider = _no_op_patient_fact_provider,
     support_judge_provider: SupportJudgeProvider = _no_op_support_judge_provider,
+    require_answer_grounding: bool = False,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -1327,6 +1344,7 @@ def _stream_chat(
             retrieved_chunks=retrieved_chunks,
             patient_facts=patient_facts,
             support_judge=support_judge_provider(),
+            require_answer_grounding=require_answer_grounding,
         )
         verification_end_ts = time.time()
         _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
@@ -1433,6 +1451,7 @@ async def chat_endpoint(
     evidence_retriever: EvidenceRetriever = Depends(get_evidence_retriever),
     patient_fact_provider: PatientFactProvider = Depends(get_patient_fact_provider),
     support_judge_provider: SupportJudgeProvider = Depends(get_support_judge_provider),
+    require_answer_grounding: bool = Depends(get_require_answer_grounding),
 ) -> StreamingResponse:
     try:
         token = extract_bearer_token(authorization)
@@ -1486,6 +1505,7 @@ async def chat_endpoint(
             evidence_retriever,
             patient_fact_provider,
             support_judge_provider,
+            require_answer_grounding,
         ),
         media_type="text/event-stream",
     )
