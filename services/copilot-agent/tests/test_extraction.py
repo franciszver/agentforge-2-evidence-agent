@@ -117,8 +117,14 @@ class _FakeExtractor:
         self.calls: list[dict[str, Any]] = []
 
     def extract_claims(
-        self, *, answer: str, tools: Any, raw_results: Any
+        self, *, answer: str, tools: Any, raw_results: Any, engaged_call_ids: Any = None
     ) -> list[Claim]:
+        # ``engaged_call_ids`` (issue #158) is accepted but deliberately
+        # IGNORED, same as this double already ignores ``tools``/
+        # ``raw_results`` for deciding what to return -- this fake models
+        # "the extractor sees a narrowed catalog but is scripted regardless
+        # of it," which is exactly what makes the ENFORCEMENT half (not
+        # prevention) the thing that must hold in these orchestration tests.
         self.calls.append({"answer": answer, "tools": list(tools), "raw_results": list(raw_results)})
         return self._claims
 
@@ -874,6 +880,157 @@ def test_apply_answer_grounding_leaves_an_already_failed_claim_unchanged():
     gated = apply_answer_grounding(claim_results, "She is on Lisinopril.")
 
     assert gated == claim_results
+
+
+# --------------------------------------------------------------------------
+# 5c. run_verification: issue #158 per-tool-call scoping (orchestration).
+#     Mirrors 5b's shape but at CALL granularity, not claim-text -- see
+#     app.tool_call_scoping's module docstring for the rule.
+# --------------------------------------------------------------------------
+
+
+def _planner_result_two_calls(
+    answer: str,
+    tool_0: ToolName,
+    raw_0: dict[str, Any],
+    tool_1: ToolName,
+    raw_1: dict[str, Any],
+) -> PlannerResult:
+    trace = [
+        ToolCallTrace(tool=tool_0, args={}, result={"summary": "quarantined"}, error=None),
+        ToolCallTrace(tool=tool_1, args={}, result={"summary": "quarantined"}, error=None),
+    ]
+    return PlannerResult(answer=answer, trace=trace, raw_results=[raw_0, raw_1])
+
+
+def _allergies_raw_with_penicillin() -> dict[str, Any]:
+    return AllergiesOutput(
+        items=[AllergyItem(substance="Penicillin", severity=AllergySeverity.SEVERE)]
+    ).model_dump(mode="json")
+
+
+def test_run_verification_flag_off_tool_call_scoping_still_verifies_claim_citing_unengaged_call():
+    """Documented-gap twin (flag at its default,
+    ``require_tool_call_scoping=False``): the answer only ever discusses
+    call_0's weight; call_1 (allergies, "Penicillin") is never mentioned at
+    all. With the gate off, ``run_verification`` runs byte-identical to
+    before #158 -- a claim citing call_1's ``substance`` field still
+    verifies purely on provenance, exactly like
+    ``test_run_verification_flag_off_still_verifies_claim_citing_a_field_the_answer_never_mentions``
+    above pins for #153's per-claim gate. This must pass BOTH before and
+    after #158's implementation lands -- flag-off behavior never changes."""
+    result = _planner_result_two_calls(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw(),
+        ToolName.GET_ALLERGIES,
+        _allergies_raw_with_penicillin(),
+    )
+    claim = Claim(
+        text="She is allergic to Penicillin.",
+        source_refs=[
+            SourceRef(tool_call_id="call_1", record_id="0", field="substance", asserted_value="Penicillin")
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, _rendered = run_verification(extractor, result)
+
+    assert verdict_result.verdict is Verdict.VERIFIED
+
+
+def test_run_verification_flag_on_tool_call_scoping_rejects_claim_citing_unengaged_call():
+    """The #158 contract, gate ENABLED (``require_tool_call_scoping=True``):
+    a claim citing a real, correctly-valued ``substance`` record from call_1
+    must not be certified as verified when the answer never lexically
+    engaged with THAT CALL's data at all -- the answer's tokens
+    ("her"/"weight"/"220"/"lb") share nothing with call_1's value tokens
+    ("penicillin"), so call_1 is not in the engaged set and
+    ``app.tool_call_scoping.apply_tool_call_scoping`` downgrades the
+    citation to ``CitationStatus.TOOL_CALL_NOT_ENGAGED``. This is the RED
+    test: the fake extractor here ignores the narrowed catalog entirely (it
+    returns a scripted claim regardless of what it was called with), so this
+    only goes green via the ENFORCEMENT half, not prevention."""
+    result = _planner_result_two_calls(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw(),
+        ToolName.GET_ALLERGIES,
+        _allergies_raw_with_penicillin(),
+    )
+    claim = Claim(
+        text="She is allergic to Penicillin.",
+        source_refs=[
+            SourceRef(tool_call_id="call_1", record_id="0", field="substance", asserted_value="Penicillin")
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_tool_call_scoping=True)
+
+    assert verdict_result.verdict is not Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], Notice)
+
+
+def test_run_verification_flag_on_tool_call_scoping_still_verifies_claim_citing_engaged_call():
+    """The gate must not be a blanket claim-killer: with
+    ``require_tool_call_scoping=True``, a claim citing the ENGAGED call_0
+    (the answer's own "220" token appears in call_0's weight value) still
+    verifies exactly as it does with the flag off -- even though a SECOND,
+    unrelated tool call (call_1, allergies) was also made this turn and is
+    itself unengaged."""
+    result = _planner_result_two_calls(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw(),
+        ToolName.GET_ALLERGIES,
+        _allergies_raw_with_penicillin(),
+    )
+    claim = Claim(
+        text="Her weight is 220 lb.",
+        source_refs=[
+            SourceRef(tool_call_id="call_0", record_id="0", field="weight", asserted_value="220")
+        ],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_tool_call_scoping=True)
+
+    assert verdict_result.verdict is Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], RenderedClaim)
+
+
+def test_extract_claims_narrows_catalog_and_messages_to_engaged_calls_preserving_indices():
+    """Unit test pinning the PREVENTION half (see
+    ``app.tool_call_scoping``'s module docstring, enforcement point 1):
+    when ``engaged_call_ids`` is supplied, ``ClaimExtractor.extract_claims``
+    must drop the UNENGAGED call's catalog entry and tool-result message
+    entirely, while the ENGAGED call that remains keeps its ORIGINAL
+    positional id ("call_1", not renumbered to "call_0") -- the id scheme is
+    load-bearing (``app.verification``'s module docstring, decision 2)."""
+    ollama = _FakeExtractOllama()
+    extractor = ClaimExtractor(ollama_client=ollama)
+
+    extractor.extract_claims(
+        answer="x",
+        tools=[ToolName.GET_VITALS, ToolName.GET_ALLERGIES],
+        raw_results=[_vitals_raw(), _allergies_raw_with_penicillin()],
+        engaged_call_ids=frozenset({"call_1"}),
+    )
+
+    messages, _schema = ollama.extract_calls[0]
+    catalog_section = messages[-1]["content"].split("Catalog:", 1)[1]
+    # call_0 (unengaged, vitals) is dropped from the catalog entirely.
+    assert "call_0" not in catalog_section
+    # call_1 (engaged, allergies) keeps its ORIGINAL positional id.
+    assert "call_1" in catalog_section
+    assert "substance" in catalog_section
+
+    # Same narrowing + index-preservation for the tool-result DATA messages.
+    tool_result_contents = [m["content"] for m in messages if m["content"].startswith("[tool result]")]
+    assert len(tool_result_contents) == 1
+    assert "call_1" in tool_result_contents[0]
+    assert "call_0" not in tool_result_contents[0]
 
 
 # --------------------------------------------------------------------------
