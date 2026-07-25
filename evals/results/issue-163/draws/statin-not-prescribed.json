@@ -6,11 +6,38 @@
   "total_call_ids": [
     "call_0"
   ],
-  "off": null,
-  "on": null,
-  "comparable": false,
-  "verdict_flip": false,
-  "flip_detail": null,
-  "newly_blocked": false,
+  "unengaged_calls_with_data": [
+    "call_0"
+  ],
+  "off": {
+    "verdict": "verified",
+    "total_claim_count": 1,
+    "stripped_claim_count": 0,
+    "claims": [
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "on": {
+    "verdict": "blocked",
+    "total_claim_count": 0,
+    "stripped_claim_count": 0,
+    "claims": [],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "eligible_claims_off": 1,
+  "comparable": true,
+  "verdict_flip": true,
+  "flip_detail": "verified->blocked",
+  "newly_blocked": true,
+  "session_id": "issue163-20260725T172126Z",
+  "session_started_at": "2026-07-25T17:21:32.469084+00:00",
   "error": null
 }
