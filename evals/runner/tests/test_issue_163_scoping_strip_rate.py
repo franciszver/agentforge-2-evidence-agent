@@ -59,6 +59,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.schemas.common import SourceRef
 from app.schemas.verification import Claim
 from app.verdict import Verdict, VerdictResult
@@ -67,11 +69,14 @@ from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResu
 from runner.issue_163_scoping_strip_rate import (
     ArmRecord,
     CaseRecord,
+    StaleDrawSchemaError,
     _case_index_entry,
-    _strip_rate_label,
+    _downgrade_rate_label,
+    _record_from_payload,
     arm_record_from_results,
     build_case_record,
     build_report,
+    compute_unengaged_calls_with_data,
     error_arm_record,
     summarize,
 )
@@ -353,18 +358,31 @@ class TestMetricMutationSurvival:
         assert report["total"]["claims_total_off"] == 3
         assert report["total"]["claims_total_on"] == 1  # visible directly -- prevention dropped 2 claims
         assert report["total"]["claims_stripped_on"] == 0
+        # Issue #163 gate-3 review: claims_prevention_loss is the explicit,
+        # already-subtracted bucket-level number (claims_total_off -
+        # claims_total_on) -- a reader shouldn't have to do the subtraction
+        # themselves to notice prevention took claims.
+        assert report["total"]["claims_prevention_loss"] == 2
 
 
-class TestStripRateLabel:
+class TestDowngradeRateLabel:
+    """Issue #163 gate-3 review: renamed from TestStripRateLabel/
+    _strip_rate_label -- the old name invited misreading a bucket where
+    PREVENTION (not measured by this label at all) removed every claim
+    before ENFORCEMENT ever ran as "scoping had no effect". See
+    _downgrade_rate_label's own docstring for the full rationale and the
+    concrete example (this run's ambiguity category) that motivated the
+    rename."""
+
     def test_reports_downgraded_over_eligible_not_total(self) -> None:
         bucket = {"claims_downgraded": 1, "eligible_claims_off": 4, "claims_total_off": 10}
 
-        assert _strip_rate_label(bucket) == "1/4 (25%)"
+        assert _downgrade_rate_label(bucket) == "1/4 (25%)"
 
     def test_zero_eligible_is_labeled_not_a_division_by_zero(self) -> None:
         bucket = {"claims_downgraded": 0, "eligible_claims_off": 0, "claims_total_off": 5}
 
-        assert _strip_rate_label(bucket) == "n/a"
+        assert _downgrade_rate_label(bucket) == "n/a"
 
 
 class TestCaseIndexEntry:
@@ -441,3 +459,95 @@ class TestBuildReport:
         report = build_report(records)
 
         assert report["session_ids"] == ["session-a", "session-b"]
+
+
+class TestComputeUnengagedCallsWithData:
+    """Issue #163 gate-3 review: ``compute_unengaged_calls_with_data`` is
+    the SOLE source of the harness's headline exposure number
+    (``report.json``'s ``unengaged_calls_with_data``/
+    ``unengaged_exposure_calls``) and had no dedicated unit test before this
+    review. The two "mixed" tests below each target a specific mutation of
+    the two-condition boolean, confirmed red under that exact mutation by
+    hand before being accepted."""
+
+    def test_unengaged_call_with_no_records_is_excluded(self) -> None:
+        """Mutation checked: dropping the ``and records_of(result)``
+        conjunct (i.e. counting ANY unengaged call regardless of whether it
+        carries data) makes this assertion fail (``['call_0'] != []``, since
+        call_0 is unengaged but has zero records) -- confirmed red under
+        that mutation before this test was accepted."""
+        raw_results: list[dict[str, Any] | None] = [{"items": []}]  # unengaged, but zero records
+
+        assert compute_unengaged_calls_with_data(raw_results, engaged=set()) == []
+
+    def test_unengaged_call_with_data_is_included(self) -> None:
+        raw_results: list[dict[str, Any] | None] = [{"items": [{"name": "Lisinopril"}]}]
+
+        assert compute_unengaged_calls_with_data(raw_results, engaged=set()) == ["call_0"]
+
+    def test_engaged_call_with_data_is_excluded(self) -> None:
+        """Mutation checked: inverting the membership test (``f"call_{i}"
+        in engaged`` instead of ``not in``) makes this assertion fail
+        (``['call_0'] != []``, since call_0 IS engaged and must therefore be
+        EXCLUDED from exposure, not included) -- confirmed red under that
+        mutation before this test was accepted."""
+        raw_results: list[dict[str, Any] | None] = [{"items": [{"name": "Lisinopril"}]}]
+
+        assert compute_unengaged_calls_with_data(raw_results, engaged={"call_0"}) == []
+
+    def test_multiple_calls_mixed(self) -> None:
+        raw_results: list[dict[str, Any] | None] = [
+            {"items": [{"name": "Lisinopril"}]},  # call_0: unengaged, has data -> exposure
+            {"items": []},  # call_1: unengaged, no data -> not exposure
+            {"items": [{"name": "Metformin"}]},  # call_2: engaged, has data -> not exposure
+            None,  # call_3: unengaged, no data at all -> not exposure
+        ]
+
+        assert compute_unengaged_calls_with_data(raw_results, engaged={"call_2"}) == ["call_0"]
+
+
+class TestRecordFromPayloadSchemaError:
+    """Issue #163 gate-3 review: ``_record_from_payload`` (``--summarize-only``'s
+    read path) previously died with a bare, unlabeled ``KeyError`` on any
+    ``draws/`` file written by an older schema version -- unreadable for
+    anyone who hits it. It must now raise ``StaleDrawSchemaError`` naming
+    the case, the missing field, and advising ``--fresh``."""
+
+    def test_missing_top_level_field_raises_clear_error(self) -> None:
+        payload = {"case_id": "old-case"}  # a pre-delta / stale-schema draw: everything else missing
+
+        with pytest.raises(StaleDrawSchemaError) as exc_info:
+            _record_from_payload(payload)
+
+        message = str(exc_info.value)
+        assert "old-case" in message  # names the case
+        assert "category" in message  # names the specific missing field (first one accessed)
+        assert "--fresh" in message  # advises the fix
+
+    def test_missing_arm_field_names_the_arm(self) -> None:
+        payload = {
+            "case_id": "case-x",
+            "category": "citation_present",
+            "applicable": True,
+            "engaged_call_ids": [],
+            "total_call_ids": [],
+            "unengaged_calls_with_data": [],
+            "off": {"total_claim_count": 1},  # missing "verdict" and everything else
+            "on": None,
+            "eligible_claims_off": None,
+            "comparable": False,
+            "verdict_flip": False,
+            "flip_detail": None,
+            "newly_blocked": False,
+            "session_id": "s1",
+            "session_started_at": "2026-01-01T00:00:00+00:00",
+            "error": None,
+        }
+
+        with pytest.raises(StaleDrawSchemaError) as exc_info:
+            _record_from_payload(payload)
+
+        message = str(exc_info.value)
+        assert "case-x" in message
+        assert "verdict" in message
+        assert "off arm" in message

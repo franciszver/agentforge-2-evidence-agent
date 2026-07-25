@@ -244,7 +244,7 @@ import json
 import os
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -514,7 +514,19 @@ def summarize(records: list[CaseRecord]) -> dict[str, Any]:
     REGARDLESS of ``comparable`` -- it is a property of the draw's raw tool
     results, not of whether verification succeeded, so a case whose
     verification arm errored should not silently drop out of the exposure
-    count."""
+    count.
+
+    ``claims_prevention_loss`` (issue #163 gate-3 review) is a POST-loop
+    derived field, computed once per bucket as ``claims_total_off -
+    claims_total_on`` -- the bucket-level claim-count drop attributable to
+    PREVENTION (the ON arm's narrower extraction catalog), independent of
+    whether any citation was ever downgraded by ENFORCEMENT. Added because a
+    reader glancing only at ``claims_downgraded``/the print_table
+    ``downgrade_rate`` column could otherwise conclude "scoping had zero
+    effect" on a bucket where every claim actually vanished via prevention
+    before enforcement ever got a chance to run (exactly what happened in
+    the ``ambiguity`` category of the committed #163 run: 3 OFF claims, 0 ON
+    claims, 0 downgrades, 100% prevention loss)."""
 
     def _empty_bucket() -> dict[str, int]:
         return {
@@ -555,7 +567,46 @@ def summarize(records: list[CaseRecord]) -> dict[str, Any]:
                     target["verdict_flips"] += 1
                 if record.newly_blocked:
                     target["newly_blocked"] += 1
+
+    for bucket in list(by_category.values()) + [total]:
+        bucket["claims_prevention_loss"] = bucket["claims_total_off"] - bucket["claims_total_on"]
+
     return {"by_category": by_category, "total": total}
+
+
+def compute_unengaged_calls_with_data(
+    raw_results: Sequence[dict[str, Any] | None], engaged: Sequence[str] | frozenset[str] | set[str]
+) -> list[str]:
+    """The TRUE prevention exposure surface for one turn: the ``call_i`` ids
+    that are BOTH unengaged (not a member of ``engaged``) AND carry >=1
+    actual record (``app.verification.records_of`` non-empty). Pure, no I/O
+    -- unit tested directly (issue #163 gate-3 review: this is the sole
+    source of the headline exposure number reported in ``report.json`` and
+    ``print_table``'s ``exposure`` column, and had no dedicated unit test
+    before this review -- extracted out of ``run_one_case`` specifically so
+    it could get one).
+
+    Two independent conditions, BOTH required, deliberately spelled out as
+    two named checks rather than one combined boolean, so either one being
+    silently dropped or inverted is exactly the kind of one-line mutation a
+    dedicated test must catch (see this module's test file,
+    ``TestComputeUnengagedCallsWithData``, for the two mutations checked by
+    hand):
+
+      1. ``f"call_{i}" not in engaged`` -- a call the answer's prose never
+         lexically touched.
+      2. ``records_of(result)`` non-empty -- a call whose result actually
+         carries data. A call with no records at all (``None``, or
+         ``{"items": []}``) was never a citable risk regardless of
+         engagement, so counting it would inflate "exposure" with calls
+         that could never have produced a spurious citation in the first
+         place -- see module docstring, "Exposure counters and the honest
+         strip-rate denominator"."""
+    return [
+        f"call_{i}"
+        for i, result in enumerate(raw_results)
+        if f"call_{i}" not in engaged and records_of(result)
+    ]
 
 
 # --- live orchestration (never imported/collected by pytest) ---------------
@@ -719,16 +770,9 @@ def run_one_case(
     )
     engaged = engaged_call_ids(planner_result.raw_results, engagement_answer)
     engaged_sorted = sorted(engaged)
-    # Issue #163 gate-2/Opus review: the TRUE prevention exposure surface --
-    # unengaged AND non-empty (records_of(...) non-empty). A call with no
-    # records at all was never a citable risk regardless of engagement; see
-    # module docstring, "Exposure counters and the honest strip-rate
-    # denominator".
-    unengaged_calls_with_data = [
-        f"call_{i}"
-        for i, result in enumerate(planner_result.raw_results)
-        if f"call_{i}" not in engaged and records_of(result)
-    ]
+    # Issue #163 gate-2/Opus review (gate-3: extracted to a pure, unit-tested
+    # helper -- see compute_unengaged_calls_with_data's own docstring).
+    unengaged_calls_with_data = compute_unengaged_calls_with_data(planner_result.raw_results, engaged)
 
     off = _run_verification_arm(
         case,
@@ -781,36 +825,62 @@ def save_case(record: CaseRecord, calls: list[RecordedCall]) -> tuple[Path, Path
     return summary_path, calls_path
 
 
+class StaleDrawSchemaError(ValueError):
+    """Raised by ``_record_from_payload`` when a ``draws/<case_id>.json``
+    file is missing a field the current ``CaseRecord`` schema requires --
+    issue #163 gate-3 review: previously this was a bare, unlabeled
+    ``KeyError`` that named neither the case nor the field, which is
+    unreadable for anyone hitting it via ``--summarize-only`` against a
+    ``draws/`` directory written by an older harness version (this schema
+    has already changed twice -- gate-1's light-report-index change and
+    gate-2's exposure/eligibility/session fields -- and will likely change
+    again)."""
+
+
 def _record_from_payload(payload: dict[str, Any]) -> CaseRecord:
-    def _arm(data: dict[str, Any] | None) -> ArmRecord | None:
+    case_id = payload.get("case_id", "<unknown case -- 'case_id' itself is missing>")
+
+    def _get(container: dict[str, Any], key: str, where: str) -> Any:
+        try:
+            return container[key]
+        except KeyError as exc:
+            raise StaleDrawSchemaError(
+                f"{case_id}: draws/ record is missing field {key!r} ({where}). This almost always means the "
+                "draw was written by an OLDER version of this harness's CaseRecord schema (schema fields have "
+                "changed more than once already -- see this module's changelog-style docstring sections). "
+                "Re-run with --fresh to regenerate ALL draws under the CURRENT schema rather than mixing "
+                "schema versions -- do not hand-patch this one file."
+            ) from exc
+
+    def _arm(data: dict[str, Any] | None, arm_name: str) -> ArmRecord | None:
         if data is None:
             return None
         return ArmRecord(
-            verdict=data["verdict"],
-            total_claim_count=data["total_claim_count"],
-            stripped_claim_count=data["stripped_claim_count"],
-            claims=[ClaimRecord(**c) for c in data["claims"]],
-            downgraded_count=data["downgraded_count"],
-            error=data["error"],
+            verdict=_get(data, "verdict", arm_name),
+            total_claim_count=_get(data, "total_claim_count", arm_name),
+            stripped_claim_count=_get(data, "stripped_claim_count", arm_name),
+            claims=[ClaimRecord(**c) for c in _get(data, "claims", arm_name)],
+            downgraded_count=_get(data, "downgraded_count", arm_name),
+            error=_get(data, "error", arm_name),
         )
 
     return CaseRecord(
-        case_id=payload["case_id"],
-        category=payload["category"],
-        applicable=payload["applicable"],
-        engaged_call_ids=payload["engaged_call_ids"],
-        total_call_ids=payload["total_call_ids"],
-        unengaged_calls_with_data=payload["unengaged_calls_with_data"],
-        off=_arm(payload["off"]),
-        on=_arm(payload["on"]),
-        eligible_claims_off=payload["eligible_claims_off"],
-        comparable=payload["comparable"],
-        verdict_flip=payload["verdict_flip"],
-        flip_detail=payload["flip_detail"],
-        newly_blocked=payload["newly_blocked"],
-        session_id=payload["session_id"],
-        session_started_at=payload["session_started_at"],
-        error=payload["error"],
+        case_id=case_id,
+        category=_get(payload, "category", "top level"),
+        applicable=_get(payload, "applicable", "top level"),
+        engaged_call_ids=_get(payload, "engaged_call_ids", "top level"),
+        total_call_ids=_get(payload, "total_call_ids", "top level"),
+        unengaged_calls_with_data=_get(payload, "unengaged_calls_with_data", "top level"),
+        off=_arm(_get(payload, "off", "top level"), "off arm"),
+        on=_arm(_get(payload, "on", "top level"), "on arm"),
+        eligible_claims_off=_get(payload, "eligible_claims_off", "top level"),
+        comparable=_get(payload, "comparable", "top level"),
+        verdict_flip=_get(payload, "verdict_flip", "top level"),
+        flip_detail=_get(payload, "flip_detail", "top level"),
+        newly_blocked=_get(payload, "newly_blocked", "top level"),
+        session_id=_get(payload, "session_id", "top level"),
+        session_started_at=_get(payload, "session_started_at", "top level"),
+        error=_get(payload, "error", "top level"),
     )
 
 
@@ -873,12 +943,18 @@ def save_report(report: dict[str, Any]) -> Path:
     return path
 
 
-def _strip_rate_label(bucket: dict[str, int]) -> str:
-    """``downgraded / eligible_claims_off`` -- THE strip rate (issue #163
-    gate-2/Opus review; see ``summarize()``'s docstring for why
-    ``eligible_claims_off``, not ``claims_total_off``, is the correct
-    denominator). ``"n/a"`` when there were zero eligible claims (nothing
-    scoping could ever have touched), never a misleading ``0/0`` division."""
+def _downgrade_rate_label(bucket: dict[str, int]) -> str:
+    """``downgraded / eligible_claims_off`` -- the ENFORCEMENT-only rate
+    (issue #163 gate-3 review renamed this from "strip rate": that name
+    invited misreading a bucket where prevention removed every claim before
+    enforcement ever ran -- e.g. this run's ``ambiguity`` category, 3 OFF
+    claims / 0 ON claims / 0 downgrades / verdict flipped to ``blocked`` --
+    as "scoping had no effect", when ``print_table``'s ``prevent_loss``
+    column right next to this one shows the opposite). ``eligible_claims_off``
+    is still the correct denominator for THIS number specifically -- see
+    ``summarize()``'s docstring. ``"n/a"`` when there were zero eligible
+    claims (nothing enforcement could ever have touched), never a
+    misleading ``0/0`` division."""
     eligible = bucket["eligible_claims_off"]
     if eligible == 0:
         return "n/a"
@@ -886,23 +962,33 @@ def _strip_rate_label(bucket: dict[str, int]) -> str:
 
 
 def print_table(summary: dict[str, Any]) -> None:
-    """Human-facing per-category + total table (issue #163 gate-2/Opus
-    review widens this considerably over the gate-1 version):
+    """Human-facing per-category + total table (issue #163 gate-3 review
+    renames the enforcement-rate column and adds ``prevent_loss`` so the
+    two mechanisms #158 uses -- PREVENTION and ENFORCEMENT, see
+    ``app.tool_call_scoping``'s module docstring -- each have their own
+    visible number; neither can silently read as "no effect" while the
+    other is doing all the work):
 
       * ``off``/``elig``/``on``/``on_str`` -- ``claims_total_off``
         (every OFF-arm claim) side by side with ``eligible_claims_off`` (the
-        strip-rate DENOMINATOR -- see ``summarize()``), and the ON arm's own
-        ``claims_total_on``/``claims_stripped_on`` (prevention-loss
-        visibility -- see module docstring).
-      * ``strip_rate`` -- ``_strip_rate_label`` above: downgraded /
-        eligible, honestly labeled, ``"n/a"`` rather than a division by
-        zero.
+        downgrade-rate DENOMINATOR -- see ``summarize()``), and the ON arm's
+        own ``claims_total_on``/``claims_stripped_on``.
+      * ``prevent_loss`` -- ``claims_total_off - claims_total_on`` (PREVENTION's
+        own visible number -- a claim-count drop from catalog narrowing,
+        independent of whether any citation was ever downgraded).
+      * ``downgrade_rate`` -- ``_downgrade_rate_label`` above: ENFORCEMENT
+        downgrades / eligible, honestly labeled, ``"n/a"`` rather than a
+        division by zero. Renamed from "strip_rate" (gate-3 review) --
+        see that function's docstring for why the old name was misleading.
       * ``exposure`` -- ``unengaged_exposure_calls`` (the true prevention
         exposure surface -- unengaged AND non-empty tool calls).
       * ``flips``/``blocked``/``errors`` -- unchanged from the gate-1
         table."""
-    columns = ["category", "cases", "off", "elig", "on", "on_str", "downg", "strip_rate", "exposure", "flips", "blocked", "errors"]
-    widths = [20, 7, 6, 6, 6, 7, 7, 14, 10, 7, 9, 8]
+    columns = [
+        "category", "cases", "off", "elig", "on", "on_str", "prevent_loss",
+        "downg", "downgrade_rate", "exposure", "flips", "blocked", "errors",
+    ]
+    widths = [20, 7, 6, 6, 6, 7, 13, 7, 16, 10, 7, 9, 8]
 
     def _row(values: list[Any]) -> str:
         return "".join(f"{str(v):>{w}}" if i > 0 else f"{str(v):<{w}}" for i, (v, w) in enumerate(zip(values, widths)))
@@ -920,8 +1006,9 @@ def print_table(summary: dict[str, Any]) -> None:
                     bucket["eligible_claims_off"],
                     bucket["claims_total_on"],
                     bucket["claims_stripped_on"],
+                    bucket["claims_prevention_loss"],
                     bucket["claims_downgraded"],
-                    _strip_rate_label(bucket),
+                    _downgrade_rate_label(bucket),
                     bucket["unengaged_exposure_calls"],
                     bucket["verdict_flips"],
                     bucket["newly_blocked"],
@@ -940,8 +1027,9 @@ def print_table(summary: dict[str, Any]) -> None:
                 total["eligible_claims_off"],
                 total["claims_total_on"],
                 total["claims_stripped_on"],
+                total["claims_prevention_loss"],
                 total["claims_downgraded"],
-                _strip_rate_label(total),
+                _downgrade_rate_label(total),
                 total["unengaged_exposure_calls"],
                 total["verdict_flips"],
                 total["newly_blocked"],

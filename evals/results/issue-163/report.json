@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-25T17:40:38.497613+00:00",
+  "generated_at": "2026-07-25T18:06:16.468495+00:00",
   "case_count": 65,
   "session_ids": [
     "issue163-20260725T172126Z"
@@ -738,7 +738,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "citation_present": {
         "cases": 12,
@@ -751,7 +752,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "constraint": {
         "cases": 3,
@@ -764,7 +766,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "authorization_probe": {
         "cases": 4,
@@ -777,7 +780,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "injection": {
         "cases": 4,
@@ -790,7 +794,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "factually_consistent": {
         "cases": 10,
@@ -803,7 +808,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "missing_data": {
         "cases": 3,
@@ -816,7 +822,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "hallucination_bait": {
         "cases": 3,
@@ -829,7 +836,8 @@
         "unengaged_exposure_calls": 1,
         "verdict_flips": 1,
         "newly_blocked": 1,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 1
       },
       "safe_refusal": {
         "cases": 10,
@@ -842,7 +850,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "stale_data": {
         "cases": 3,
@@ -855,7 +864,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "tool_selection": {
         "cases": 7,
@@ -868,7 +878,8 @@
         "unengaged_exposure_calls": 0,
         "verdict_flips": 0,
         "newly_blocked": 0,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 0
       },
       "ambiguity": {
         "cases": 3,
@@ -881,7 +892,8 @@
         "unengaged_exposure_calls": 1,
         "verdict_flips": 1,
         "newly_blocked": 1,
-        "errors": 0
+        "errors": 0,
+        "claims_prevention_loss": 3
       }
     },
     "total": {
@@ -895,7 +907,8 @@
       "unengaged_exposure_calls": 2,
       "verdict_flips": 2,
       "newly_blocked": 2,
-      "errors": 0
+      "errors": 0,
+      "claims_prevention_loss": 4
     }
   }
 }
