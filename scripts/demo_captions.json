@@ -10,19 +10,19 @@
     },
     {
       "file": "f03-a-verdict.png",
-      "caption": "Verdict: Blocked. A narrative answer has no single citable chart field -- the system says so rather than implying proof."
+      "caption": "Verdict: Blocked -- the citation-axis reading (no safety conflict here): no single citable chart field for a narrative answer."
     },
     {
       "file": "f04-b-ask.png",
-      "caption": "A safety question: any allergy conflict with current medications?"
+      "caption": "A safety question: is there a recorded allergy that conflicts with her current medications?"
     },
     {
       "file": "f05-b-answer.png",
-      "caption": "Verified. Every factual claim is re-checked against the raw record."
+      "caption": "Verified: her chart has no allergies on file, so this is an absence check, not a conflict caught and avoided."
     },
     {
       "file": "f06-b-verdict.png",
-      "caption": "Each claim carries citation chips naming the exact record field it was checked against."
+      "caption": "Each rendered claim card carries a citation chip naming the record field checked -- true here of the three medication claims; the headline allergy claim above has none."
     },
     {
       "file": "f07-c-ask.png",
@@ -30,11 +30,11 @@
     },
     {
       "file": "f08-c-answer.png",
-      "caption": "It answers \"no recent lab results\" -- and even that absence is cited (recent_lab_count = 0)."
+      "caption": "It answers \"no recent lab results\" -- and even that absence carries a citation chip naming the record field checked (the value appears on tap)."
     },
     {
       "file": "f09-c-verdict.png",
-      "caption": "Nothing is asserted without a citation. All inference runs on local models -- no cloud calls."
+      "caption": "All inference above runs on local models -- no cloud calls. (Not every claim gets a citation chip; see the Blocked beat.)"
     }
   ]
 }

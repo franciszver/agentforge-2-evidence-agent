@@ -8,16 +8,35 @@
 > fork). Phase 1's OpenEMR base is [Gauntlet-HQ/openemr-base-clean](https://github.com/Gauntlet-HQ/openemr-base-clean),
 > itself derived from [OpenEMR](https://github.com/openemr/openemr) (GPL v3).
 
-![Phase-2 evidence agent demo — three questions against the live stack: a narrative answer correctly marked Blocked because it has no single citable chart field, an allergy-safety answer Verified with per-claim citation chips naming the record field checked, and an honest "no recent lab results" answer whose absence is itself cited.](docs/assets/demo.gif)
+![Phase-2 evidence agent demo — three questions against the live stack: a narrative answer marked Blocked on citation-axis grounds (no single citable chart field, not a safety-conflict block), an allergy question answered against a chart with no allergies on file where the three medication claims — but not the answer's own headline claim — carry citation chips, and an honest "no recent lab results" answer whose absence itself carries a citation chip.](docs/assets/demo.gif)
 
 *Captured from live runs against the local Phase-2 stack — a narrative
-question comes back **Blocked** (no single citable chart field), an
-allergy-safety question comes back **Verified** with per-claim citation
-chips, and a patient with no lab data gets an honest "no recent lab
-results" answer where the absence itself is cited. Verification verdicts
-are not yet deterministic across runs of the same question — a known,
-tracked limitation, see
-[#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149).*
+question comes back **Blocked**, which here is the citation-axis verdict
+(no single citable chart field for this answer), not a safety-conflict
+flag; the panel's own legend describes Blocked as "a safety conflict
+stopped the answer," which does not match this particular beat — a
+mismatch tracked as
+[#151](https://github.com/franciszver/agentforge-2-evidence-agent/issues/151).
+An allergy question comes back **Verified**: the chart has no allergies
+on file, and the three medication claims each carry a citation chip
+naming the record field checked, though the answer's own headline claim
+("no recorded allergies...") does not. And a patient with no lab data
+gets an honest "no recent lab results" answer whose absence itself
+carries a citation chip.*
+
+*Two caveats worth stating plainly rather than glossing over: verdicts
+are **not deterministic** — the same question, run repeatedly against the
+same stack, can come back with different verdicts and different cited
+claims. A blood-pressure question answered correctly with a matching
+citation on 1 of 4 draws, and on the other 3 declined to answer while
+citing an unrelated respiratory-rate claim the user never asked about
+([#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149));
+the allergy question above returned `verified` on 5 of 6 draws and
+`blocked` on 1, with the answer text identical every time
+([#150](https://github.com/franciszver/agentforge-2-evidence-agent/issues/150)).
+Separately, a `verified` verdict confirms that the citation attached to a
+claim matches the record — not that the claim, or the answer, actually
+addresses the question the user asked.*
 
 ## Week 1 vs Week 2
 
@@ -127,4 +146,5 @@ branch = one PR.
 
 ---
 
-*Interview prep lands in Stage 5/6; this README is updated as it closes.*
+*Interview prep (P6.1, issue #28) is complete — kept local-only by design
+(a `prd/` mock-interview doc, intentionally not published in this repo).*

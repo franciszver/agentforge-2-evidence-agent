@@ -52,9 +52,11 @@ compose.override.yml
 tmp/
 .webpack-cache/
 
-# Demo video pipeline output for issue #148 (regenerable via
-# scripts/generate_demo_video.py; the gif is the only committed artifact,
-# at docs/assets/demo.gif). Note: docs/demo/ holds a pre-existing, unrelated
+# Demo video pipeline output for issue #148. NOT regenerable from a clean
+# clone: scripts/generate_demo_video.py reads its 9 source screenshots from
+# tmp/, which is itself gitignored above, so both the source frames and this
+# mp4 are local-only. The gif is the only committed artifact, at
+# docs/assets/demo.gif. Note: docs/demo/ holds a pre-existing, unrelated
 # tracked demo asset pair -- not touched by this rule.
 docs/assets/demo.mp4
 

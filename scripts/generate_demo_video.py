@@ -56,8 +56,6 @@ RIGHT_W = CANVAS_W - LEFT_W
 PADDING = 16
 
 FRAME_HOLD_SECONDS = 3.5
-FPS = 2  # static hold per frame; a couple of duplicated frames avoid some
-         # players treating a 1-fps mp4 oddly, without bloating file size.
 
 FONT_CANDIDATES = [
     r"C:\Windows\Fonts\segoeui.ttf",
@@ -123,7 +121,6 @@ def draw_caption(canvas: Image.Image, text: str) -> Image.Image:
 
     max_text_w = CANVAS_W - 80
     size = 30
-    font = load_font(size)
     while size > 12:
         font = load_font(size)
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -264,7 +261,12 @@ def build_video(frames: list[Image.Image], tmp: Path, ffmpeg: str) -> Path:
         "-r", "24",
         str(silent_mp4),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed building silent mp4 (exit {result.returncode}):\n"
+            f"{result.stderr.decode(errors='replace')}"
+        )
     return silent_mp4
 
 
