@@ -255,6 +255,12 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # module's own default (`Settings()`'s default is `False`, matching the
     # implicit `False` this call site had before this change).
     # `patient_facts`: same one-source, two-consumers list, reused here.
+    # Issue #158: threads `Settings.copilot_extraction_tool_call_scoping_
+    # enabled` through exactly parallel to `require_answer_grounding` above --
+    # also a pure, deterministic, no-LLM gate, so no re-recording gate is
+    # needed here either. `COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED=true`
+    # re-runs the eval suite with the gate on for the same kind of per-
+    # category measurement.
     verdict_result, rendered = run_verification(
         extractor,
         planner_result,
@@ -262,5 +268,6 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         patient_facts=patient_facts,
         support_judge=support_judge,
         require_answer_grounding=Settings().copilot_claim_answer_grounding_enabled,
+        require_tool_call_scoping=Settings().copilot_extraction_tool_call_scoping_enabled,
     )
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)

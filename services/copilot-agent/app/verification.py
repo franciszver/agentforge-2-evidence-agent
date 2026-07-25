@@ -370,6 +370,19 @@ class CitationStatus(StrEnum):
     # existing AND-aggregation picks it up for free, with no changes to this
     # module's own checking functions.
     NOT_GROUNDED_IN_ANSWER = "not_grounded_in_answer"
+    # Tool-call scoping extension (issue #158, app.tool_call_scoping) -- see
+    # that module's docstring. Set ONLY by
+    # ``apply_tool_call_scoping`` downgrading an otherwise-passing
+    # ``SourceRef`` citation whose ``tool_call_id`` names a real tool call the
+    # answer never lexically engaged with (per-CALL, coarser than
+    # ``NOT_GROUNDED_IN_ANSWER`` above's per-CLAIM-text check). Never produced
+    # by ``check_source_ref`` itself -- same posture as
+    # ``NOT_SEMANTICALLY_SUPPORTED``/``NOT_GROUNDED_IN_ANSWER``: this module
+    # still has no LLM call and no notion of "engagement," the value exists
+    # here only so ``ClaimCheckResult.passed``'s existing AND-aggregation
+    # picks it up for free. Never set on a ``DocumentCitationCheckResult``
+    # (guideline/patient-fact citations are not tied to a tool call).
+    TOOL_CALL_NOT_ENGAGED = "tool_call_not_engaged"
 
 
 @dataclass(frozen=True)

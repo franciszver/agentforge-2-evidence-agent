@@ -168,9 +168,15 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _MIN_OVERLAP_RATIO = 0.5
 
 
-def _significant_tokens(text: str) -> set[str]:
+def significant_tokens(text: str) -> set[str]:
     """Lowercase alphanumeric tokens with stopwords and single-character
-    tokens removed -- the "content words" of a piece of text."""
+    tokens removed -- the "content words" of a piece of text.
+
+    Public (not module-private): issue #158's ``app.tool_call_scoping``
+    reuses this EXACT normalization for its own, differently-scoped lexical
+    overlap check (per-tool-call rather than per-claim) -- shared rather than
+    copy-pasted so the two gates can never silently drift apart on what
+    counts as a "significant word"."""
     return {token for token in _TOKEN_RE.findall(text.lower()) if len(token) > 1 and token not in _STOPWORDS}
 
 
@@ -181,10 +187,10 @@ def claim_is_grounded_in_answer(claim_text: str, answer: str) -> bool:
     Fail-closed: a claim with zero significant tokens (nothing left after
     stopword removal) is never considered grounded, regardless of
     ``answer``."""
-    claim_tokens = _significant_tokens(claim_text)
+    claim_tokens = significant_tokens(claim_text)
     if not claim_tokens:
         return False
-    answer_tokens = _significant_tokens(answer)
+    answer_tokens = significant_tokens(answer)
     overlap = len(claim_tokens & answer_tokens)
     return (overlap / len(claim_tokens)) >= _MIN_OVERLAP_RATIO
 

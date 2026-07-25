@@ -97,6 +97,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.semantic_support import SemanticSupportJudgeLike, apply_semantic_support
+from app.tool_call_scoping import apply_tool_call_scoping, engaged_call_ids as _engaged_call_ids
 from app.verdict import VerdictResult, compute_verdict
 from app.verification import CacheIndex, CorpusChunkIndex, DocumentFactIndex, check_claims, recency_notices
 
@@ -135,7 +136,15 @@ class ClaimExtractorLike(Protocol):
     fact citations (``app.schemas.ingestion.Citation``), offered as extra
     citable evidence alongside the tool-result catalog and any guideline
     chunks. Also defaults to ``()`` and is only ever passed non-empty, for
-    the same backward-compatibility reason."""
+    the same backward-compatibility reason.
+
+    ``engaged_call_ids`` (issue #158) is the same kind of ADDITIVE, optional
+    capability: when supplied (not ``None``), the tool-result catalog and
+    tool-result messages are narrowed to only the named ``call_i`` ids (see
+    ``app.tool_call_scoping``). Defaults to ``None`` (no narrowing, today's
+    behavior) and is only ever passed non-``None`` when
+    ``Settings.copilot_extraction_tool_call_scoping_enabled`` is on, for the
+    same backward-compatibility reason."""
 
     def extract_claims(
         self,
@@ -145,6 +154,7 @@ class ClaimExtractorLike(Protocol):
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
         patient_facts: Sequence[Citation] = (),
+        engaged_call_ids: frozenset[str] | None = None,
     ) -> list[Claim]: ...
 
 
@@ -327,6 +337,7 @@ class ClaimExtractor:
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
         patient_facts: Sequence[Citation] = (),
+        engaged_call_ids: frozenset[str] | None = None,
     ) -> list[Claim]:
         """Return the cited claims decomposed from ``answer``.
 
@@ -349,8 +360,18 @@ class ClaimExtractor:
         citable evidence via ``_FACT_INSTRUCTIONS`` -- never required, and
         never anything but that ONE patient's own facts (the caller,
         ``app.chat.get_patient_fact_provider``, is what enforces that scope;
-        this method has no patient-identity concept of its own)."""
-        catalog = _build_catalog(tools, raw_results)
+        this method has no patient-identity concept of its own).
+
+        ``engaged_call_ids`` (issue #158, additive): when supplied (not
+        ``None``), narrows the tool-result catalog AND tool-result messages
+        to only the named ``call_i`` ids -- the PREVENTION half of the #158
+        gate (see ``app.tool_call_scoping``'s module docstring). Unengaged
+        calls are skipped, never renumbered: ``call_2``'s catalog entry still
+        reads "call_2" even if ``call_1`` was dropped. ``None`` (the default,
+        and what every caller not opting into
+        ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes)
+        means no narrowing -- byte-identical to today."""
+        catalog = _build_catalog(tools, raw_results, engaged_call_ids)
         guideline_catalog = _build_guideline_catalog(retrieved_chunks)
         fact_catalog = _build_fact_catalog(patient_facts)
         if not catalog and not guideline_catalog and not fact_catalog:
@@ -372,7 +393,7 @@ class ClaimExtractor:
         # to a clean "Lisinopril".
         messages = [
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
-            *_build_tool_result_messages(tools, raw_results),
+            *_build_tool_result_messages(tools, raw_results, engaged_call_ids),
             {"role": "assistant", "content": answer},
             {"role": "user", "content": instructions},
         ]
@@ -413,16 +434,31 @@ def _records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _build_catalog(
-    tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None]
+    tools: Sequence[ToolName],
+    raw_results: Sequence[dict[str, Any] | None],
+    engaged_call_ids: frozenset[str] | None = None,
 ) -> str:
     """Positional catalog of every citable ``(call, record, field)`` -- values
-    omitted. Empty string when nothing is citable (no records at all)."""
+    omitted. Empty string when nothing is citable (no records at all).
+
+    ``engaged_call_ids`` (issue #158, additive): when supplied (not
+    ``None``), a call whose ``call_i`` id is NOT in this set is skipped
+    entirely -- its records never reach the catalog. The ``i`` index is
+    never renumbered for the calls that remain (this loop is a plain
+    ``enumerate`` over the FULL ``raw_results``, unaffected by which entries
+    get skipped), so ``call_2``'s line still reads "call_2" even when
+    ``call_1`` was skipped for being unengaged -- see
+    ``app.tool_call_scoping``'s module docstring for why that positional id
+    is load-bearing."""
     lines: list[str] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
+        call_id = f"call_{i}"
+        if engaged_call_ids is not None and call_id not in engaged_call_ids:
+            continue
         records = _records_of(result)
         if not records:
             continue
-        lines.append(f"call_{i} ({tool.value} result, {len(records)} record(s)):")
+        lines.append(f"{call_id} ({tool.value} result, {len(records)} record(s)):")
         for j, record in enumerate(records):
             fields = [k for k in record.keys() if k != _PROVENANCE_FIELD]
             lines.append(f"  record {j}: fields = {', '.join(fields)}")
@@ -584,19 +620,28 @@ def _build_fact_catalog(citations: Sequence[Citation]) -> str:
 
 
 def _build_tool_result_messages(
-    tools: Sequence[ToolName], raw_results: Sequence[dict[str, Any] | None]
+    tools: Sequence[ToolName],
+    raw_results: Sequence[dict[str, Any] | None],
+    engaged_call_ids: frozenset[str] | None = None,
 ) -> list[dict[str, str]]:
     """Inert tool-result DATA messages carrying the RAW values (so the model
     can map claims to the right record). Safe: this feeds the tool-less,
-    constrained, deterministically-validated extractor -- never the planner."""
+    constrained, deterministically-validated extractor -- never the planner.
+
+    ``engaged_call_ids`` (issue #158, additive): same narrowing/index-
+    preservation contract as ``_build_catalog`` above -- see that function's
+    docstring."""
     messages: list[dict[str, str]] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
+        call_id = f"call_{i}"
+        if engaged_call_ids is not None and call_id not in engaged_call_ids:
+            continue
         if not _records_of(result):
             continue
         messages.append(
             {
                 "role": "user",
-                "content": f"[tool result] call_{i} ({tool.value}): {json.dumps(result)}",
+                "content": f"[tool result] {call_id} ({tool.value}): {json.dumps(result)}",
             }
         )
     return messages
@@ -643,6 +688,7 @@ def run_verification(
     patient_facts: Sequence[Citation] = (),
     support_judge: SemanticSupportJudgeLike | None = None,
     require_answer_grounding: bool = False,
+    require_tool_call_scoping: bool = False,
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
@@ -694,7 +740,25 @@ def run_verification(
     discussed is downgraded (``CitationStatus.NOT_GROUNDED_IN_ANSWER``) rather
     than counting as verified. Default ``False`` (what every caller not
     opting into ``Settings.copilot_claim_answer_grounding_enabled`` passes)
-    skips this step entirely -- byte-identical to today."""
+    skips this step entirely -- byte-identical to today.
+
+    ``require_tool_call_scoping`` (issue #158, additive): when ``True``, the
+    extractor's citable inputs are narrowed to only the tool calls the
+    answer lexically engaged with (PREVENTION -- see
+    ``app.tool_call_scoping``'s module docstring), and every claim whose
+    citations already all passed provenance re-validation is additionally
+    re-checked so that a ``SourceRef`` citing an UNENGAGED call is
+    downgraded (``CitationStatus.TOOL_CALL_NOT_ENGAGED``, ENFORCEMENT) rather
+    than counting as verified -- this is what actually holds against a test
+    double/extractor that ignores the narrowed catalog. Coarser than
+    ``require_answer_grounding`` above (per-CALL, not per-claim-text) and
+    orthogonal to it -- both may be on at once. The engaged-call set is
+    computed once, from the FULL (unnarrowed) ``normalized`` results, so
+    provenance re-validation (``index`` below) always has the complete data
+    available regardless of this flag; only the EXTRACTOR's view is narrowed.
+    Default ``False`` (what every caller not opting into
+    ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes) skips
+    both prevention and enforcement entirely -- byte-identical to today."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
 
@@ -703,6 +767,10 @@ def run_verification(
         extract_kwargs["retrieved_chunks"] = retrieved_chunks
     if patient_facts:
         extract_kwargs["patient_facts"] = patient_facts
+    engaged: frozenset[str] | None = None
+    if require_tool_call_scoping:
+        engaged = _engaged_call_ids(normalized, result.answer)
+        extract_kwargs["engaged_call_ids"] = engaged
     claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized, **extract_kwargs)
     index = CacheIndex.from_raw_results(normalized)
     corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
@@ -726,6 +794,9 @@ def run_verification(
             # had been empty) rather than let the exception propagate.
             _logger.warning("patient fact index build failed", extra={"error_type": type(exc).__name__})
     claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
+    if require_tool_call_scoping:
+        assert engaged is not None  # computed above whenever this flag is True
+        claim_results = apply_tool_call_scoping(claim_results, engaged)
     if require_answer_grounding:
         claim_results = apply_answer_grounding(claim_results, result.answer)
     if support_judge is not None:

@@ -241,6 +241,47 @@ class Settings(BaseSettings):
     # actual per-category measurement taken before flipping this default.
     copilot_claim_answer_grounding_enabled: bool = False
 
+    # Issue #158: when true, ``run_verification`` additionally scopes the
+    # claim extractor's citable inputs to the tool CALLS the answer actually
+    # engaged with (app.tool_call_scoping) -- coarser than #153's above
+    # (per-CLAIM-text grounding) and orthogonal to it: this is a per-TOOL-
+    # CALL cut, decided ONCE per turn from the answer's lexical overlap with
+    # each call's record values, not per-claim/per-field. Closes the same
+    # #149 gap #153 targeted (a claim citing a real, correctly-valued field
+    # the answer never discussed) via a coarser, owner-approved mechanism
+    # after #153's per-claim heuristic was found unfit to enable (negation
+    # blind, short claims bypass the ratio, wrong values pass -- see
+    # ``copilot_claim_answer_grounding_enabled`` above and
+    # app.answer_grounding's module docstring).
+    #
+    # Two enforcement points, both gated by this ONE flag (see
+    # app.tool_call_scoping's module docstring for the full rule):
+    #   1. PREVENTION -- ``app.extraction.ClaimExtractor.extract_claims``
+    #      narrows the catalog/tool-result messages the extractor sees to
+    #      only the engaged calls' records (unengaged calls' positional
+    #      ``call_i`` ids are skipped, never renumbered -- the id scheme is
+    #      load-bearing, see app.verification's module docstring decision 2).
+    #   2. ENFORCEMENT -- ``app.tool_call_scoping.apply_tool_call_scoping``
+    #      downgrades any surviving citation of an unengaged call to the new
+    #      ``CitationStatus.TOOL_CALL_NOT_ENGAGED``, the same fail-closed
+    #      shape #153's ``NOT_GROUNDED_IN_ANSWER`` downgrade already
+    #      established (Notice rendered, claim not verified) -- this is what
+    #      actually holds when the extractor is a test double that ignores
+    #      the narrowed catalog (every hermetic test's fake extractor).
+    #
+    # Deterministic, no LLM call. Default OFF: byte-identical to today (no
+    # catalog change, no new checks, existing suite untouched). Coarse-first
+    # by owner decision -- whether this is precise enough to ship ON, or
+    # needs a finer per-claim/per-field cut layered on top, is a LATER
+    # measurement task, not decided here.
+    #
+    # `evals/runner/pipeline.py`'s `run_case` threads this setting through to
+    # `run_verification` exactly parallel to
+    # `copilot_claim_answer_grounding_enabled` above, so re-running the eval
+    # suite with `COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED=true` exercises
+    # this gate against the existing recordings.
+    copilot_extraction_tool_call_scoping_enabled: bool = False
+
 
 def get_settings() -> Settings:
     """FastAPI dependency returning the current application settings."""
