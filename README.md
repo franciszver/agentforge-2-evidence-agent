@@ -33,7 +33,7 @@ answer while citing an unrelated respiratory-rate claim the user never
 asked about — all four still verdict `verified`
 ([#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149));
 the allergy question above returned `verified` on 5 of 6 draws and
-`blocked` on 1, with the answer text identical every time — the verdict
+`blocked` on 1, with the answer text semantically identical every time — the verdict
 itself flipping
 ([#150](https://github.com/franciszver/agentforge-2-evidence-agent/issues/150)).
 
