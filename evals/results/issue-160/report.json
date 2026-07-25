@@ -1,0 +1,76 @@
+{
+  "issue-149-bp": {
+    "n_draws": 8,
+    "n_errors": 0,
+    "n_counted": 8,
+    "distinct_tool_sequences": 1,
+    "tool_sequence_distribution": {
+      "get_vitals": 8
+    },
+    "answer_hash_distribution": {
+      "get_vitals": {
+        "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": 8
+      }
+    },
+    "verdict_distribution": {
+      "partially_verified": 8
+    },
+    "verdict_distribution_by_sequence_hash": {
+      "get_vitals": {
+        "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": {
+          "partially_verified": 8
+        }
+      }
+    },
+    "mechanism": {
+      "tool_selection_variance": false,
+      "generation_nondeterminism": false,
+      "downstream_variance": false,
+      "generation_nondeterminism_sequences": [],
+      "downstream_variance_keys": []
+    },
+    "question_id": "issue-149-bp",
+    "latency_seconds": {
+      "min": 27.129855940000198,
+      "max": 28.410248132999186,
+      "mean": 27.65694346800001
+    }
+  },
+  "issue-150-allergy": {
+    "n_draws": 8,
+    "n_errors": 0,
+    "n_counted": 8,
+    "distinct_tool_sequences": 1,
+    "tool_sequence_distribution": {
+      "get_medications -> get_allergies": 8
+    },
+    "answer_hash_distribution": {
+      "get_medications -> get_allergies": {
+        "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": 8
+      }
+    },
+    "verdict_distribution": {
+      "partially_verified": 8
+    },
+    "verdict_distribution_by_sequence_hash": {
+      "get_medications -> get_allergies": {
+        "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": {
+          "partially_verified": 8
+        }
+      }
+    },
+    "mechanism": {
+      "tool_selection_variance": false,
+      "generation_nondeterminism": false,
+      "downstream_variance": false,
+      "generation_nondeterminism_sequences": [],
+      "downstream_variance_keys": []
+    },
+    "question_id": "issue-150-allergy",
+    "latency_seconds": {
+      "min": 18.402970163000646,
+      "max": 19.62996842999928,
+      "mean": 18.902853929624598
+    }
+  }
+}
