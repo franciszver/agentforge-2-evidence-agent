@@ -426,13 +426,13 @@
             label: 'Partially verified',
             icon: '⚠',
             className: 'copilot-verdict-partial',
-            meaning: 'Some claims could not be fully confirmed.'
+            meaning: 'Some claims could not be fully confirmed, or a minor drug interaction was flagged.'
         },
         blocked: {
             label: 'Blocked',
             icon: '✕',
             className: 'copilot-verdict-blocked',
-            meaning: 'A safety conflict stopped the answer.'
+            meaning: 'No claim in this answer had a verifiable citation, or a safety conflict was detected.'
         }
     };
 

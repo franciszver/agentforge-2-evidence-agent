@@ -612,6 +612,24 @@ describe('renderAboutLegend', () => {
             expect(badge.className).toContain('copilot-verdict-verified');
         });
     });
+
+    // Regression for #151: app/verdict.py's NONE_VERIFIED row returns
+    // `blocked` whenever zero claims carry a verified citation -- with no
+    // safety check involved at all (see verdict.py's decision table). The
+    // legend must not assert a safety conflict occurred; it must describe
+    // both ways `blocked` can arise.
+    test('Blocked meaning does not assert a safety conflict unconditionally', () => {
+        const list = document.createElement('ul');
+        document.body.appendChild(list);
+
+        renderAboutLegend(list);
+
+        const blockedRowText = list.children[2].textContent;
+        expect(blockedRowText).not.toContain('A safety conflict stopped the answer.');
+        // Must cover the citation axis (no verifiable citation), the more
+        // common real-world trigger for `blocked` on benign questions.
+        expect(blockedRowText.toLowerCase()).toMatch(/citation|verifiable/);
+    });
 });
 
 // ---------------------------------------------------------------------------
