@@ -24,9 +24,13 @@ from __future__ import annotations
 
 import datetime
 import inspect
+import logging
 from typing import Any
 
+import pytest
+
 from app.answer_grounding import apply_answer_grounding, claim_is_grounded_in_answer
+from app.correlation import configure_logging, correlation_scope
 from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
@@ -313,6 +317,36 @@ def test_extract_claims_returns_empty_on_llama_server_extraction_error():
     )
 
     assert claims == []
+
+
+def test_extract_claims_logs_retry_exhaustion_with_correlation_id(caplog: pytest.LogCaptureFixture) -> None:
+    """#154 (diagnosed by #149/#150): retry exhaustion silently collapsed to
+    ``[]`` -> ``blocked`` with no observable signal distinguishing it from an
+    answer with nothing citable. Assert the warning fires, at WARNING level,
+    with a structured (not interpolated) ``error_type`` field, and that the
+    active correlation id is on the record via ``app.correlation``'s
+    ``LogRecordFactory`` seam (the same mechanism ``test_correlation.py``
+    pins for other LLM-call sites) -- never the answer text or raw tool
+    data (non-PHI)."""
+    configure_logging()
+    caplog.set_level(logging.WARNING, logger="app.extraction")
+    ollama = _FakeExtractOllama(error=True)
+    extractor = ClaimExtractor(ollama_client=ollama)
+
+    with correlation_scope("test-correlation-id"):
+        claims = extractor.extract_claims(
+            answer="x",
+            tools=[ToolName.GET_MEDICATIONS],
+            raw_results=[_meds_raw(_lisinopril())],
+        )
+
+    assert claims == []
+    matching = [r for r in caplog.records if "exhausted retries" in r.message]
+    assert len(matching) == 1
+    record = matching[0]
+    assert record.levelname == "WARNING"
+    assert record.correlation_id == "test-correlation-id"
+    assert record.error_type == "OllamaError"
 
 
 # --------------------------------------------------------------------------
