@@ -45,14 +45,28 @@ out so a reader doesn't over-read the numbers):**
     answer_grounding_enabled`` say for a real production/eval turn, exactly
     as ``runner.pipeline.run_case`` does; this harness varies ONLY
     ``require_tool_call_scoping``.
-  * Cases whose assertions don't need verification at all (``runner.pipeline
-    .needs_verification`` is ``False`` -- most of ``tool_selection``,
-    ``safe_refusal``, ``injection``, ``authorization_probe``, etc.): #158's
-    gate never runs for these turns in production either (it lives inside
-    ``run_verification``), so they are reported with ``applicable=False``
-    and no arms, not silently dropped -- "every case reported" (issue #163)
-    means every case appears in the artifact, not that every case has a
-    scoping verdict to report.
+
+**CORRECTED (issue #163 gate-2/Opus review): verification runs for EVERY
+case, unconditionally -- there is no "not applicable" exclusion anymore.**
+An earlier version of this harness skipped both arms for any case whose
+assertions don't need verification in the eval-RUNNER's own lazy sense
+(``runner.pipeline.needs_verification`` -- see that function's docstring:
+"the extraction + verification stage ... only runs for cases that actually
+assert on ``verdict``"), on the premise that "#158's gate never runs for
+these turns in production either." **That premise was false.**
+``app.chat._stream_chat`` (``app/chat.py`` ~line 1359) calls
+``run_verification`` UNCONDITIONALLY for every ``/chat`` turn, regardless of
+what the eventual answer says or what an eval case happens to assert on --
+``needs_verification`` is a replay-suite-only laziness optimization (skip
+recording/replaying an unused extraction call for a case that will never
+assert on the verdict), not a description of when production's scoping gate
+runs. A harness measuring what #158's flag would do IN PRODUCTION must
+therefore run both arms for every case, including ``tool_selection``,
+``safe_refusal``, ``injection``, ``authorization_probe``, etc. -- exactly
+what this version does. ``needs_verification(case)`` is still computed and
+carried on ``CaseRecord`` (see ``applicable`` below) but is now purely
+INFORMATIONAL -- it no longer gates whether verification runs, only whether
+this case's eval assertions happen to check the verdict.
 
 **Why the planner section is duplicated instead of reusing ``runner.pipeline
 .run_case`` directly.** ``run_case`` calls the planner AND ``run_verification``
@@ -105,6 +119,58 @@ silently retried or excluded. No case is drawn twice, and ``main`` makes
 exactly one unconditional attempt per case -- there is no retry of any kind
 (mechanical or otherwise) anywhere in this harness.
 
+**Exposure counters and the honest strip-rate denominator (issue #163
+gate-2/Opus review).** A strip-rate of 0 is ambiguous on its own -- it could
+mean the gate is genuinely inert, or it could mean the gate never had
+anything to act on in this sample. Two counters make that distinction
+visible instead of requiring inference:
+
+  * **``unengaged_calls_with_data``** (per case, ``CaseRecord``) -- the
+    ``call_i`` ids that are BOTH unengaged (not in ``engaged_call_ids``) AND
+    carry >=1 actual record (``app.verification.records_of(raw_results[i])``
+    is non-empty). This is the TRUE exposure surface for PREVENTION: a call
+    with no records at all (``None``, or ``{"items": []}``) was never a
+    citable risk regardless of engagement, so counting it would inflate
+    "exposure" with calls that could never have produced a spurious
+    citation in the first place. Computed once per case in ``run_one_case``
+    (needs the actual raw record contents, not just the ``call_i`` id sets
+    ``build_case_record`` otherwise receives).
+  * **``eligible_claims_off``** (per case, ``CaseRecord``, computed inside
+    ``build_case_record`` from the OFF arm's own claims) -- the count of
+    OFF-arm claims that already passed full provenance re-validation
+    (``ClaimCheckResult.passed`` -- includes any semantic-support/answer-
+    grounding downgrade already applied identically in both arms, per the
+    "Every other ``run_verification`` argument ... is held IDENTICAL"
+    guarantee above). This is the ONLY population ``apply_tool_call_scoping``
+    can ever act on (see ``app.tool_call_scoping``'s own docstring, "Scope:
+    only re-checks currently-passing ``SourceRef`` citations") -- an already-
+    failed claim has nothing left for scoping to strip.
+
+**The strip-rate denominator is ``eligible_claims_off``, NOT
+``total_claim_count``.** ``total_claim_count`` includes claims that already
+failed provenance re-validation for reasons entirely unrelated to scoping
+(``unknown_record``, ``value_mismatch``, ...) -- dividing downgrades by that
+inflated denominator would understate the true strip rate among claims
+scoping could actually have touched. Both raw numbers (``claims_total_off``
+and ``eligible_claims_off``) are reported side by side in
+``summarize()``'s buckets and ``print_table``'s columns, honestly labeled,
+so a reader can see both and is never left to guess which one a printed
+percentage used.
+
+**Prevention blindness: ``claims_total_on``/``claims_stripped_on`` are now
+first-class summary fields, not something a reader has to infer.** The ON
+arm's OWN ``total_claim_count``/``stripped_claim_count`` (from its own,
+narrower-catalog extraction call -- see "The ON arm re-runs claim
+extraction" above) were always captured on ``ArmRecord`` but were never
+rolled up into ``summarize()``'s buckets or printed -- a case where
+PREVENTION (catalog narrowing) makes the ON-arm extractor produce FEWER
+claims than the OFF arm ever ran was invisible unless a reader opened that
+specific case's ``draws/<id>.json`` and compared ``off.total_claim_count``
+to ``on.total_claim_count`` by hand. Both are now summed into
+``claims_total_on``/``claims_stripped_on`` per bucket and printed alongside
+the OFF-arm figures, so a prevention-driven claim-count drop is visible
+directly in the table.
+
 **Downstream-only tool data, same scope limit #154 documents.** Every case's
 ``tool_data`` is the case's own canned fixture (``runner.tool_stub
 .build_fake_registry``) -- this harness never talks to a real OpenEMR chart.
@@ -123,6 +189,22 @@ case is from this session's single draw, no mixing with older runs").
 ``summarize()``/``--summarize-only`` re-aggregates an existing ``draws/``
 directory into ``evals/results/issue-163/report.json`` without any live
 call, same precedent as ``issue_154_stability_harness.py``.
+
+**Session provenance is stamped explicitly, once, not read ambiently per
+case (issue #163 gate-2/Opus review).** ``main()`` resolves ONE
+``session_id`` (``--session-id``, or an auto-generated ``uuid4`` hex if
+omitted) and ONE ``session_started_at`` timestamp BEFORE the per-case loop
+starts, then threads both down through ``run_one_case``/``build_case_record``
+onto every ``CaseRecord`` produced by that invocation. Deliberately NOT a
+fresh ``datetime.now()``/``uuid4()`` call inside the loop (a "Date.now-style"
+per-case ambient stamp would let two cases in the SAME session end up with
+different-looking provenance, or -- worse -- silently paper over a session
+that actually spans two separate invocations). ``build_report`` surfaces
+``session_ids`` (the sorted, deduplicated set of every ``session_id``
+actually present across the loaded ``draws/``) as a top-level field, so a
+reader can verify "this artifact is one single session's draws" directly
+from the committed ``report.json`` -- a ``len(session_ids) != 1`` is a
+correctness red flag, not a stylistic one.
 
 **``draws/`` is the ONE full-detail source; ``report.json`` never duplicates
 it.** ``report.json`` carries the per-category/total ``summary()`` output
@@ -161,6 +243,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -208,7 +291,7 @@ from app.schemas.ingestion import Citation  # noqa: E402
 from app.schemas.reranking import RerankedChunk  # noqa: E402
 from app.tool_call_scoping import engaged_call_ids  # noqa: E402
 from app.verdict import Verdict, VerdictResult  # noqa: E402
-from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult  # noqa: E402
+from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult, records_of  # noqa: E402
 
 # Importing app.tool_call_scoping (above) succeeding at all IS the "resolved
 # the live app package, not the baked image" marker the issue's run
@@ -305,26 +388,54 @@ class CaseRecord:
     """One case's full report row: identity, the engaged/total tool-call-id
     sets (computed once, independent of which arm -- ``engaged_call_ids`` is
     a pure function of ``(raw_results, engagement_answer)``, unaffected by
-    the flag itself), both arms (``None`` when ``applicable`` is ``False``),
-    and the derived comparison fields.
+    the flag itself), both arms, the exposure/eligibility counters (issue
+    #163 gate-2/Opus review -- see module docstring, "Exposure counters and
+    the honest strip-rate denominator"), session provenance, and the
+    derived comparison fields.
+
+    ``applicable`` (``runner.pipeline.needs_verification(case)``) is
+    PURELY INFORMATIONAL -- see module docstring, "CORRECTED: verification
+    runs for EVERY case, unconditionally". It records whether this case's
+    OWN eval assertions check the verdict; it does NOT gate whether ``off``/
+    ``on`` were attempted (they always are, for every case whose planner
+    draw itself succeeded) and must never be read as an exclusion.
+
+    ``off``/``on`` are ``None`` ONLY when the planner draw itself raised
+    (``error`` is set in that case -- nothing to verify, no arms attempted).
 
     ``comparable`` is ``True`` iff both ``off`` and ``on`` are present AND
     neither carries an ``error`` -- ``verdict_flip``/``newly_blocked`` are
     only ever computed (and only ever meaningful) when this is ``True``;
     they default to ``False`` otherwise, which is a "not determined", never
-    a claimed "no flip happened" -- read ``comparable`` first."""
+    a claimed "no flip happened" -- read ``comparable`` first.
+
+    ``unengaged_calls_with_data``: the ``call_i`` ids that are both
+    unengaged and non-empty (``app.verification.records_of`` is non-empty) --
+    the TRUE prevention exposure surface for this case, computed by
+    ``run_one_case`` (needs the actual raw record contents, not just id
+    sets) regardless of whether verification itself succeeded, since it only
+    depends on the planner draw.
+
+    ``eligible_claims_off``: how many OFF-arm claims already passed full
+    provenance re-validation -- the only population enforcement could ever
+    have touched (see module docstring). ``None`` when ``off`` is ``None``
+    or carries an ``error`` (nothing to count)."""
 
     case_id: str
     category: str
     applicable: bool
     engaged_call_ids: list[str]
     total_call_ids: list[str]
+    unengaged_calls_with_data: list[str]
     off: ArmRecord | None
     on: ArmRecord | None
+    eligible_claims_off: int | None
     comparable: bool
     verdict_flip: bool
     flip_detail: str | None
     newly_blocked: bool
+    session_id: str
+    session_started_at: str
     error: str | None = None  # set only when the planner draw itself failed
 
 
@@ -335,13 +446,20 @@ def build_case_record(
     applicable: bool,
     engaged_call_ids: list[str],
     total_call_ids: list[str],
+    unengaged_calls_with_data: list[str],
     off: ArmRecord | None,
     on: ArmRecord | None,
+    session_id: str,
+    session_started_at: str,
     draw_error: str | None = None,
 ) -> CaseRecord:
-    """Fold one case's two arms (or ``None``s, for a not-applicable or
-    draw-failed case) into its report row. Pure, no I/O -- unit tested
-    directly."""
+    """Fold one case's two arms (or ``None``s, for a draw-failed case) into
+    its report row. Pure, no I/O -- unit tested directly.
+
+    ``eligible_claims_off`` (issue #163 gate-2/Opus review) is derived here,
+    not passed in by the caller -- computed from ``off.claims`` so there is
+    exactly one place that decides what "eligible" means (see module
+    docstring)."""
     comparable = off is not None and on is not None and off.error is None and on.error is None
     verdict_flip = False
     flip_detail = None
@@ -352,38 +470,62 @@ def build_case_record(
         if verdict_flip:
             flip_detail = f"{off.verdict}->{on.verdict}"
         newly_blocked = off.verdict != Verdict.BLOCKED.value and on.verdict == Verdict.BLOCKED.value
+    eligible_claims_off = sum(1 for c in off.claims if c.passed) if off is not None and off.error is None else None
     return CaseRecord(
         case_id=case_id,
         category=category,
         applicable=applicable,
         engaged_call_ids=list(engaged_call_ids),
         total_call_ids=list(total_call_ids),
+        unengaged_calls_with_data=list(unengaged_calls_with_data),
         off=off,
         on=on,
+        eligible_claims_off=eligible_claims_off,
         comparable=comparable,
         verdict_flip=verdict_flip,
         flip_detail=flip_detail,
         newly_blocked=newly_blocked,
+        session_id=session_id,
+        session_started_at=session_started_at,
         error=draw_error,
     )
 
 
 def summarize(records: list[CaseRecord]) -> dict[str, Any]:
-    """Per-category + total report table: cases seen, how many were
-    comparable (both arms succeeded), total OFF-arm claim count (the
-    denominator for a strip rate -- "claims total flag-OFF-valid" per issue
-    #163), total ON-arm ``TOOL_CALL_NOT_ENGAGED`` downgrades, verdict flips,
-    and newly-blocked turns (whole-turn ``blocked`` ONLY under the ON arm --
-    the dominant flag-ON regression risk per ``app.tool_call_scoping``'s
-    module docstring, "Known failure directions" #4). Pure, no I/O -- unit
-    tested directly."""
+    """Per-category + total report table. Pure, no I/O -- unit tested
+    directly.
+
+    ``comparable_cases``-gated fields (only summed when BOTH arms of a case
+    succeeded -- exact same guard as before): ``claims_total_off`` (every
+    OFF-arm claim, pass or fail -- NOT the strip-rate denominator, see
+    below), ``eligible_claims_off`` (OFF-arm claims that already passed
+    provenance -- THE strip-rate denominator, issue #163 gate-2/Opus
+    review), ``claims_total_on``/``claims_stripped_on`` (the ON arm's OWN
+    claim-count aggregates -- makes a prevention-driven claim-count drop
+    visible instead of requiring a reader to diff two ``draws/`` files by
+    hand), ``claims_downgraded`` (ON-arm ``TOOL_CALL_NOT_ENGAGED`` citation
+    count -- the enforcement half), ``verdict_flips``, and ``newly_blocked``
+    (whole-turn ``blocked`` ONLY under the ON arm -- the dominant flag-ON
+    regression risk per ``app.tool_call_scoping``'s module docstring,
+    "Known failure directions" #4).
+
+    ``unengaged_exposure_calls`` is gated differently -- summed whenever the
+    case's planner draw itself succeeded (``record.error is None``),
+    REGARDLESS of ``comparable`` -- it is a property of the draw's raw tool
+    results, not of whether verification succeeded, so a case whose
+    verification arm errored should not silently drop out of the exposure
+    count."""
 
     def _empty_bucket() -> dict[str, int]:
         return {
             "cases": 0,
             "comparable_cases": 0,
             "claims_total_off": 0,
+            "eligible_claims_off": 0,
+            "claims_total_on": 0,
+            "claims_stripped_on": 0,
             "claims_downgraded": 0,
+            "unengaged_exposure_calls": 0,
             "verdict_flips": 0,
             "newly_blocked": 0,
             "errors": 0,
@@ -399,10 +541,15 @@ def summarize(records: list[CaseRecord]) -> dict[str, Any]:
                 record.on is not None and record.on.error is not None
             ):
                 target["errors"] += 1
+            if record.error is None:
+                target["unengaged_exposure_calls"] += len(record.unengaged_calls_with_data)
             if record.comparable:
                 target["comparable_cases"] += 1
-                assert record.off is not None and record.on is not None
+                assert record.off is not None and record.on is not None and record.eligible_claims_off is not None
                 target["claims_total_off"] += record.off.total_claim_count
+                target["eligible_claims_off"] += record.eligible_claims_off
+                target["claims_total_on"] += record.on.total_claim_count
+                target["claims_stripped_on"] += record.on.stripped_claim_count
                 target["claims_downgraded"] += record.on.downgraded_count
                 if record.verdict_flip:
                     target["verdict_flips"] += 1
@@ -522,13 +669,21 @@ def _run_verification_arm(
     return arm_record_from_results(verdict_result, claim_results)
 
 
-def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord, list[RecordedCall]]:
-    """Run ``case`` once, live: one planner draw, then (if applicable) both
-    verification arms paired on that SAME draw. ``ollama_client`` is a
-    ``RecordingOllamaClient`` shared across the planner AND both arms, so
-    one case's full call sequence (planner + OFF extraction (+judge) + ON
-    extraction (+judge)) is captured together, mirroring #154's per-draw
-    recording precedent."""
+def run_one_case(
+    case: EvalCase, ollama_client: OllamaLike, *, session_id: str, session_started_at: str
+) -> tuple[CaseRecord, list[RecordedCall]]:
+    """Run ``case`` once, live: one planner draw, then BOTH verification
+    arms, paired on that SAME draw, for EVERY case -- see module docstring,
+    "CORRECTED: verification runs for EVERY case, unconditionally" (issue
+    #163 gate-2/Opus review; ``needs_verification(case)`` is carried on the
+    resulting ``CaseRecord`` as ``applicable`` but no longer gates whether
+    the arms run). ``ollama_client`` is a ``RecordingOllamaClient`` shared
+    across the planner AND both arms, so one case's full call sequence
+    (planner + OFF extraction (+judge) + ON extraction (+judge)) is captured
+    together, mirroring #154's per-draw recording precedent. ``session_id``/
+    ``session_started_at`` are resolved ONCE by ``main()`` before its
+    per-case loop and threaded through unchanged -- see module docstring,
+    "Session provenance is stamped explicitly, once"."""
     # Issue #163 gate-1 review: computed ONCE here, mirroring
     # ``pipeline.run_case``'s documented one-source-two-consumers design for
     # these SAME fixtures -- threaded into ``_run_planner`` and BOTH
@@ -549,8 +704,11 @@ def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord,
             applicable=needs_verification(case),
             engaged_call_ids=[],
             total_call_ids=[],
+            unengaged_calls_with_data=[],
             off=None,
             on=None,
+            session_id=session_id,
+            session_started_at=session_started_at,
             draw_error=repr(exc),
         )
         return record, recorder.calls
@@ -559,19 +717,18 @@ def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord,
     engagement_answer = (
         planner_result.answer_pre_notice if planner_result.answer_pre_notice is not None else planner_result.answer
     )
-    engaged = sorted(engaged_call_ids(planner_result.raw_results, engagement_answer))
-
-    if not needs_verification(case):
-        record = build_case_record(
-            case_id=case.id,
-            category=case.category,
-            applicable=False,
-            engaged_call_ids=engaged,
-            total_call_ids=total_call_ids,
-            off=None,
-            on=None,
-        )
-        return record, recorder.calls
+    engaged = engaged_call_ids(planner_result.raw_results, engagement_answer)
+    engaged_sorted = sorted(engaged)
+    # Issue #163 gate-2/Opus review: the TRUE prevention exposure surface --
+    # unengaged AND non-empty (records_of(...) non-empty). A call with no
+    # records at all was never a citable risk regardless of engagement; see
+    # module docstring, "Exposure counters and the honest strip-rate
+    # denominator".
+    unengaged_calls_with_data = [
+        f"call_{i}"
+        for i, result in enumerate(planner_result.raw_results)
+        if f"call_{i}" not in engaged and records_of(result)
+    ]
 
     off = _run_verification_arm(
         case,
@@ -592,11 +749,14 @@ def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord,
     record = build_case_record(
         case_id=case.id,
         category=case.category,
-        applicable=True,
-        engaged_call_ids=engaged,
+        applicable=needs_verification(case),
+        engaged_call_ids=engaged_sorted,
         total_call_ids=total_call_ids,
+        unengaged_calls_with_data=unengaged_calls_with_data,
         off=off,
         on=on,
+        session_id=session_id,
+        session_started_at=session_started_at,
     )
     return record, recorder.calls
 
@@ -640,12 +800,16 @@ def _record_from_payload(payload: dict[str, Any]) -> CaseRecord:
         applicable=payload["applicable"],
         engaged_call_ids=payload["engaged_call_ids"],
         total_call_ids=payload["total_call_ids"],
+        unengaged_calls_with_data=payload["unengaged_calls_with_data"],
         off=_arm(payload["off"]),
         on=_arm(payload["on"]),
+        eligible_claims_off=payload["eligible_claims_off"],
         comparable=payload["comparable"],
         verdict_flip=payload["verdict_flip"],
         flip_detail=payload["flip_detail"],
         newly_blocked=payload["newly_blocked"],
+        session_id=payload["session_id"],
+        session_started_at=payload["session_started_at"],
         error=payload["error"],
     )
 
@@ -662,26 +826,41 @@ def load_draws(draws_dir: Path) -> list[CaseRecord]:
 def _case_index_entry(record: CaseRecord) -> dict[str, Any]:
     """The LIGHT per-case row ``report.json`` carries -- just enough for a
     human skimming the committed artifact to find which case id to open in
-    ``draws/`` for full detail. See module docstring, "``draws/`` is the ONE
-    full-detail source" -- this is deliberately NOT ``asdict(record)``."""
+    ``draws/`` for full detail, PLUS the two exposure/eligibility counters
+    (issue #163 gate-2/Opus review -- these are small scalars, cheap to
+    surface at the index level so a reader doesn't have to open every
+    ``draws/<id>.json`` to see them) and this case's session id (provenance,
+    verifiable per case, not just in aggregate). See module docstring,
+    "``draws/`` is the ONE full-detail source" -- this is deliberately NOT
+    ``asdict(record)``; ``off``/``on``/``claims`` detail is still
+    ``draws/``-only."""
     return {
         "case_id": record.case_id,
         "category": record.category,
+        "applicable": record.applicable,
         "comparable": record.comparable,
         "verdict_flip": record.verdict_flip,
         "newly_blocked": record.newly_blocked,
+        "unengaged_calls_with_data": list(record.unengaged_calls_with_data),
+        "eligible_claims_off": record.eligible_claims_off,
+        "session_id": record.session_id,
     }
 
 
 def build_report(records: list[CaseRecord]) -> dict[str, Any]:
     """The full ``report.json`` payload: generated-at timestamp, case count,
-    the per-category/total ``summarize()`` output, and the light per-case
-    index (``_case_index_entry``) -- never a full copy of every
-    ``CaseRecord`` (that lives solely in ``draws/<case_id>.json``, loaded via
-    ``load_draws``)."""
+    the per-category/total ``summarize()`` output, the light per-case index
+    (``_case_index_entry``) -- never a full copy of every ``CaseRecord``
+    (that lives solely in ``draws/<case_id>.json``, loaded via
+    ``load_draws``) -- and ``session_ids``, the sorted/deduplicated set of
+    every ``session_id`` actually present across ``records`` (issue #163
+    gate-2/Opus review -- see module docstring, "Session provenance is
+    stamped explicitly, once": a single-session artifact must show exactly
+    one entry here, verifiable directly from this committed file)."""
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "case_count": len(records),
+        "session_ids": sorted({r.session_id for r in records}),
         "cases": [_case_index_entry(r) for r in records],
         "summary": summarize(records),
     }
@@ -694,29 +873,81 @@ def save_report(report: dict[str, Any]) -> Path:
     return path
 
 
+def _strip_rate_label(bucket: dict[str, int]) -> str:
+    """``downgraded / eligible_claims_off`` -- THE strip rate (issue #163
+    gate-2/Opus review; see ``summarize()``'s docstring for why
+    ``eligible_claims_off``, not ``claims_total_off``, is the correct
+    denominator). ``"n/a"`` when there were zero eligible claims (nothing
+    scoping could ever have touched), never a misleading ``0/0`` division."""
+    eligible = bucket["eligible_claims_off"]
+    if eligible == 0:
+        return "n/a"
+    return f"{bucket['claims_downgraded']}/{eligible} ({bucket['claims_downgraded'] / eligible:.0%})"
+
+
 def print_table(summary: dict[str, Any]) -> None:
-    """Human-facing per-category + total table. Includes an ``errors``
-    column (issue #163 gate-1 review) -- ``summarize()`` already computes
-    this count per bucket; previously it was silently absent from this
-    printout even though it is real, non-zero-worthy signal (a case whose
-    draw or a verification arm raised)."""
-    header = (
-        f"{'category':<20}{'cases':>7}{'claims':>9}{'downgraded':>12}{'flips':>8}{'newly_blocked':>15}{'errors':>8}"
-    )
+    """Human-facing per-category + total table (issue #163 gate-2/Opus
+    review widens this considerably over the gate-1 version):
+
+      * ``off``/``elig``/``on``/``on_str`` -- ``claims_total_off``
+        (every OFF-arm claim) side by side with ``eligible_claims_off`` (the
+        strip-rate DENOMINATOR -- see ``summarize()``), and the ON arm's own
+        ``claims_total_on``/``claims_stripped_on`` (prevention-loss
+        visibility -- see module docstring).
+      * ``strip_rate`` -- ``_strip_rate_label`` above: downgraded /
+        eligible, honestly labeled, ``"n/a"`` rather than a division by
+        zero.
+      * ``exposure`` -- ``unengaged_exposure_calls`` (the true prevention
+        exposure surface -- unengaged AND non-empty tool calls).
+      * ``flips``/``blocked``/``errors`` -- unchanged from the gate-1
+        table."""
+    columns = ["category", "cases", "off", "elig", "on", "on_str", "downg", "strip_rate", "exposure", "flips", "blocked", "errors"]
+    widths = [20, 7, 6, 6, 6, 7, 7, 14, 10, 7, 9, 8]
+
+    def _row(values: list[Any]) -> str:
+        return "".join(f"{str(v):>{w}}" if i > 0 else f"{str(v):<{w}}" for i, (v, w) in enumerate(zip(values, widths)))
+
+    header = _row(columns)
     print(header)
     print("-" * len(header))
     for category, bucket in sorted(summary["by_category"].items()):
         print(
-            f"{category:<20}{bucket['cases']:>7}{bucket['claims_total_off']:>9}"
-            f"{bucket['claims_downgraded']:>12}{bucket['verdict_flips']:>8}{bucket['newly_blocked']:>15}"
-            f"{bucket['errors']:>8}"
+            _row(
+                [
+                    category,
+                    bucket["cases"],
+                    bucket["claims_total_off"],
+                    bucket["eligible_claims_off"],
+                    bucket["claims_total_on"],
+                    bucket["claims_stripped_on"],
+                    bucket["claims_downgraded"],
+                    _strip_rate_label(bucket),
+                    bucket["unengaged_exposure_calls"],
+                    bucket["verdict_flips"],
+                    bucket["newly_blocked"],
+                    bucket["errors"],
+                ]
+            )
         )
     print("-" * len(header))
     total = summary["total"]
     print(
-        f"{'TOTAL':<20}{total['cases']:>7}{total['claims_total_off']:>9}"
-        f"{total['claims_downgraded']:>12}{total['verdict_flips']:>8}{total['newly_blocked']:>15}"
-        f"{total['errors']:>8}"
+        _row(
+            [
+                "TOTAL",
+                total["cases"],
+                total["claims_total_off"],
+                total["eligible_claims_off"],
+                total["claims_total_on"],
+                total["claims_stripped_on"],
+                total["claims_downgraded"],
+                _strip_rate_label(total),
+                total["unengaged_exposure_calls"],
+                total["verdict_flips"],
+                total["newly_blocked"],
+                total["errors"],
+            ]
+        )
     )
 
 
@@ -737,15 +968,36 @@ def main() -> None:
     )
     parser.add_argument("--summarize-only", action="store_true", help="skip live runs; re-aggregate draws/ only")
     parser.add_argument("--case-id", action="append", default=None, help="restrict to one or more case ids (repeatable)")
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help=(
+            "session id stamped on every draw this invocation produces (default: an auto-generated uuid4 hex, "
+            "resolved ONCE before the per-case loop -- see module docstring, 'Session provenance is stamped "
+            "explicitly, once')"
+        ),
+    )
     args = parser.parse_args()
 
     configure_logging()
     print(_LIVE_APP_MARKER)
 
+    # Issue #163 gate-2/Opus review: resolved ONCE, here, before the
+    # per-case loop -- never re-derived per case. See module docstring.
+    session_id = args.session_id or uuid.uuid4().hex
+    session_started_at = datetime.now(timezone.utc).isoformat()
+    print(f"[issue-163] session_id={session_id} session_started_at={session_started_at}")
+
     if not args.summarize_only:
         if args.fresh and _DRAWS_DIR.exists():
+            # Issue #163 gate-2/Opus review: only ever unlink FILES here --
+            # a stray subdirectory under draws/ (should never exist, but a
+            # guard costs nothing) is left alone rather than partially
+            # wiped by iterdir()+unlink() blindly assuming every entry is a
+            # plain file.
             for path in _DRAWS_DIR.iterdir():
-                path.unlink()
+                if path.is_file():
+                    path.unlink()
 
         ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         engine = os.environ.get("RECORD_ENGINE", "ollama")
@@ -761,20 +1013,23 @@ def main() -> None:
                 print(f"[issue-163] {case.id}: SKIP (already drawn, {draw_path})")
                 continue
             client = _build_live_client(engine, ollama_base_url)
-            record, calls = run_one_case(case, client)
+            record, calls = run_one_case(case, client, session_id=session_id, session_started_at=session_started_at)
             summary_path, calls_path = save_case(record, calls)
             if record.error:
                 status = f"DRAW-ERROR {record.error}"
-            elif not record.applicable:
-                status = "not applicable (no verification needed)"
             elif not record.comparable:
                 off_err = record.off.error if record.off else None
                 on_err = record.on.error if record.on else None
                 status = f"ARM-ERROR off={off_err!r} on={on_err!r}"
             else:
+                # mypy: record.comparable already guarantees both are set and error-free
+                # (build_case_record's own invariant) -- narrowed explicitly here too,
+                # same discipline build_case_record uses for its own identical guarantee.
+                assert record.off is not None and record.on is not None
+                applicable_tag = "" if record.applicable else " (not asserted-on by this case's own assertions)"
                 status = (
                     f"off={record.off.verdict} on={record.on.verdict} "
-                    f"downgraded={record.on.downgraded_count} flip={record.verdict_flip}"
+                    f"downgraded={record.on.downgraded_count} flip={record.verdict_flip}{applicable_tag}"
                 )
             print(f"[issue-163] {case.id} ({case.category}): {status} -> {summary_path}, {calls_path}")
 
