@@ -64,6 +64,7 @@ import hashlib
 import inspect
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -670,7 +671,33 @@ class TestComputeSessionWindows:
         assert windows["old-session"] == {"started_at": None, "ended_at": None}
 
 
+_SAMPLE_PROVENANCE: dict[str, Any] = {
+    "app_git_sha": "deadbeef",
+    "engine": "llama_server",
+    "model": "qwen3-8b",
+    "flags": {
+        "evidence_retrieval_enabled": True,
+        "semantic_support_enabled": True,
+        "answer_grounding_enabled": False,
+        "tool_call_scoping_enabled": False,
+    },
+    "flags_source": "test fixture",
+    "loop_order": "sequential-per-question",
+    "parallel": 1,
+    "temperature": "0",
+    "backfilled": True,
+}
+
+
 class TestBuildRunMetadata:
+    """Gate-3/Opus DEFECT 2: build_run_metadata no longer takes global
+    backfilled/app_git_sha/engine/model/flags/loop_order/parallel/
+    temperature kwargs -- it takes ONLY session_provenance (a dict keyed by
+    session_id, sourced from load_session_metadata/record_session_
+    provenance) and merges each session's provenance with its OWN
+    draw-derived window. This is what makes --summarize-only safe (see
+    TestSummarizeOnlyNeverFabricatesProvenance below)."""
+
     def test_manual_session_windows_fill_unknown_sessions_only(self) -> None:
         """Mutation checked: dropping the 'windows[session_id]["started_at"]
         is None' guard (always overwriting with manual data regardless)
@@ -682,30 +709,184 @@ class TestBuildRunMetadata:
 
         metadata = build_run_metadata(
             {"q": [live, old]},
-            backfilled=True,
-            app_git_sha="deadbeef",
-            engine="llama_server",
-            model="qwen3-8b",
-            flags={
-                "evidence_retrieval_enabled": False,
-                "semantic_support_enabled": True,
-                "answer_grounding_enabled": False,
-                "tool_call_scoping_enabled": False,
-            },
-            loop_order="sequential-per-question",
-            parallel=1,
-            temperature="0",
+            session_provenance={"live-session": _SAMPLE_PROVENANCE, "old-session": _SAMPLE_PROVENANCE},
             manual_session_windows={
                 "old-session": {"started_at": "approx-start", "ended_at": "approx-end"},
                 "live-session": {"started_at": "SHOULD-NOT-BE-USED", "ended_at": "SHOULD-NOT-BE-USED"},
             },
         )
 
-        assert metadata["sessions"]["old-session"] == {"started_at": "approx-start", "ended_at": "approx-end"}
+        assert metadata["sessions"]["old-session"]["started_at"] == "approx-start"
+        assert metadata["sessions"]["old-session"]["ended_at"] == "approx-end"
         assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
-        assert metadata["backfilled"] is True
-        assert metadata["app_git_sha"] == "deadbeef"
-        assert metadata["flags"]["semantic_support_enabled"] is True
+
+    def test_session_provenance_merged_per_session(self) -> None:
+        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"live-session": _SAMPLE_PROVENANCE})
+
+        assert metadata["sessions"]["live-session"]["app_git_sha"] == "deadbeef"
+        assert metadata["sessions"]["live-session"]["flags"]["evidence_retrieval_enabled"] is True
+        assert metadata["sessions"]["live-session"]["backfilled"] is True
+        # window fields (from the draw, not the provenance dict) still present alongside
+        assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
+
+    def test_session_with_no_persisted_provenance_gets_explicit_unknown(self) -> None:
+        """Mutation checked: if build_run_metadata fell back to a fabricated/
+        current-environment guess instead of _UNKNOWN_SESSION_PROVENANCE for
+        a session missing from session_provenance, this assertion (loop_order
+        starting with "unknown") would fail -- confirmed the pre-DEFECT-2
+        top-level design (which stamped ITS OWN args.interleave onto every
+        session unconditionally) would have failed this exact case."""
+        orphan_session_draw = _draw_record(session_id="never-persisted", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [orphan_session_draw]}, session_provenance={})
+
+        entry = metadata["sessions"]["never-persisted"]
+        assert entry["loop_order"].startswith("unknown")
+        assert entry["app_git_sha"] is None
+        assert entry["flags"] is None
+        assert entry["backfilled"] is None
+        # the window is still real, derived from the draw itself -- only
+        # provenance is the placeholder
+        assert entry["started_at"] == "2026-01-01T00:00:00+00:00"
+
+    def test_no_top_level_flags_or_loop_order(self) -> None:
+        """Gate-3/Opus DEFECT 2(b): a multi-session report must not carry a
+        single top-level 'the flags'/'the loop order' -- every session's own
+        entry carries its own."""
+        live = _draw_record(session_id="s", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"s": _SAMPLE_PROVENANCE})
+
+        assert "flags" not in metadata
+        assert "loop_order" not in metadata
+        assert "backfilled" not in metadata
+        assert "app_git_sha" not in metadata
+
+
+# --- session-provenance sidecar persistence (gate-3/Opus DEFECT 2/3) ------------
+
+
+class TestSessionProvenanceSidecar:
+    def test_load_session_metadata_returns_empty_dict_when_file_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        assert harness.load_session_metadata() == {}
+
+    def test_record_then_load_roundtrips(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+
+        assert harness.load_session_metadata() == {"session-a": _SAMPLE_PROVENANCE}
+
+    def test_recording_a_second_session_does_not_clobber_the_first(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mutation checked: replacing record_session_provenance's
+        read-modify-write (load existing, set one key, write back) with a
+        naive 'write {session_id: provenance} only' would make this
+        assertion fail -- session-a's entry would be gone after session-b is
+        recorded. This is DEFECT 2(b)'s core fix: a second batch's run must
+        never overwrite an earlier session's provenance."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+        other_provenance = {**_SAMPLE_PROVENANCE, "app_git_sha": "different-sha"}
+        harness.record_session_provenance("session-b", other_provenance)
+
+        metadata = harness.load_session_metadata()
+
+        assert metadata["session-a"] == _SAMPLE_PROVENANCE
+        assert metadata["session-b"] == other_provenance
+
+
+class TestSummarizeOnlyNeverFabricatesProvenance:
+    """Gate-3/Opus DEFECT 2(a)/3: --summarize-only must reconstruct a
+    report's run_metadata purely from PERSISTED facts (session_metadata.json
+    + each draw's own started_at) -- it must never call record_session_
+    provenance (which reads the CURRENT environment/args) and must never let
+    a fresh guess overwrite what's already durably stored."""
+
+    def test_build_run_metadata_alone_never_reads_the_environment(self) -> None:
+        """Mutation checked: if build_run_metadata called _read_env_bool/
+        _read_env_str/os.environ.get internally (reintroducing DEFECT 2(a)'s
+        bug -- deriving facts instead of reading session_provenance), a
+        session missing from session_provenance would pick up THIS
+        process's environment instead of the explicit _UNKNOWN_SESSION_
+        PROVENANCE placeholder -- confirmed by inspecting the function's own
+        source for any os.environ/_read_env_ reference."""
+        source = inspect.getsource(build_run_metadata)
+
+        assert "os.environ" not in source
+        assert "_read_env_bool" not in source
+        assert "_read_env_str" not in source
+
+    def test_persisted_provenance_survives_a_summarize_only_style_rebuild(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Simulates exactly what --summarize-only does: load whatever is
+        persisted (no new record_session_provenance call), rebuild
+        run_metadata from it. The persisted facts must come back unchanged,
+        proving a summarize-only regeneration cannot silently rewrite them."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+        harness.record_session_provenance("session-1-initial-n8", _SAMPLE_PROVENANCE)
+
+        draw = _draw_record(session_id="session-1-initial-n8", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+        # The "--summarize-only" path: read persisted metadata, do NOT record anything new.
+        metadata = build_run_metadata({"q": [draw]}, session_provenance=harness.load_session_metadata())
+
+        assert metadata["sessions"]["session-1-initial-n8"]["app_git_sha"] == "deadbeef"
+        assert metadata["sessions"]["session-1-initial-n8"]["loop_order"] == "sequential-per-question"
+        assert metadata["sessions"]["session-1-initial-n8"]["backfilled"] is True
+
+
+# --- _read_env_bool truthy/falsy set (gate-3/Opus DEFECT 1/3) -------------------
+
+
+class TestReadEnvBoolTruthySet:
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "t", "T", "yes", "YES", "y", "Y", "on", "On"])
+    def test_true_values(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", value)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "False", "f", "F", "no", "NO", "n", "N", "off", "Off"])
+    def test_false_values(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", value)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", True) is False
+
+    def test_unset_returns_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.delenv("TEST_BOOL_FLAG", raising=False)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", True) is True
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is False
+
+    def test_t_and_y_specifically_recognized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mutation checked: DEFECT 1 flagged the ORIGINAL truthy set
+        ({'1','true','yes','on'}) as narrower than pydantic-core's LAX bool
+        parser, which also accepts bare 't'/'y'. Reverting to the original
+        set makes this assertion fail (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=t
+        would misread as False)."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", "t")
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", "y")
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
 
 
 # --- no-tool-stub property -----------------------------------------------------

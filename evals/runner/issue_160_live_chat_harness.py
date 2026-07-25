@@ -233,12 +233,22 @@ verdict distribution, tool-sequence distribution, answer-hash distribution,
 latency stats, and the three-way mechanism attribution -- each gated by
 ``run_valid`` (gate-3/Opus MINOR 3: ``null``, not ``False``, when the run
 had any error or incomplete draw -- see ``attribute_mechanisms``'s
-docstring) -- plus a top-level ``run_metadata`` block (gate-3/Opus MAJOR 2:
-app git SHA, engine/model, the four feature-flag booleans, loop order/
-parallelism/temperature, and each session's observed wall-clock window --
-see ``build_run_metadata``'s docstring for exactly how each field is
-derived, and what ``backfilled: true`` means for the two pre-schema
-committed batches)."""
+docstring) -- plus a top-level ``run_metadata.sessions`` block (gate-3/Opus
+MAJOR 2, restructured PER-SESSION per gate-3/Opus DEFECT 2 re-review: a
+multi-session report has no single "the flags"/"the loop order" to report
+at the top level, since different sessions may genuinely differ). Each
+session's entry merges its observed wall-clock window
+(``compute_session_windows``, from that session's own draws) with its
+PERSISTED provenance (app git SHA, engine/model, the four feature-flag
+booleans, loop order/parallelism/temperature, ``backfilled`` --
+``build_run_metadata``'s docstring has the full field list). That
+provenance lives durably in a SIDECAR file,
+``evals/results/issue-160/session_metadata.json`` (``load_session_
+metadata``/``record_session_provenance``), written ONCE by the live run
+that produced each session and never re-derived by a later
+``--summarize-only`` regeneration -- a session absent from the sidecar
+shows ``loop_order: "unknown (no live run recorded for this session ...)"``
+rather than a guessed value stamped from whatever's currently running."""
 
 from __future__ import annotations
 
@@ -332,9 +342,9 @@ class DrawRecord:
     GENUINELY UNKNOWN -- not "computed as zero/empty" -- because no run
     metadata existed at the time to derive them from; the migration that
     added these fields to the committed artifact left both explicitly
-    ``null`` rather than inventing a value (see ``report.json``'s top-level
-    ``run_metadata.backfilled``). Every draw from a run using this schema
-    version onward gets a real value for both."""
+    ``null`` rather than inventing a value (see ``report.json``'s
+    ``run_metadata.sessions[<session_id>].backfilled``). Every draw from a
+    run using this schema version onward gets a real value for both."""
 
     question_id: str
     patient_id: int
@@ -751,84 +761,163 @@ def compute_session_windows(draws: list[DrawRecord]) -> dict[str, dict[str, str 
     return windows
 
 
+_ENV_BOOL_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
+_ENV_BOOL_FALSE_VALUES = {"0", "false", "f", "no", "n", "off"}
+
+
 def _read_env_bool(name: str, default: bool) -> bool:
     """Reads an env var the same name pydantic-settings would bind
     ``app.config.Settings``'s matching field to (case-insensitive match to
     the field name) -- WITHOUT importing ``app.config`` (this module has no
     ``app.*`` import path at all, by design -- see ``TestNoToolStub``).
-    Falls back to the LITERAL default recorded here, which mirrors that
-    field's declared default as of this harness's own commit -- if
-    ``app/config.py``'s default ever changes, this fallback can go stale;
-    it is a recorded snapshot, not a live query (see ``build_run_metadata``'s
-    ``flags_source`` string, which says exactly this to any report reader)."""
+
+    Gate-3/Opus DEFECT 1: the accepted true/false string sets now MATCH
+    pydantic-core's LAX bool parser (what ``BaseSettings`` actually uses to
+    coerce an env-var string) -- true: ``1``/``true``/``t``/``yes``/``y``/
+    ``on``; false: ``0``/``false``/``f``/``no``/``n``/``off`` (all
+    case-insensitive, whitespace-stripped). A value in neither set falls
+    back to ``default`` rather than raising -- this harness reads config for
+    REPORTING, not for gating behavior, so a stray unparseable value should
+    surface as "assumed the recorded default" rather than crash a live run
+    over a provenance field. Falls back to the LITERAL default recorded here
+    when the env var is unset at all, which mirrors that field's declared
+    default as of this harness's own commit -- if ``app/config.py``'s
+    default ever changes, this fallback can go stale; it is a recorded
+    snapshot, not a live query."""
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw.strip().lower()
+    if normalized in _ENV_BOOL_TRUE_VALUES:
+        return True
+    if normalized in _ENV_BOOL_FALSE_VALUES:
+        return False
+    return default
 
 
 def _read_env_str(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
-_FLAGS_SOURCE = (
-    "environment variable override if set (matching app.config.Settings' pydantic-settings "
+_LIVE_FLAGS_SOURCE = (
+    "environment variable read at run time (matching app.config.Settings' pydantic-settings "
     "field-name-uppercased convention), else the field default AS RECORDED IN THIS HARNESS "
     "(snapshot of app/config.py at the harness's own commit, not a live query -- this module "
     "has zero app.* import path by design, see TestNoToolStub)"
 )
 
+# Gate-3/Opus DEFECT 2: per-session provenance NEVER re-derived at
+# --summarize-only time -- a session with no persisted entry in
+# session_metadata.json (see load_session_metadata/record_session_
+# provenance below) gets this explicit "unknown" placeholder instead of a
+# guessed/fabricated value.
+_UNKNOWN_SESSION_PROVENANCE: dict[str, Any] = {
+    "app_git_sha": None,
+    "engine": None,
+    "model": None,
+    "flags": None,
+    "flags_source": None,
+    "loop_order": "unknown (no live run recorded for this session -- see session_metadata.json)",
+    "parallel": None,
+    "temperature": None,
+    "backfilled": None,
+}
+
+
+def _session_metadata_path() -> Path:
+    return _RESULTS_DIR / "session_metadata.json"
+
+
+def load_session_metadata() -> dict[str, dict[str, Any]]:
+    """Read the durable per-session provenance sidecar (gate-3/Opus
+    DEFECT 2) -- ``evals/results/issue-160/session_metadata.json``. Returns
+    ``{}`` if the file doesn't exist yet. NEVER derives or guesses a value --
+    a pure read of whatever ``record_session_provenance`` previously
+    persisted. Called by every report build (live or ``--summarize-only``)
+    so ``build_run_metadata`` always has real, previously-captured facts to
+    merge in rather than re-deriving anything from the current environment."""
+    path = _session_metadata_path()
+    if not path.exists():
+        return {}
+    result: dict[str, dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))
+    return result
+
+
+def record_session_provenance(session_id: str, provenance: dict[str, Any]) -> None:
+    """Durably persist ONE session's provenance (gate-3/Opus DEFECT 2) --
+    called exactly once, by a LIVE ``main()`` run, immediately after that
+    session's draws are captured (NEVER by ``--summarize-only``, which only
+    calls ``load_session_metadata`` -- see ``main()``). Overwrites ONLY this
+    ``session_id``'s own entry; every other session's persisted provenance
+    is read, kept byte-identical, and written back verbatim -- so a second
+    batch's run can never clobber an earlier session's facts, and
+    ``--summarize-only`` (which never calls this function at all) can never
+    invent them either."""
+    path = _session_metadata_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = load_session_metadata()
+    metadata[session_id] = provenance
+    path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
 
 def build_run_metadata(
     per_question: dict[str, list[DrawRecord]],
     *,
-    backfilled: bool,
-    app_git_sha: str | None,
-    engine: str,
-    model: str | None,
-    flags: dict[str, bool],
-    loop_order: str,
-    parallel: int,
-    temperature: str,
+    session_provenance: dict[str, dict[str, Any]],
     manual_session_windows: dict[str, dict[str, str | None]] | None = None,
 ) -> dict[str, Any]:
-    """Assembles the report-level provenance block (gate-3/Opus MAJOR 2):
-    what app tree, engine/model, and feature-flag config produced these
-    draws, plus each session's observed wall-clock window and the run's
-    determinism-relevant execution facts (``loop_order``/``parallel``/
-    ``temperature`` -- gate-3/Opus MAJOR 3's warm-slot caveat, made
-    machine-readable here rather than living only in the docstring).
+    """Assembles the report-level provenance block (gate-3/Opus MAJOR 2,
+    restructured per DEFECT 2): PER-SESSION, not a single top-level block --
+    a multi-session report file (this harness's normal shape once a second
+    batch is appended) has no single "the flags"/"the loop order" to report
+    at the top level; different sessions may genuinely have run under
+    different config. Each session's window (``compute_session_windows``,
+    derived from that session's OWN draws' ``started_at``) is merged with
+    that session's PERSISTED provenance (``session_provenance`` -- see
+    ``load_session_metadata``/``record_session_provenance``) -- provenance
+    is NEVER re-derived or guessed here. A session absent from
+    ``session_provenance`` gets the explicit ``_UNKNOWN_SESSION_PROVENANCE``
+    placeholder rather than a fabricated value.
+
+    This is what makes ``--summarize-only`` safe to run repeatedly: its
+    caller (``main()``) passes whatever ``load_session_metadata()`` returns,
+    verbatim, so regenerating the report NEVER stamps THIS invocation's
+    live-run facts (``loop_order``, engine, ...) onto a session it did not
+    itself observe.
 
     ``manual_session_windows`` lets a caller (only ever the one-time
-    backfill migration for the two pre-schema committed batches -- see
-    ``evals/results/issue-160/report.json``'s own ``run_metadata.backfilled``)
-    supply an approximate window for a session whose draws all predate
-    ``started_at`` and therefore compute to ``{None, None}`` on their own;
-    ordinary live ``main()`` runs never pass this -- every session they
-    produce has real per-draw timestamps."""
+    backfill migration for the two pre-schema committed batches) supply an
+    approximate window for a session whose draws all predate ``started_at``
+    and therefore compute to ``{None, None}`` on their own; ordinary live
+    ``main()`` runs never pass this -- every session they produce has real
+    per-draw timestamps."""
     all_draws = [draw for draws in per_question.values() for draw in draws]
     windows = compute_session_windows(all_draws)
     if manual_session_windows:
         for session_id, manual in manual_session_windows.items():
             if session_id in windows and windows[session_id]["started_at"] is None:
                 windows[session_id] = dict(manual)
+
+    sessions: dict[str, Any] = {}
+    for session_id, window in windows.items():
+        provenance = session_provenance.get(session_id, _UNKNOWN_SESSION_PROVENANCE)
+        sessions[session_id] = {**window, **provenance}
+
     return {
-        "backfilled": backfilled,
-        "app_git_sha": app_git_sha,
-        "engine": engine,
-        "model": model,
-        "flags": flags,
-        "flags_source": _FLAGS_SOURCE,
-        "loop_order": loop_order,
-        "parallel": parallel,
-        "temperature": temperature,
-        "sessions": windows,
+        "sessions": sessions,
         "session_windows_note": (
             "started_at = earliest draw's started_at; ended_at = latest draw's "
             "(started_at + latency_seconds) -- i.e. when that draw actually finished, not "
             "just when it began. A session with {started_at: null, ended_at: null} predates "
-            "the started_at field entirely (backfilled=true runs); see manual_session_windows "
-            "for how those two sessions' approximate windows were supplied instead."
+            "the started_at field entirely; manual_session_windows is the only sanctioned way "
+            "to backfill an approximate one (see the two pre-schema committed sessions)."
+        ),
+        "session_provenance_note": (
+            "app_git_sha/engine/model/flags/flags_source/loop_order/parallel/temperature/"
+            "backfilled are PERSISTED per-session facts (evals/results/issue-160/"
+            "session_metadata.json), captured once by the live run that produced that session "
+            "and never re-derived on a later --summarize-only regeneration. A session showing "
+            "loop_order starting with \"unknown\" has no persisted entry."
         ),
     }
 
@@ -1032,32 +1121,54 @@ def main() -> None:
             status = f"ERROR {draw.error}" if draw.error else f"verdict={draw.verdict} tools={tool_sequence_of(draw)}"
             print(f"[issue-160] {question.id} draw {draw_index} ({session_id}): {status} -> {path}")
 
+        # Gate-3/Opus DEFECT 2: persist THIS session's provenance durably and
+        # exactly once, immediately after its draws are captured -- never
+        # re-derived by a later --summarize-only regeneration (see
+        # build_run_metadata's docstring). Reads env vars now, while this
+        # process is still running inside the same container/session that
+        # produced the draws -- a --summarize-only run later (possibly in a
+        # different container, or after the environment changed) has no
+        # business re-reading these and calling the result the same thing.
+        engine = _read_env_str("COPILOT_LLM_ENGINE", "llama_server")
+        model = (
+            _read_env_str("LLAMA_SERVER_MODEL", "qwen3-8b")
+            if engine == "llama_server"
+            else _read_env_str("OLLAMA_MODEL", "qwen3:4b")
+        )
+        record_session_provenance(
+            session_id,
+            {
+                "app_git_sha": args.app_git_sha or os.environ.get("APP_GIT_SHA"),
+                "engine": engine,
+                "model": model,
+                "flags": {
+                    "evidence_retrieval_enabled": _read_env_bool("COPILOT_EVIDENCE_RETRIEVAL_ENABLED", False),
+                    "semantic_support_enabled": _read_env_bool("COPILOT_SEMANTIC_SUPPORT_ENABLED", True),
+                    "answer_grounding_enabled": _read_env_bool("COPILOT_CLAIM_ANSWER_GROUNDING_ENABLED", False),
+                    "tool_call_scoping_enabled": _read_env_bool(
+                        "COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED", False
+                    ),
+                },
+                "flags_source": _LIVE_FLAGS_SOURCE,
+                "loop_order": (
+                    "interleaved (round-robin across questions per draw index)"
+                    if args.interleave
+                    else "sequential-per-question (all draws of one question back-to-back, warm single slot)"
+                ),
+                "parallel": 1,
+                "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified by this harness)",
+                "backfilled": False,
+            },
+        )
+
     per_question = {q.id: load_draws(q.id) for q in TARGET_QUESTIONS}
     report = build_report(per_question)
-    engine = _read_env_str("COPILOT_LLM_ENGINE", "llama_server")
-    model = (
-        _read_env_str("LLAMA_SERVER_MODEL", "qwen3-8b")
-        if engine == "llama_server"
-        else _read_env_str("OLLAMA_MODEL", "qwen3:4b")
-    )
-    report["run_metadata"] = build_run_metadata(
-        per_question,
-        backfilled=False,
-        app_git_sha=args.app_git_sha or os.environ.get("APP_GIT_SHA"),
-        engine=engine,
-        model=model,
-        flags={
-            "evidence_retrieval_enabled": _read_env_bool("COPILOT_EVIDENCE_RETRIEVAL_ENABLED", False),
-            "semantic_support_enabled": _read_env_bool("COPILOT_SEMANTIC_SUPPORT_ENABLED", True),
-            "answer_grounding_enabled": _read_env_bool("COPILOT_CLAIM_ANSWER_GROUNDING_ENABLED", False),
-            "tool_call_scoping_enabled": _read_env_bool("COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED", False),
-        },
-        loop_order="interleaved (round-robin across questions per draw index)"
-        if (args.summarize_only or args.interleave)
-        else "sequential-per-question (all draws of one question back-to-back, warm single slot)",
-        parallel=1,
-        temperature="0 (llama_server_client.py source-confirmed default; not runtime-verified by this harness)",
-    )
+    # Gate-3/Opus DEFECT 2: --summarize-only NEVER calls record_session_
+    # provenance above, so this is a pure read of whatever was durably
+    # persisted by a PAST live run -- a summarize-only regeneration can
+    # never stamp fresh guesses (or this invocation's own environment) onto
+    # sessions it did not itself produce.
+    report["run_metadata"] = build_run_metadata(per_question, session_provenance=load_session_metadata())
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = _RESULTS_DIR / "report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
