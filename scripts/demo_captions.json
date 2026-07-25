@@ -1,0 +1,40 @@
+{
+  "frames": [
+    {
+      "file": "f01-a-ask.png",
+      "caption": "Ask the chart a question in the physician's own workflow -- the panel lives inside OpenEMR."
+    },
+    {
+      "file": "f02-a-answer.png",
+      "caption": "The answer surfaces the recent encounter and flags that the 2014 baseline may be stale."
+    },
+    {
+      "file": "f03-a-verdict.png",
+      "caption": "Verdict: Blocked. A narrative answer has no single citable chart field -- the system says so rather than implying proof."
+    },
+    {
+      "file": "f04-b-ask.png",
+      "caption": "A safety question: any allergy conflict with current medications?"
+    },
+    {
+      "file": "f05-b-answer.png",
+      "caption": "Verified. Every factual claim is re-checked against the raw record."
+    },
+    {
+      "file": "f06-b-verdict.png",
+      "caption": "Each claim carries citation chips naming the exact record field it was checked against."
+    },
+    {
+      "file": "f07-c-ask.png",
+      "caption": "A patient with no lab data on file."
+    },
+    {
+      "file": "f08-c-answer.png",
+      "caption": "It answers \"no recent lab results\" -- and even that absence is cited (recent_lab_count = 0)."
+    },
+    {
+      "file": "f09-c-verdict.png",
+      "caption": "Nothing is asserted without a citation. All inference runs on local models -- no cloud calls."
+    }
+  ]
+}
