@@ -103,13 +103,71 @@ docstring for the mechanism). Read each question's own distribution across
 its own draws; do not compare the BP question's rate against the allergy
 question's rate as if they exercised the same pipeline surface.
 
-Usage (from repo root, live model reachable -- e.g. inside
-``development-easy-agent-1`` after ``docker cp``-ing fresh sources in, see
-issue #140, or against a host-published bridge):
+**Usage -- MUST run inside ``development-easy-agent-1`` (issue #154 F5).**
+On the ``development-easy`` dev stack, ``agent``/``ollama``/``llama-server``/
+``llama-server-embed`` sit on the ``copilot_internal`` network, which is
+declared ``internal: true`` (``docker/development-easy/docker-compose.copilot
+.yml``'s security-intent comment) -- it publishes NO host ports, by design.
+Running this script from the host (``RECORD_ENGINE=llama_server python
+evals/runner/issue_154_stability_harness.py``, as this module's docstring
+used to say) cannot reach any of them; every draw fails with
+``LlamaServerError('llama-server request failed')`` /
+``OllamaError``-equivalent, and the summary comes back all-``n_exceptions``,
+zero usable data (confirmed live, #154 follow-up: 16/16 draws failed this
+way). This is exactly the same host-unreachable trap
+``docs/DEMO_SCRIPT.md``'s setup step 5 documents for
+``seed_demo_documents.py`` -- and the same fix applies: run the script
+**inside** the ``agent`` container, which sits on ``copilot_internal`` and
+can reach every service by its in-network hostname (the defaults this
+script already uses: ``http://ollama:11434``, and ``llama-server``'s
+in-container URL is set on ``app.config.Settings``, not read from
+``LLAMA_SERVER_BASE_URL`` by this script).
 
-    RECORD_ENGINE=llama_server python evals/runner/issue_154_stability_harness.py --draws 8
-    OLLAMA_BASE_URL=http://localhost:11435 python evals/runner/issue_154_stability_harness.py --draws 8
+The ``development-easy-agent-1`` image has no bind mounts (a snapshot, not
+a live checkout) and does not include ``evals/`` at all -- only
+``app/`` (baked in at image-build time, and potentially STALE relative to
+your working tree, since the image is rebuilt on its own schedule, not on
+every commit). Copy both the harness's own package AND a fresh copy of
+``app/`` in explicitly before every run, so the harness measures the code
+you actually intend to measure, not a stale baked-in copy (this is what
+``_agent_root_candidates``'s dual-layout ``sys.path`` search above exists
+for -- see issue #140). From the repo root:
+
+    docker exec development-easy-agent-1 mkdir -p /data/repo_ingest/evals
+    docker cp evals/runner development-easy-agent-1:/data/repo_ingest/evals/runner
+    docker cp evals/cases development-easy-agent-1:/data/repo_ingest/evals/cases
+    docker exec development-easy-agent-1 mkdir -p /data/repo_ingest/services/copilot-agent
+    docker cp services/copilot-agent/app development-easy-agent-1:/data/repo_ingest/services/copilot-agent/app
+    docker cp services/copilot-agent/corpus development-easy-agent-1:/data/repo_ingest/services/copilot-agent/corpus
+    docker exec -e RECORD_ENGINE=llama_server -w /data/repo_ingest development-easy-agent-1 \
+        python evals/runner/issue_154_stability_harness.py --draws 8
+
+(``pyyaml``/``pydantic`` -- ``runner.loader``'s and ``runner.schema``'s only
+non-stdlib deps -- are already present in the image's installed
+``copilot-agent`` package, so no ``pip install`` step is needed.) Copying
+``services/copilot-agent/app`` in is what makes ``_MONOREPO_AGENT_ROOT``
+(``_REPO_ROOT / "services" / "copilot-agent"``) resolve to a real
+``app/__init__.py`` and win the dual-layout sort in
+``_agent_root_candidates``, so this process imports YOUR working tree's
+``app`` rather than the image's baked-in ``site-packages`` copy -- confirmed
+load-bearing live: running with only ``evals/`` copied in (no fresh
+``app/``) raised ``TypeError('Planner.run() takes 2 positional arguments but
+3 were given')`` on every draw, because the image's baked-in ``app.planner
+.Planner.run`` predates issue #105's ``guideline_excerpts`` parameter that
+``runner.pipeline.run_case`` (this harness's real entry point) now passes.
+``corpus/`` must come along too -- ``app.retrieval``'s ``CORPUS_DIR``
+resolves relative to ``app/``'s parent, and the BP case's guideline
+citation depends on it.
+
+To re-aggregate an existing ``draws/`` directory without a live run (works
+from the host too, since it touches no network):
+
     python evals/runner/issue_154_stability_harness.py --summarize-only
+
+A host-published bridge (e.g. a disposable ``socat``/port-forward container
+exposing ``llama-server``/``ollama`` to the host) is the only way to run
+this FROM the host instead -- not set up on this dev stack; the in-container
+route above is the supported path until one exists.
 """
 
 from __future__ import annotations
