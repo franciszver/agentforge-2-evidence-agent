@@ -1,0 +1,40 @@
+{
+  "frames": [
+    {
+      "file": "f01-a-ask.png",
+      "caption": "Ask the chart a question in the physician's own workflow -- the panel lives inside OpenEMR."
+    },
+    {
+      "file": "f02-a-answer.png",
+      "caption": "The answer surfaces the recent encounter and flags that the 2014 baseline may be stale."
+    },
+    {
+      "file": "f03-a-verdict.png",
+      "caption": "Verdict: Blocked -- the citation-axis reading (no safety conflict here): no single citable chart field for a narrative answer."
+    },
+    {
+      "file": "f04-b-ask.png",
+      "caption": "A safety question: is there a recorded allergy that conflicts with her current medications?"
+    },
+    {
+      "file": "f05-b-answer.png",
+      "caption": "Verified: her chart has no allergies on file, so this is an absence check, not a conflict caught and avoided."
+    },
+    {
+      "file": "f06-b-verdict.png",
+      "caption": "Each rendered claim card carries a citation chip naming the record field checked -- true here of the three medication claims; the headline allergy claim above has none."
+    },
+    {
+      "file": "f07-c-ask.png",
+      "caption": "A patient with no lab data on file."
+    },
+    {
+      "file": "f08-c-answer.png",
+      "caption": "It answers \"no recent lab results\" -- and even that absence carries a citation chip naming the record field checked."
+    },
+    {
+      "file": "f09-c-verdict.png",
+      "caption": "All inference above runs on local models -- no cloud calls. (Not every claim gets a citation chip; see the Blocked beat.)"
+    }
+  ]
+}
