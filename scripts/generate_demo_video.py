@@ -8,7 +8,8 @@ Co-Pilot panel), overlays a caption bar, muxes a synthesized calm arpeggio
 soundtrack, and emits:
 
   - an mp4 (silent-fallback if audio muxing fails) -- NOT committed, too
-    large / regenerable
+    large, and not regenerable from a clean clone (its source frames live
+    in gitignored tmp/)
   - a gif (captioned, same frames) -- committed to docs/assets/demo.gif
 
 Usage:
@@ -281,7 +282,13 @@ def mux_audio(silent_mp4: Path, wav_path: Path, final_mp4: Path, ffmpeg: str) ->
         str(final_mp4),
     ]
     result = subprocess.run(cmd, capture_output=True)
-    return result.returncode == 0 and final_mp4.exists()
+    if result.returncode != 0 or not final_mp4.exists():
+        print(
+            f"ffmpeg failed muxing audio (exit {result.returncode}):\n"
+            f"{result.stderr.decode(errors='replace')}"
+        )
+        return False
+    return True
 
 
 def build_gif(frames: list[Image.Image], gif_path: Path, max_width: int = 640) -> None:

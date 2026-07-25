@@ -26,14 +26,17 @@ carries a citation chip.*
 
 *Two caveats worth stating plainly rather than glossing over: verdicts
 are **not deterministic** — the same question, run repeatedly against the
-same stack, can come back with different verdicts and different cited
-claims. A blood-pressure question answered correctly with a matching
-citation on 1 of 4 draws, and on the other 3 declined to answer while
-citing an unrelated respiratory-rate claim the user never asked about
+same stack, can return different answers, different cited claims, or a
+different verdict outright. A blood-pressure question answered correctly
+with a matching citation on 1 of 4 draws, and on the other 3 declined to
+answer while citing an unrelated respiratory-rate claim the user never
+asked about — all four still verdict `verified`
 ([#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149));
 the allergy question above returned `verified` on 5 of 6 draws and
-`blocked` on 1, with the answer text identical every time
+`blocked` on 1, with the answer text identical every time — the verdict
+itself flipping
 ([#150](https://github.com/franciszver/agentforge-2-evidence-agent/issues/150)).
+
 Separately, a `verified` verdict confirms that the citation attached to a
 claim matches the record — not that the claim, or the answer, actually
 addresses the question the user asked.*
@@ -46,10 +49,12 @@ blended into one undifferentiated feature list.
 ### Week 1 (Phase 1 baseline, inherited unchanged at v1.0)
 
 A verification-first clinical co-pilot embedded in OpenEMR: a physician asks
-a question about the open chart and gets an answer where **every factual
-claim is deterministically re-checked against the raw record and cited**.
+a question about the open chart and gets an answer where the verification
+layer is designed to deterministically re-check every extracted factual
+claim against the raw record and cite it — coverage per claim is not yet
+universal in practice (see the Phase-2 demo caption above).
 
-![Clinical Co-Pilot demo — a physician asks "what meds is she on?", the answer streams in, then a verified/partially_verified/blocked badge and tappable citation chips appear, each chip revealing the record value it was checked against.](docs/demo/clinical-copilot-demo.gif)
+![Clinical Co-Pilot demo — a physician asks "What is he taking, and does anything conflict with starting ibuprofen?" on Phil Belford's chart, the answer streams in, then a Verified badge and tappable citation chips appear, each chip revealing the record value it was checked against.](docs/demo/clinical-copilot-demo.gif)
 
 *75-second demo of this Week-1/Phase-1 baseline co-pilot — [MP4 version](docs/demo/clinical-copilot-demo.mp4)*
 
@@ -143,8 +148,3 @@ findings, and remediation notes.
 [Multimodal Evidence Agent project board](https://github.com/users/franciszver/projects/3)
 tracks all work — stages as milestones, tasks as issues, one issue = one
 branch = one PR.
-
----
-
-*Interview prep (P6.1, issue #28) is complete — kept local-only by design
-(a `prd/` mock-interview doc, intentionally not published in this repo).*
