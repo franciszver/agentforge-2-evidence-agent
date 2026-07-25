@@ -409,19 +409,30 @@ class TestNoToolStub:
     """Pins the #154-escaping property: this harness has no import path back
     into in-process/pinned-tool-data pipeline machinery."""
 
-    def test_source_has_no_tool_stub_or_pipeline_imports(self) -> None:
+    def test_source_has_no_tool_stub_or_pipeline_import_lines(self) -> None:
+        """Scans only actual ``import``/``from ... import`` statement lines
+        (not prose/comments/docstrings, which legitimately discuss #154's
+        tool_stub/pipeline machinery by name when explaining why THIS module
+        avoids it)."""
         source = _HARNESS_MODULE_PATH.read_text(encoding="utf-8")
+        import_lines = [
+            line.strip()
+            for line in source.splitlines()
+            if line.strip().startswith(("import ", "from "))
+        ]
 
         forbidden_substrings = [
             "runner.tool_stub",
             "build_fake_registry",
             "runner.pipeline",
             "runner.schema",
-            "from app",
-            "import app",
+            "app",  # catches "from app..."/"import app..." on any import line
         ]
-        for needle in forbidden_substrings:
-            assert needle not in source, f"harness must not import/reference {needle!r} -- reintroduces #154's blind spot"
+        for line in import_lines:
+            for needle in forbidden_substrings:
+                assert needle not in line, (
+                    f"harness import line {line!r} references {needle!r} -- reintroduces #154's blind spot"
+                )
 
     def test_module_has_no_app_dot_star_imports_via_ast(self) -> None:
         import ast
