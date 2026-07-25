@@ -741,9 +741,11 @@ def compute_session_windows(draws: list[DrawRecord]) -> dict[str, dict[str, str 
     slowest/last-finishing draw actually completed). A session where every
     draw has ``started_at is None`` (pre-schema/backfilled -- see
     ``DrawRecord``'s docstring) yields ``{"started_at": None, "ended_at":
-    None}`` here; ``build_run_metadata``'s ``manual_session_windows``
-    parameter is the ONLY sanctioned way to fill those in, and only with
-    windows explicitly labeled approximate."""
+    None}`` here; ``build_run_metadata``'s ``_resolve_session_window``
+    falls back to a window PERSISTED directly in that session's
+    ``session_metadata.json`` entry (via ``record_session_provenance``) in
+    that case, and only with windows explicitly labeled approximate
+    (``window_precision``)."""
     windows: dict[str, dict[str, str | None]] = {}
     for session_id, session_draws in group_by_session(draws).items():
         starts: list[datetime] = []
@@ -852,65 +854,120 @@ def record_session_provenance(session_id: str, provenance: dict[str, Any]) -> No
     is read, kept byte-identical, and written back verbatim -- so a second
     batch's run can never clobber an earlier session's facts, and
     ``--summarize-only`` (which never calls this function at all) can never
-    invent them either."""
+    invent them either.
+
+    ``provenance`` may optionally carry ``started_at``/``ended_at`` (and a
+    ``window_precision`` label -- gate-3/Opus final-round MINOR 1) when the
+    caller wants a window persisted alongside the rest (the ONLY current
+    caller of this is the one-time backfill migration for the two
+    pre-schema committed sessions, whose draws carry no real per-draw
+    ``started_at`` to derive a window from at all -- see
+    ``build_run_metadata``'s ``_resolve_session_window`` for exactly how a
+    persisted window interacts with a draw-derived one). An ordinary live
+    ``main()`` run omits these keys -- its session's window is always
+    derivable from its own draws' real ``started_at``, so persisting one
+    here would be redundant, and correctly never happens.
+
+    **Atomic write (gate-3/Opus final-round MINOR 2).** Writes to a
+    ``.tmp`` sibling first, then ``os.replace``s it onto the real path --
+    ``os.replace`` is atomic on both POSIX and Windows (unlike a bare
+    ``path.write_text``, which truncates the target before writing and
+    leaves a half-written, corrupt JSON file behind if the process dies
+    mid-write). This harness has already had one real mid-run crash
+    (the root-owned-file ``PermissionError`` documented in this module's
+    own docstring) -- the durability store this function guards must not
+    be the next thing a crash corrupts."""
     path = _session_metadata_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = load_session_metadata()
     metadata[session_id] = provenance
-    path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _resolve_session_window(computed: dict[str, str | None], persisted: dict[str, Any]) -> dict[str, Any]:
+    """Gate-3/Opus final-round MINOR 1: prefer the window DERIVED FROM THIS
+    SESSION'S OWN DRAWS (``compute_session_windows``) whenever it has real
+    data -- a window measured from draws always beats a persisted one, by
+    construction (this function is the ONLY place the two are compared, and
+    it always checks ``computed`` first). Falls back to whatever window was
+    PERSISTED in the sidecar (``record_session_provenance``) only when the
+    draws themselves carry no ``started_at`` at all (pre-schema/backfilled
+    draws). Returns ``window_precision`` alongside the two timestamps so a
+    reader never mistakes a persisted APPROXIMATE window for an exact,
+    draw-measured one."""
+    if computed["started_at"] is not None:
+        return {"started_at": computed["started_at"], "ended_at": computed["ended_at"], "window_precision": "exact"}
+    persisted_started = persisted.get("started_at")
+    if persisted_started is not None:
+        return {
+            "started_at": persisted_started,
+            "ended_at": persisted.get("ended_at"),
+            "window_precision": persisted.get("window_precision", "approximate"),
+        }
+    return {"started_at": None, "ended_at": None, "window_precision": None}
 
 
 def build_run_metadata(
     per_question: dict[str, list[DrawRecord]],
     *,
     session_provenance: dict[str, dict[str, Any]],
-    manual_session_windows: dict[str, dict[str, str | None]] | None = None,
 ) -> dict[str, Any]:
     """Assembles the report-level provenance block (gate-3/Opus MAJOR 2,
-    restructured per DEFECT 2): PER-SESSION, not a single top-level block --
-    a multi-session report file (this harness's normal shape once a second
-    batch is appended) has no single "the flags"/"the loop order" to report
-    at the top level; different sessions may genuinely have run under
-    different config. Each session's window (``compute_session_windows``,
-    derived from that session's OWN draws' ``started_at``) is merged with
-    that session's PERSISTED provenance (``session_provenance`` -- see
-    ``load_session_metadata``/``record_session_provenance``) -- provenance
-    is NEVER re-derived or guessed here. A session absent from
-    ``session_provenance`` gets the explicit ``_UNKNOWN_SESSION_PROVENANCE``
+    restructured per DEFECT 2, window-precedence fixed per final-round
+    MINOR 1): PER-SESSION, not a single top-level block -- a multi-session
+    report file (this harness's normal shape once a second batch is
+    appended) has no single "the flags"/"the loop order" to report at the
+    top level; different sessions may genuinely have run under different
+    config. Each session's entry is ``{**provenance, **window}`` -- window
+    keys (``started_at``/``ended_at``/``window_precision``, from
+    ``_resolve_session_window``) are applied LAST and therefore win on
+    every conflicting key, so a persisted/sidecar value can never silently
+    shadow a real draw-derived one (the earlier bug this precedence fixes:
+    the previous ``{**window, **provenance}`` order let a provenance dict
+    that happened to carry its own ``started_at``/``ended_at`` keys
+    override the computed window instead of the other way around).
+    ``_resolve_session_window`` itself is what supplies the actual
+    precedence between "computed from draws" and "persisted in the
+    sidecar" -- this function's ``{**provenance, **window}`` merge only
+    ensures window fields win over any STALE copy that might otherwise live
+    in ``provenance``.
+
+    ``session_provenance`` -- see ``load_session_metadata``/
+    ``record_session_provenance`` -- is NEVER re-derived or guessed here. A
+    session absent from it gets the explicit ``_UNKNOWN_SESSION_PROVENANCE``
     placeholder rather than a fabricated value.
 
     This is what makes ``--summarize-only`` safe to run repeatedly: its
     caller (``main()``) passes whatever ``load_session_metadata()`` returns,
     verbatim, so regenerating the report NEVER stamps THIS invocation's
     live-run facts (``loop_order``, engine, ...) onto a session it did not
-    itself observe.
-
-    ``manual_session_windows`` lets a caller (only ever the one-time
-    backfill migration for the two pre-schema committed batches) supply an
-    approximate window for a session whose draws all predate ``started_at``
-    and therefore compute to ``{None, None}`` on their own; ordinary live
-    ``main()`` runs never pass this -- every session they produce has real
-    per-draw timestamps."""
+    itself observe -- and a session's persisted window (if any) survives
+    the regeneration too, since it now lives IN ``session_provenance``
+    rather than in a caller-supplied override that only the one-time
+    migration script used to pass."""
     all_draws = [draw for draws in per_question.values() for draw in draws]
     windows = compute_session_windows(all_draws)
-    if manual_session_windows:
-        for session_id, manual in manual_session_windows.items():
-            if session_id in windows and windows[session_id]["started_at"] is None:
-                windows[session_id] = dict(manual)
 
+    session_ids = set(windows) | set(session_provenance)
     sessions: dict[str, Any] = {}
-    for session_id, window in windows.items():
+    for session_id in session_ids:
+        computed = windows.get(session_id, {"started_at": None, "ended_at": None})
         provenance = session_provenance.get(session_id, _UNKNOWN_SESSION_PROVENANCE)
-        sessions[session_id] = {**window, **provenance}
+        window = _resolve_session_window(computed, provenance)
+        sessions[session_id] = {**provenance, **window}
 
     return {
         "sessions": sessions,
         "session_windows_note": (
-            "started_at = earliest draw's started_at; ended_at = latest draw's "
-            "(started_at + latency_seconds) -- i.e. when that draw actually finished, not "
-            "just when it began. A session with {started_at: null, ended_at: null} predates "
-            "the started_at field entirely; manual_session_windows is the only sanctioned way "
-            "to backfill an approximate one (see the two pre-schema committed sessions)."
+            "started_at/ended_at/window_precision: 'exact' means derived from this session's OWN "
+            "draws (started_at = earliest draw's started_at; ended_at = latest draw's started_at + "
+            "latency_seconds, i.e. when that draw actually finished). 'approximate' means no draw in "
+            "this session carries a real started_at (pre-schema/backfilled draws), so the window was "
+            "persisted directly into session_metadata.json instead -- see each such session's own "
+            "flags_source/backfilled fields for how that approximate window was derived. A session "
+            "with window_precision: null has neither a computed nor a persisted window at all."
         ),
         "session_provenance_note": (
             "app_git_sha/engine/model/flags/flags_source/loop_order/parallel/temperature/"

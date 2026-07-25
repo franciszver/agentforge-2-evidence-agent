@@ -88,6 +88,7 @@ from runner.issue_160_live_chat_harness import (
     group_by_session,
     is_run_valid,
     parse_sse_lines,
+    record_session_provenance,
     sequence_label,
     summarize_question,
     tool_sequence_of,
@@ -698,27 +699,45 @@ class TestBuildRunMetadata:
     draw-derived window. This is what makes --summarize-only safe (see
     TestSummarizeOnlyNeverFabricatesProvenance below)."""
 
-    def test_manual_session_windows_fill_unknown_sessions_only(self) -> None:
-        """Mutation checked: dropping the 'windows[session_id]["started_at"]
-        is None' guard (always overwriting with manual data regardless)
-        would let a manual window silently clobber a real, live-derived
-        window -- confirmed this test's live-session assertion would then
-        read the manual placeholder instead of the real timestamp."""
-        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+    def test_persisted_window_used_when_no_draw_has_started_at(self) -> None:
+        """Gate-3/Opus final-round MINOR 1: a session whose draws predate
+        started_at (all None) now falls back to a window PERSISTED directly
+        in session_provenance (not a separate manual_session_windows
+        parameter, which no longer exists)."""
         old = _draw_record(session_id="old-session", draw_index=0, started_at=None, orphan=None)
+        persisted_with_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "approx-start",
+            "ended_at": "approx-end",
+            "window_precision": "approximate",
+        }
 
-        metadata = build_run_metadata(
-            {"q": [live, old]},
-            session_provenance={"live-session": _SAMPLE_PROVENANCE, "old-session": _SAMPLE_PROVENANCE},
-            manual_session_windows={
-                "old-session": {"started_at": "approx-start", "ended_at": "approx-end"},
-                "live-session": {"started_at": "SHOULD-NOT-BE-USED", "ended_at": "SHOULD-NOT-BE-USED"},
-            },
-        )
+        metadata = build_run_metadata({"q": [old]}, session_provenance={"old-session": persisted_with_window})
 
         assert metadata["sessions"]["old-session"]["started_at"] == "approx-start"
         assert metadata["sessions"]["old-session"]["ended_at"] == "approx-end"
+        assert metadata["sessions"]["old-session"]["window_precision"] == "approximate"
+
+    def test_draw_derived_window_always_beats_a_persisted_one(self) -> None:
+        """Mutation checked: reverting the merge order in build_run_metadata
+        from '{**provenance, **window}' back to '{**window, **provenance}'
+        (the exact bug this final round fixes) would let persisted_with_
+        window's stale started_at silently override the REAL one computed
+        from live's own draw -- confirmed this assertion fails under that
+        reverted order (would read "STALE-SHOULD-LOSE", not the real
+        timestamp)."""
+        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+        persisted_with_stale_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "STALE-SHOULD-LOSE",
+            "ended_at": "STALE-SHOULD-LOSE",
+            "window_precision": "approximate",
+        }
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"live-session": persisted_with_stale_window})
+
         assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
+        assert metadata["sessions"]["live-session"]["window_precision"] == "exact"
 
     def test_session_provenance_merged_per_session(self) -> None:
         live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
@@ -805,6 +824,30 @@ class TestSessionProvenanceSidecar:
         assert metadata["session-a"] == _SAMPLE_PROVENANCE
         assert metadata["session-b"] == other_provenance
 
+    def test_write_is_atomic_via_tmp_file_and_os_replace(self) -> None:
+        """Gate-3/Opus final-round MINOR 2: pins the atomic-write pattern by
+        inspecting record_session_provenance's own source -- a bare
+        path.write_text (the pre-fix implementation) truncates the target
+        file before writing, so a crash mid-write leaves a corrupt/partial
+        JSON file; os.replace onto a fully-written .tmp sibling is atomic on
+        both POSIX and Windows. Mutation checked: reverting to
+        'path.write_text(...)' with no tmp/replace step makes both
+        assertions below fail."""
+        source = inspect.getsource(record_session_provenance)
+
+        assert "os.replace" in source
+        assert ".tmp" in source
+
+    def test_no_leftover_tmp_file_after_a_successful_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+
+        files = sorted(p.name for p in tmp_path.iterdir())
+        assert files == ["session_metadata.json"]  # no session_metadata.json.tmp left behind
+
 
 class TestSummarizeOnlyNeverFabricatesProvenance:
     """Gate-3/Opus DEFECT 2(a)/3: --summarize-only must reconstruct a
@@ -844,6 +887,38 @@ class TestSummarizeOnlyNeverFabricatesProvenance:
         assert metadata["sessions"]["session-1-initial-n8"]["app_git_sha"] == "deadbeef"
         assert metadata["sessions"]["session-1-initial-n8"]["loop_order"] == "sequential-per-question"
         assert metadata["sessions"]["session-1-initial-n8"]["backfilled"] is True
+
+    def test_persisted_window_survives_a_summarize_only_style_rebuild(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Gate-3/Opus final-round MINOR 1 -- the exact bug the reviewer hit:
+        a backfilled session's window used to live ONLY in a caller-supplied
+        manual_session_windows override at migration time, never persisted,
+        so a later --summarize-only regeneration (which never re-supplies
+        that override) got {started_at: null, ended_at: null} back instead
+        of the approximate window. Now the window is PART of what
+        record_session_provenance persists, so a summarize-only-style
+        rebuild (load whatever's on disk, don't record anything new) must
+        reproduce it exactly."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+        provenance_with_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "2026-07-25T18:22:53+00:00",
+            "ended_at": "2026-07-25T18:29:06+00:00",
+            "window_precision": "approximate",
+        }
+        harness.record_session_provenance("session-1-initial-n8", provenance_with_window)
+
+        # This session's draws all predate started_at (None) -- exactly the
+        # backfilled shape -- so compute_session_windows contributes nothing
+        # and the persisted window must carry the report.
+        backfilled_draw = _draw_record(session_id="session-1-initial-n8", draw_index=0, started_at=None, orphan=None)
+        metadata = build_run_metadata({"q": [backfilled_draw]}, session_provenance=harness.load_session_metadata())
+
+        entry = metadata["sessions"]["session-1-initial-n8"]
+        assert entry["started_at"] == "2026-07-25T18:22:53+00:00"
+        assert entry["ended_at"] == "2026-07-25T18:29:06+00:00"
+        assert entry["window_precision"] == "approximate"
 
 
 # --- _read_env_bool truthy/falsy set (gate-3/Opus DEFECT 1/3) -------------------
