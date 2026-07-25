@@ -127,6 +127,32 @@ To re-aggregate an existing ``draws/`` output without a live run:
 
     python evals/runner/issue_160_live_chat_harness.py --summarize-only
 
+**Operational gotcha -- ``docker cp`` back INTO the container leaves
+root-owned files, breaking the NEXT run (confirmed live, #160 16-more-draws
+follow-up).** A committed ``evals/results/issue-160/*.jsonl`` copied out to
+the host for a git commit and later copied back IN (``docker cp <file>
+development-easy-agent-1:/data/repo_ingest/evals/results/issue-160/<file>``
+-- e.g. to seed a second batch's ``append_draw`` calls onto the first
+batch's committed history) lands root-owned inside the container, because
+``docker cp``'s write runs as the container's root user regardless of which
+user the container's own process (``appuser``, per the entrypoint's
+``HOST_UID`` adoption) runs as. The harness process itself runs AS
+``appuser`` and cannot open a root-owned file in append mode --
+``append_draw``'s ``path.open("a", ...)`` raises ``PermissionError``,
+**silently from a polling script's point of view**: the file's line count
+simply never grows again, which looks identical to "the process is just
+slow," not "the process crashed on its very first write." This is exactly
+what happened live: a session-2 batch launched against freshly-``docker
+cp``'d-back JSONLs crashed on its first ``append_draw`` call with zero
+draws written (confirmed after the fact by ``session_id`` bucket counts --
+see ``by_session`` in a committed ``report.json``: a session that crashed
+before its first successful append simply never appears as a key at all,
+so there is no partial/mixed data to clean up, only a fully-absent batch
+to re-run). **Fix: ``docker exec development-easy-agent-1 chown appuser:
+appuser <path>`` on every file copied back in, BEFORE relaunching** -- do
+this as routine practice after any ``docker cp ... development-easy-
+agent-1:...`` (copy IN), not only when a crash is already suspected.
+
 **Artifacts.** Per question, ``evals/results/issue-160/<question_id>.jsonl``
 -- one ``DrawRecord`` (as JSON) appended per draw, immediately after that
 draw completes (crash-safe, same discipline as #154's per-draw files). A
