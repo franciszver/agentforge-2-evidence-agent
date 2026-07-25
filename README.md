@@ -8,6 +8,17 @@
 > fork). Phase 1's OpenEMR base is [Gauntlet-HQ/openemr-base-clean](https://github.com/Gauntlet-HQ/openemr-base-clean),
 > itself derived from [OpenEMR](https://github.com/openemr/openemr) (GPL v3).
 
+![Phase-2 evidence agent demo — three questions against the live stack: a narrative answer correctly marked Blocked because it has no single citable chart field, an allergy-safety answer Verified with per-claim citation chips naming the record field checked, and an honest "no recent lab results" answer whose absence is itself cited.](docs/assets/demo.gif)
+
+*Captured from live runs against the local Phase-2 stack — a narrative
+question comes back **Blocked** (no single citable chart field), an
+allergy-safety question comes back **Verified** with per-claim citation
+chips, and a patient with no lab data gets an honest "no recent lab
+results" answer where the absence itself is cited. Verification verdicts
+are not yet deterministic across runs of the same question — a known,
+tracked limitation, see
+[#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149).*
+
 ## Week 1 vs Week 2
 
 This project ran in two stretches, kept visibly separate here rather than
@@ -18,6 +29,10 @@ blended into one undifferentiated feature list.
 A verification-first clinical co-pilot embedded in OpenEMR: a physician asks
 a question about the open chart and gets an answer where **every factual
 claim is deterministically re-checked against the raw record and cited**.
+
+![Clinical Co-Pilot demo — a physician asks "what meds is she on?", the answer streams in, then a verified/partially_verified/blocked badge and tappable citation chips appear, each chip revealing the record value it was checked against.](docs/demo/clinical-copilot-demo.gif)
+
+*75-second demo of this Week-1/Phase-1 baseline co-pilot — [MP4 version](docs/demo/clinical-copilot-demo.mp4)*
 
 - **Data:** structured OpenEMR data via typed tools (medications, labs,
   encounters, vitals) — no retrieval, one tool call per planner turn.
@@ -112,5 +127,4 @@ branch = one PR.
 
 ---
 
-*Demo assets (`DEMO_SCRIPT.md`) and interview prep land in Stage 5/6; this
-README is updated as those close.*
+*Interview prep lands in Stage 5/6; this README is updated as it closes.*
