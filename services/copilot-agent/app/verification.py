@@ -358,6 +358,18 @@ class CitationStatus(StrEnum):
     # ``ClaimCheckResult.passed``'s existing AND-aggregation picks it up for
     # free, with no changes to this module's own checking functions.
     NOT_SEMANTICALLY_SUPPORTED = "not_semantically_supported"
+    # Claim-in-answer grounding extension (issue #153, app.answer_grounding)
+    # -- see that module's docstring. Set ONLY by
+    # ``apply_answer_grounding`` downgrading an otherwise-passing claim's
+    # citation results when the claim's own TEXT is not lexically grounded
+    # in the planner's answer (e.g. a real, correctly-cited
+    # ``respiratory_rate`` claim the answer never actually asserted). Never
+    # produced by ``check_source_ref``/``check_document_citation`` themselves
+    # -- this module still has no LLM call and no notion of ``answer`` text
+    # anywhere; the value exists here only so ``ClaimCheckResult.passed``'s
+    # existing AND-aggregation picks it up for free, with no changes to this
+    # module's own checking functions.
+    NOT_GROUNDED_IN_ANSWER = "not_grounded_in_answer"
 
 
 @dataclass(frozen=True)

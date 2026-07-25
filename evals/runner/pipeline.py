@@ -51,6 +51,7 @@ from datetime import datetime
 
 import httpx
 
+from app.config import Settings
 from app.extraction import (
     ClaimExtractor,
     apply_recency_notice,
@@ -243,6 +244,16 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # needs one (`get_support_judge_provider`) -- see `needs_semantic_support`
     # for which cases actually exercise the judge call.
     support_judge = ollama_client if needs_semantic_support(case) else None
+    # Issue #153: threads `Settings.copilot_claim_answer_grounding_enabled`
+    # straight through (unlike `support_judge` above, this gate is a pure,
+    # deterministic, no-LLM check -- `apply_answer_grounding` needs nothing
+    # from a recording, so there is no re-recording gate to scope this to a
+    # category the way `needs_semantic_support` does). Reads the environment
+    # fresh so the eval suite can be re-run with
+    # `COPILOT_CLAIM_ANSWER_GROUNDING_ENABLED=true` to measure the gate's
+    # per-category effect on the existing recordings, without changing this
+    # module's own default (`Settings()`'s default is `False`, matching the
+    # implicit `False` this call site had before this change).
     # `patient_facts`: same one-source, two-consumers list, reused here.
     verdict_result, rendered = run_verification(
         extractor,
@@ -250,5 +261,6 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         retrieved_chunks=retrieved_chunks,
         patient_facts=patient_facts,
         support_judge=support_judge,
+        require_answer_grounding=Settings().copilot_claim_answer_grounding_enabled,
     )
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)

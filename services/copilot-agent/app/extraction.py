@@ -78,6 +78,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from app.allergy_check import check_allergy_conflicts
+from app.answer_grounding import apply_answer_grounding
 from app.check_drug_interactions import check_drug_interactions
 from app.ollama_client import LLMEngineError, LlmCallStats
 from app.planner import PlannerResult
@@ -623,6 +624,7 @@ def run_verification(
     retrieved_chunks: Sequence[RerankedChunk] = (),
     patient_facts: Sequence[Citation] = (),
     support_judge: SemanticSupportJudgeLike | None = None,
+    require_answer_grounding: bool = False,
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
@@ -663,7 +665,18 @@ def run_verification(
     actually support the claim's prose is downgraded, failing that claim.
     ``None`` (the default, and what every caller not opting into
     ``Settings.copilot_semantic_support_enabled`` passes) skips this step
-    entirely -- byte-identical to today, no extra LLM call."""
+    entirely -- byte-identical to today, no extra LLM call.
+
+    ``require_answer_grounding`` (issue #153, additive): when ``True``, every
+    claim whose citations already all passed provenance re-validation is
+    additionally re-checked by ``app.answer_grounding.apply_answer_grounding``
+    -- a DETERMINISTIC, no-LLM check that the claim's own text is lexically
+    grounded in ``result.answer`` (see that module's docstring for the rule).
+    A claim citing a real, correctly-valued record the answer never actually
+    discussed is downgraded (``CitationStatus.NOT_GROUNDED_IN_ANSWER``) rather
+    than counting as verified. Default ``False`` (what every caller not
+    opting into ``Settings.copilot_claim_answer_grounding_enabled`` passes)
+    skips this step entirely -- byte-identical to today."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
 
@@ -695,6 +708,8 @@ def run_verification(
             # had been empty) rather than let the exception propagate.
             _logger.warning("patient fact index build failed", extra={"error_type": type(exc).__name__})
     claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
+    if require_answer_grounding:
+        claim_results = apply_answer_grounding(claim_results, result.answer)
     if support_judge is not None:
         claim_results = apply_semantic_support(claim_results, support_judge)
     rendered = render_answer(claim_results)
