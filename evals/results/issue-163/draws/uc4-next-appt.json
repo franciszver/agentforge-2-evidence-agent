@@ -1,0 +1,16 @@
+{
+  "case_id": "uc4-next-appt",
+  "category": "tool_selection",
+  "applicable": false,
+  "engaged_call_ids": [],
+  "total_call_ids": [
+    "call_0"
+  ],
+  "off": null,
+  "on": null,
+  "comparable": false,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "error": null
+}

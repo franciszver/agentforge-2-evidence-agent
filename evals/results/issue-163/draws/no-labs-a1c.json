@@ -1,0 +1,16 @@
+{
+  "case_id": "no-labs-a1c",
+  "category": "missing_data",
+  "applicable": false,
+  "engaged_call_ids": [],
+  "total_call_ids": [
+    "call_0"
+  ],
+  "off": null,
+  "on": null,
+  "comparable": false,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "error": null
+}

@@ -1,0 +1,145 @@
+{
+  "case_id": "factually-consistent-a1c-stricter-target",
+  "category": "factually_consistent",
+  "applicable": true,
+  "engaged_call_ids": [
+    "call_1"
+  ],
+  "total_call_ids": [
+    "call_0",
+    "call_1"
+  ],
+  "off": {
+    "verdict": "partially_verified",
+    "total_claim_count": 9,
+    "stripped_claim_count": 2,
+    "claims": [
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "value_mismatch",
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "value_mismatch"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "on": {
+    "verdict": "partially_verified",
+    "total_claim_count": 9,
+    "stripped_claim_count": 2,
+    "claims": [
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "value_mismatch",
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "value_mismatch"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "comparable": true,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "error": null
+}

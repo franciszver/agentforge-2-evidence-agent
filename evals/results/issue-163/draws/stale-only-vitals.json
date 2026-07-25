@@ -1,0 +1,18 @@
+{
+  "case_id": "stale-only-vitals",
+  "category": "stale_data",
+  "applicable": false,
+  "engaged_call_ids": [
+    "call_0"
+  ],
+  "total_call_ids": [
+    "call_0"
+  ],
+  "off": null,
+  "on": null,
+  "comparable": false,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "error": null
+}
