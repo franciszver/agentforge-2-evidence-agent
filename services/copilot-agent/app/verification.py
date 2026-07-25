@@ -482,6 +482,31 @@ def _extract_records(result: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [result]
 
 
+def records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The citable records within one tool call's raw result -- an ``items``
+    list (non-dict entries dropped), or the single-object result treated as
+    one record.
+
+    Public (not module-private): shared by ``app.extraction`` (catalog /
+    tool-result-message construction) and ``app.tool_call_scoping``
+    (engagement-token construction) -- both already import this module and
+    neither is imported BY it, so this is a cycle-safe home for the one
+    definition both need, rather than each keeping its own copy.
+
+    Deliberately a SEPARATE function from ``_extract_records`` above, not a
+    replacement for it: ``_extract_records`` feeds ``CacheIndex`` (the
+    provenance re-validation index) and does not filter non-dict ``items``
+    entries, matching that index's own long-standing contract; changing its
+    filtering to match this function is out of scope for issue #158 and
+    was not what this dedup was asked to fix."""
+    if result is None:
+        return []
+    items = result.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return [result]
+
+
 def _record_at(records: list[dict[str, Any]], record_id: str) -> dict[str, Any] | None:
     try:
         index = int(record_id)

@@ -451,9 +451,12 @@ def test_mentioned_interactions_requires_at_least_two_drugs():
 # --------------------------------------------------------------------------
 
 
+def _trace_entry(tool: ToolName) -> ToolCallTrace:
+    return ToolCallTrace(tool=tool, args={}, result={"summary": "quarantined"}, error=None)
+
+
 def _planner_result(answer: str, tool: ToolName, raw: dict[str, Any]) -> PlannerResult:
-    trace = [ToolCallTrace(tool=tool, args={}, result={"summary": "quarantined"}, error=None)]
-    return PlannerResult(answer=answer, trace=trace, raw_results=[raw])
+    return PlannerResult(answer=answer, trace=[_trace_entry(tool)], raw_results=[raw])
 
 
 def test_run_verification_verified_for_grounded_medication_claim():
@@ -896,10 +899,7 @@ def _planner_result_two_calls(
     tool_1: ToolName,
     raw_1: dict[str, Any],
 ) -> PlannerResult:
-    trace = [
-        ToolCallTrace(tool=tool_0, args={}, result={"summary": "quarantined"}, error=None),
-        ToolCallTrace(tool=tool_1, args={}, result={"summary": "quarantined"}, error=None),
-    ]
+    trace = [_trace_entry(tool_0), _trace_entry(tool_1)]
     return PlannerResult(answer=answer, trace=trace, raw_results=[raw_0, raw_1])
 
 

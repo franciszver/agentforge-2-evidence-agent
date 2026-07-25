@@ -137,7 +137,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.answer_grounding import significant_tokens
-from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult, DocumentCitationCheckResult
+from app.verification import (
+    CitationCheckResult,
+    CitationStatus,
+    ClaimCheckResult,
+    DocumentCitationCheckResult,
+    records_of,
+)
 
 # Free-text provenance hook present on every output item; never a citable
 # value, so it is excluded from the value text a call is scored against --
@@ -145,20 +151,6 @@ from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResu
 # rather than imported, to avoid a needless cross-module coupling for one
 # string literal both modules already treat as a stable convention).
 _PROVENANCE_FIELD = "source_refs"
-
-
-def _records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The records within one tool call's raw result -- an ``items`` list, or
-    the single-object result treated as one record. Deliberately a local
-    copy of ``app.extraction._records_of``'s logic (not an import): importing
-    from ``app.extraction`` here would create a cycle, since that module
-    imports THIS one for ``apply_tool_call_scoping``."""
-    if result is None:
-        return []
-    items = result.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
-    return [result]
 
 
 def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
@@ -178,7 +170,7 @@ def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
     active/resolved status flag), and an answer that echoes it back should
     count as genuine engagement."""
     values: list[str] = []
-    for record in _records_of(result):
+    for record in records_of(result):
         for field, value in record.items():
             if field == _PROVENANCE_FIELD or value is None:
                 continue
@@ -202,11 +194,12 @@ def engaged_call_ids(raw_results: Sequence[dict[str, Any] | None], answer: str) 
 
 
 def apply_tool_call_scoping(
-    claim_results: Sequence[ClaimCheckResult], engaged_call_ids: frozenset[str]
+    claim_results: Sequence[ClaimCheckResult], engaged: frozenset[str]
 ) -> list[ClaimCheckResult]:
     """Re-check every already-passing claim's ``SourceRef`` citations against
-    ``engaged_call_ids``, downgrading any citation of an unengaged tool call
-    to ``CitationStatus.TOOL_CALL_NOT_ENGAGED``. Order-preserving, one-to-one
+    ``engaged`` (the ``call_i`` ids returned by ``engaged_call_ids`` above),
+    downgrading any citation of an unengaged tool call to
+    ``CitationStatus.TOOL_CALL_NOT_ENGAGED``. Order-preserving, one-to-one
     with ``claim_results``, same shape ``app.verification.check_claims``
     already guarantees.
 
@@ -235,7 +228,7 @@ def apply_tool_call_scoping(
         for citation_result in claim_result.citation_results:
             if (
                 isinstance(citation_result, CitationCheckResult)
-                and citation_result.source_ref.tool_call_id not in engaged_call_ids
+                and citation_result.source_ref.tool_call_id not in engaged
             ):
                 new_citation_results.append(
                     CitationCheckResult(

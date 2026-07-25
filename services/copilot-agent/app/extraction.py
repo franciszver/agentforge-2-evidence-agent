@@ -97,9 +97,16 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.semantic_support import SemanticSupportJudgeLike, apply_semantic_support
-from app.tool_call_scoping import apply_tool_call_scoping, engaged_call_ids as _engaged_call_ids
+from app.tool_call_scoping import apply_tool_call_scoping, engaged_call_ids
 from app.verdict import VerdictResult, compute_verdict
-from app.verification import CacheIndex, CorpusChunkIndex, DocumentFactIndex, check_claims, recency_notices
+from app.verification import (
+    CacheIndex,
+    CorpusChunkIndex,
+    DocumentFactIndex,
+    check_claims,
+    recency_notices,
+    records_of,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -422,15 +429,13 @@ class ClaimExtractor:
         return _coerce_misrouted_guideline_refs(list(extracted.claims), retrieved_chunks)
 
 
-def _records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The citable records within one tool call's raw result -- an ``items``
-    list, or the single-object result treated as one record."""
-    if result is None:
-        return []
-    items = result.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
-    return [result]
+def _is_unengaged(call_id: str, engaged_call_ids: frozenset[str] | None) -> bool:
+    """Issue #158: whether ``call_id`` must be skipped from the extractor's
+    catalog/tool-result-message input -- ``True`` only when narrowing is
+    ACTIVE (``engaged_call_ids`` is not ``None``) AND ``call_id`` is not in
+    it. Shared by ``_build_catalog`` and ``_build_tool_result_messages``
+    (identical skip logic, previously duplicated between the two)."""
+    return engaged_call_ids is not None and call_id not in engaged_call_ids
 
 
 def _build_catalog(
@@ -453,9 +458,9 @@ def _build_catalog(
     lines: list[str] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
         call_id = f"call_{i}"
-        if engaged_call_ids is not None and call_id not in engaged_call_ids:
+        if _is_unengaged(call_id, engaged_call_ids):
             continue
-        records = _records_of(result)
+        records = records_of(result)
         if not records:
             continue
         lines.append(f"{call_id} ({tool.value} result, {len(records)} record(s)):")
@@ -634,9 +639,9 @@ def _build_tool_result_messages(
     messages: list[dict[str, str]] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
         call_id = f"call_{i}"
-        if engaged_call_ids is not None and call_id not in engaged_call_ids:
+        if _is_unengaged(call_id, engaged_call_ids):
             continue
-        if not _records_of(result):
+        if not records_of(result):
             continue
         messages.append(
             {
@@ -753,9 +758,10 @@ def run_verification(
     double/extractor that ignores the narrowed catalog. Coarser than
     ``require_answer_grounding`` above (per-CALL, not per-claim-text) and
     orthogonal to it -- both may be on at once. The engaged-call set is
-    computed once, from the FULL (unnarrowed) ``normalized`` results, so
-    provenance re-validation (``index`` below) always has the complete data
-    available regardless of this flag; only the EXTRACTOR's view is narrowed.
+    derived from the FULL (unnarrowed) ``normalized`` results (recomputed,
+    pure and cheap, at each of the two use sites below), so provenance
+    re-validation (``index`` below) always has the complete data available
+    regardless of this flag; only the EXTRACTOR's view is narrowed.
     Default ``False`` (what every caller not opting into
     ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes) skips
     both prevention and enforcement entirely -- byte-identical to today."""
@@ -767,10 +773,8 @@ def run_verification(
         extract_kwargs["retrieved_chunks"] = retrieved_chunks
     if patient_facts:
         extract_kwargs["patient_facts"] = patient_facts
-    engaged: frozenset[str] | None = None
     if require_tool_call_scoping:
-        engaged = _engaged_call_ids(normalized, result.answer)
-        extract_kwargs["engaged_call_ids"] = engaged
+        extract_kwargs["engaged_call_ids"] = engaged_call_ids(normalized, result.answer)
     claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized, **extract_kwargs)
     index = CacheIndex.from_raw_results(normalized)
     corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
@@ -795,8 +799,12 @@ def run_verification(
             _logger.warning("patient fact index build failed", extra={"error_type": type(exc).__name__})
     claim_results = check_claims(claims, index, fact_index=fact_index, corpus_index=corpus_index)
     if require_tool_call_scoping:
-        assert engaged is not None  # computed above whenever this flag is True
-        claim_results = apply_tool_call_scoping(claim_results, engaged)
+        # Recomputed (not reused from the extract_kwargs computation above)
+        # -- engaged_call_ids is pure, cheap, and deterministic over the same
+        # (normalized, result.answer) inputs both times, so recomputing here
+        # is simpler than threading an Optional local across the two
+        # flag-gated blocks just to avoid one extra call.
+        claim_results = apply_tool_call_scoping(claim_results, engaged_call_ids(normalized, result.answer))
     if require_answer_grounding:
         claim_results = apply_answer_grounding(claim_results, result.answer)
     if support_judge is not None:
