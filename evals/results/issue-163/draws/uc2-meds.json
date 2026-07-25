@@ -1,0 +1,34 @@
+{
+  "case_id": "uc2-meds",
+  "category": "tool_selection",
+  "applicable": false,
+  "engaged_call_ids": [],
+  "total_call_ids": [
+    "call_0"
+  ],
+  "unengaged_calls_with_data": [],
+  "off": {
+    "verdict": "blocked",
+    "total_claim_count": 0,
+    "stripped_claim_count": 0,
+    "claims": [],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "on": {
+    "verdict": "blocked",
+    "total_claim_count": 0,
+    "stripped_claim_count": 0,
+    "claims": [],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "eligible_claims_off": 0,
+  "comparable": true,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "session_id": "issue163-20260725T172126Z",
+  "session_started_at": "2026-07-25T17:21:32.469084+00:00",
+  "error": null
+}

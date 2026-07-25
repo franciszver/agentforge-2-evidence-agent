@@ -1,0 +1,135 @@
+{
+  "case_id": "factually-consistent-guideline-and-chart-combined",
+  "category": "factually_consistent",
+  "applicable": true,
+  "engaged_call_ids": [
+    "call_0"
+  ],
+  "total_call_ids": [
+    "call_0",
+    "call_1"
+  ],
+  "unengaged_calls_with_data": [],
+  "off": {
+    "verdict": "partially_verified",
+    "total_claim_count": 7,
+    "stripped_claim_count": 3,
+    "claims": [
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "valid",
+          "value_mismatch",
+          "value_mismatch",
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "quote_not_found"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "valid",
+          "value_mismatch",
+          "value_mismatch",
+          "valid"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "on": {
+    "verdict": "partially_verified",
+    "total_claim_count": 7,
+    "stripped_claim_count": 3,
+    "claims": [
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "valid",
+          "value_mismatch",
+          "value_mismatch",
+          "valid"
+        ]
+      },
+      {
+        "passed": true,
+        "citation_statuses": [
+          "valid"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "quote_not_found"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "valid",
+          "value_mismatch",
+          "value_mismatch",
+          "valid"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "eligible_claims_off": 4,
+  "comparable": true,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "session_id": "issue163-20260725T172126Z",
+  "session_started_at": "2026-07-25T17:21:32.469084+00:00",
+  "error": null
+}

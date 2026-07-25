@@ -78,3 +78,11 @@ __pycache__/
 
 # Dev-only OpenEMR OAuth client credentials + tokens (NEVER commit secrets)
 services/copilot-agent/.openemr-dev-client.json
+
+# Issue #163 (and any future evals/results/issue-NNN/draws/ harness): raw
+# per-case LLM call transcripts are a local-only audit trail, never committed
+# -- same as evals/results/issue-130's precedent (draws/*.json summaries are
+# committed; draws/*.calls.json transcripts are not). This rule makes that
+# property structural (git add -A can no longer stage one by accident)
+# rather than relying on nobody ever running a broad add.
+evals/results/**/*.calls.json

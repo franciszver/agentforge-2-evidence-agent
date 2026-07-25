@@ -1,0 +1,58 @@
+{
+  "case_id": "factually-consistent-lipid-ldl-optimal",
+  "category": "factually_consistent",
+  "applicable": true,
+  "engaged_call_ids": [],
+  "total_call_ids": [],
+  "unengaged_calls_with_data": [],
+  "off": {
+    "verdict": "blocked",
+    "total_claim_count": 2,
+    "stripped_claim_count": 2,
+    "claims": [
+      {
+        "passed": false,
+        "citation_statuses": [
+          "unknown_tool_call"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "unknown_tool_call"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "on": {
+    "verdict": "blocked",
+    "total_claim_count": 2,
+    "stripped_claim_count": 2,
+    "claims": [
+      {
+        "passed": false,
+        "citation_statuses": [
+          "unknown_tool_call"
+        ]
+      },
+      {
+        "passed": false,
+        "citation_statuses": [
+          "unknown_tool_call"
+        ]
+      }
+    ],
+    "downgraded_count": 0,
+    "error": null
+  },
+  "eligible_claims_off": 0,
+  "comparable": true,
+  "verdict_flip": false,
+  "flip_detail": null,
+  "newly_blocked": false,
+  "session_id": "issue163-20260725T172126Z",
+  "session_started_at": "2026-07-25T17:21:32.469084+00:00",
+  "error": null
+}
