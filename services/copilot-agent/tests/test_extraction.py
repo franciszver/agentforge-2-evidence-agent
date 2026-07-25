@@ -116,15 +116,17 @@ class _FakeExtractor:
         self._claims = claims
         self.calls: list[dict[str, Any]] = []
 
-    def extract_claims(
-        self, *, answer: str, tools: Any, raw_results: Any, engaged_call_ids: Any = None
-    ) -> list[Claim]:
-        # ``engaged_call_ids`` (issue #158) is accepted but deliberately
-        # IGNORED, same as this double already ignores ``tools``/
-        # ``raw_results`` for deciding what to return -- this fake models
-        # "the extractor sees a narrowed catalog but is scripted regardless
-        # of it," which is exactly what makes the ENFORCEMENT half (not
-        # prevention) the thing that must hold in these orchestration tests.
+    def extract_claims(self, *, answer: str, tools: Any, raw_results: Any, **_: Any) -> list[Claim]:
+        # ``**_`` swallows every additive keyword-only capability
+        # (``retrieved_chunks``, ``patient_facts``, issue #158's ``engaged``,
+        # ...), deliberately IGNORED same as this double already ignores
+        # ``tools``/``raw_results`` for deciding what to return -- this fake
+        # models "the extractor sees a narrowed catalog but is scripted
+        # regardless of it," which is exactly what makes the ENFORCEMENT half
+        # (not prevention) the thing that must hold in these orchestration
+        # tests. Using ``**_`` rather than naming each parameter also means
+        # this double never needs updating again when a future additive
+        # capability is threaded through ``extract_claims``.
         self.calls.append({"answer": answer, "tools": list(tools), "raw_results": list(raw_results)})
         return self._claims
 
@@ -1003,11 +1005,11 @@ def test_run_verification_flag_on_tool_call_scoping_still_verifies_claim_citing_
 def test_extract_claims_narrows_catalog_and_messages_to_engaged_calls_preserving_indices():
     """Unit test pinning the PREVENTION half (see
     ``app.tool_call_scoping``'s module docstring, enforcement point 1):
-    when ``engaged_call_ids`` is supplied, ``ClaimExtractor.extract_claims``
-    must drop the UNENGAGED call's catalog entry and tool-result message
-    entirely, while the ENGAGED call that remains keeps its ORIGINAL
-    positional id ("call_1", not renumbered to "call_0") -- the id scheme is
-    load-bearing (``app.verification``'s module docstring, decision 2)."""
+    when ``engaged`` is supplied, ``ClaimExtractor.extract_claims`` must drop
+    the UNENGAGED call's catalog entry and tool-result message entirely,
+    while the ENGAGED call that remains keeps its ORIGINAL positional id
+    ("call_1", not renumbered to "call_0") -- the id scheme is load-bearing
+    (``app.verification``'s module docstring, decision 2)."""
     ollama = _FakeExtractOllama()
     extractor = ClaimExtractor(ollama_client=ollama)
 
@@ -1015,7 +1017,7 @@ def test_extract_claims_narrows_catalog_and_messages_to_engaged_calls_preserving
         answer="x",
         tools=[ToolName.GET_VITALS, ToolName.GET_ALLERGIES],
         raw_results=[_vitals_raw(), _allergies_raw_with_penicillin()],
-        engaged_call_ids=frozenset({"call_1"}),
+        engaged=frozenset({"call_1"}),
     )
 
     messages, _schema = ollama.extract_calls[0]
@@ -1031,6 +1033,99 @@ def test_extract_claims_narrows_catalog_and_messages_to_engaged_calls_preserving
     assert len(tool_result_contents) == 1
     assert "call_1" in tool_result_contents[0]
     assert "call_0" not in tool_result_contents[0]
+
+
+def test_run_verification_flag_on_tool_call_scoping_ignores_recency_notice_text_when_computing_engagement():
+    """Gate-3 review MAJOR finding: ``apply_recency_notice`` (#153) appends a
+    machine-generated notice built from the STALE RECORD'S OWN DATE onto
+    ``result.answer`` BEFORE ``run_verification`` ever sees it (both
+    ``app.chat`` and ``runner.pipeline`` call it first). Naively computing
+    engagement from the POST-notice answer would let the notice's own
+    appended date text self-engage the stale call the model itself never
+    discussed -- call_1 (``GET_RECENT_LABS``) is stale; the answer only ever
+    discusses call_0's weight, but the notice appended FOR call_1 contains
+    call_1's own record date ("2014-02-01"), which token-overlaps with
+    call_1's raw values. ``engaged_call_ids`` must read
+    ``PlannerResult.answer_pre_notice`` (the model's ORIGINAL prose, set by
+    ``apply_recency_notice`` before it splices the notice on), not
+    ``result.answer``, so call_1 stays unengaged and a claim citing it is
+    downgraded exactly as if no notice had ever been applied."""
+    stale_labs_raw = {"items": [{"test_name": "A1c", "value": "7.2", "date": "2014-02-01T09:00:00"}]}
+    result = _planner_result_two_calls(
+        "Her weight is 220 lb.",
+        ToolName.GET_VITALS,
+        _vitals_raw(),
+        ToolName.GET_RECENT_LABS,
+        stale_labs_raw,
+    )
+    result = apply_recency_notice(result, now=datetime.datetime(2026, 7, 15, tzinfo=datetime.timezone.utc))
+    assert "2014-02-01" in result.answer  # sanity: the notice actually got appended
+    assert result.answer_pre_notice == "Her weight is 220 lb."
+
+    claim = Claim(
+        text="Her A1c was 7.2.",
+        source_refs=[SourceRef(tool_call_id="call_1", record_id="0", field="value", asserted_value="7.2")],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_tool_call_scoping=True)
+
+    assert verdict_result.verdict is not Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], Notice)
+
+
+def test_run_verification_flag_on_tool_call_scoping_engages_vitals_via_raw_concept_word():
+    """Gate-3 review MINOR 2 finding: engagement must read
+    ``PlannerResult.raw_results`` (PRE-normalization), not the wide-format
+    copy ``normalize_raw_results`` produces for provenance re-validation.
+    Normalization moves the vitals concept from a VALUE (EAV ``vital_type``
+    field) to a FIELD NAME (``{weight: 220}``) -- and this gate excludes
+    field names from engagement tokens -- so an answer that mentions ONLY
+    the vital's name ("weight"), with no number/unit/date in common, must
+    still engage the vitals call by reading the RAW record, where "weight"
+    is still a VALUE."""
+    result = _planner_result(
+        "Her weight is unavailable in this summary.",
+        ToolName.GET_VITALS,
+        _vitals_raw(),
+    )
+    claim = Claim(
+        text="Her weight is 220 lb.",
+        source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="weight", asserted_value="220")],
+    )
+    extractor = _FakeExtractor([claim])
+
+    verdict_result, rendered = run_verification(extractor, result, require_tool_call_scoping=True)
+
+    assert verdict_result.verdict is Verdict.VERIFIED
+    assert isinstance(rendered.segments[0], RenderedClaim)
+
+
+def test_run_verification_flag_on_tool_call_scoping_all_unengaged_short_circuits_before_any_llm_call():
+    """Gate-3 review MINOR 3 finding: flag ON, zero engaged calls, and no
+    guideline/patient-fact catalog is the dominant flag-ON regression risk
+    (whole-turn ``BLOCKED``) -- correct fail-closed behavior, but it must
+    happen via ``ClaimExtractor.extract_claims``'s existing "nothing
+    citable" short-circuit, BEFORE any LLM call, not by calling the model
+    with an empty catalog and discarding the result. Proven here through the
+    REAL ``ClaimExtractor`` (not a scripted double) with a stub LLM client
+    that RAISES if ``.extract(...)`` is ever invoked."""
+
+    class _RaisesIfInvoked:
+        def extract(self, prompt_or_messages, schema, *, options=None):
+            raise AssertionError("extract() must never be called when nothing is citable")
+
+    extractor = ClaimExtractor(ollama_client=_RaisesIfInvoked())
+    result = _planner_result(
+        "Unrelated commentary that shares no vocabulary with the record.",
+        ToolName.GET_MEDICATIONS,
+        _meds_raw(_lisinopril()),
+    )
+
+    verdict_result, _rendered = run_verification(extractor, result, require_tool_call_scoping=True)
+
+    assert verdict_result.verdict is Verdict.BLOCKED
+    assert verdict_result.total_claim_count == 0
 
 
 # --------------------------------------------------------------------------

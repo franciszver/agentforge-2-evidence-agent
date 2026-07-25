@@ -45,13 +45,42 @@ digit strings specially), so an answer that quotes a bare number ("Her
 weight is 220 lb.") engages the vitals call whose record contains that same
 number as a value (220), even with no other shared vocabulary.
 
+**Representation contract (gate-3 review MINOR 2): this module reads
+whatever ``raw_results``/``answer`` it is HANDED -- it has no opinion of its
+own about normalization or notices; that is entirely the CALLER's
+responsibility to get right.** ``app.extraction.run_verification`` (the one
+production caller) is deliberately careful about which representation it
+passes to ``engaged_call_ids``, and both choices matter:
+
+  - It passes ``PlannerResult.raw_results`` -- PRE-normalization -- NOT the
+    wide-format-``normalize_raw_results``-reshaped copy used for provenance
+    re-validation. Normalization moves a vitals concept from a VALUE to a
+    FIELD NAME (EAV ``{vital_type: "weight", value: 220}`` becomes
+    ``{weight: 220}``), and this module deliberately excludes field names
+    from engagement tokens (see "Field NAMES are deliberately excluded"
+    below) -- so engaging from the NORMALIZED copy would silently lose
+    "weight" as an engageable word, leaving only the call's numbers/units/
+    dates to engage through. Reading the RAW EAV record instead keeps
+    "weight" as a real value and restores that word as a valid engagement
+    signal (a false-BLOCKING direction the owner specifically flagged as
+    worth reducing).
+  - It passes ``PlannerResult.answer_pre_notice`` when set, never
+    ``PlannerResult.answer`` unconditionally -- see
+    ``app.planner.PlannerResult.answer_pre_notice``'s docstring and this gap
+    below.
+
 ``None`` field values are skipped entirely when building a call's value
 text -- never stringified to the literal word "none" (see
 ``_call_value_tokens``'s docstring for why: "none" is not a stopword, so
 that would let an answer merely containing the word "none" spuriously
 engage any call with a null field). Bool values ARE kept (``True``/``False``
 tokenize to "true"/"false") -- a null field asserts nothing, but a bool
-field asserts something real.
+field asserts something real. Nested ``dict``/``list`` values are ALSO
+skipped entirely (not stringified) -- ``str()`` on a nested structure would
+stringify its KEYS too, which would violate "field names are excluded" the
+moment any tool schema nests a sub-object; no tool output does today, but
+this is enforced structurally rather than left as a latent trap for a
+future one.
 
 **Field NAMES are deliberately excluded from the value text.** Only VALUES
 are tokenized -- a field named ``respiratory_rate`` does not itself engage a
@@ -90,6 +119,21 @@ opposite side of this check.
      common in this codebase's tool outputs (drug names, doses, numeric
      vitals, dates all tokenize to multi-character content words), but worth
      naming as a theoretical gap.
+  4. **Whole-turn ``BLOCKED`` is the dominant flag-ON regression risk, not a
+     residual edge case.** When EVERY call this turn made is unengaged (the
+     answer's prose never lexically touches any of them -- plausible for a
+     terse or unusual answer) AND there is no guideline/patient-fact catalog
+     either, ``ClaimExtractor.extract_claims``'s existing "nothing citable"
+     short-circuit (see that method's docstring) returns ``[]`` with NO
+     model call at all -- zero claims, which ``app.verdict``'s
+     ``NONE_VERIFIED`` row fails closed to ``blocked`` (P3.7), same as a
+     genuine extraction failure. This is the CORRECT fail-closed direction
+     (an answer verified against nothing citable should never read as
+     "verified"), but it is the failure mode most likely to show up in
+     practice if the engagement rule is ever too aggressive for a real
+     conversational pattern this codebase hasn't hit yet -- worth watching
+     in any per-category eval measurement before this flag is ever
+     defaulted on.
 
 **The zero-significant-token answer edge case: fail-closed, no calls
 engaged.** When the answer itself has zero significant tokens (e.g. an
@@ -165,6 +209,15 @@ def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
     engage a call purely because one of its fields happened to be null,
     never because of real record data.
 
+    ``dict``/``list`` values are ALSO skipped entirely (gate-3 review NOTE
+    1) -- only SCALAR values (``str``/``int``/``float``/``bool``) are
+    tokenized. ``str()`` on a nested structure stringifies its KEYS too
+    (e.g. ``str({"internal_code": "x"})`` contains the literal text
+    "internal_code"), which would silently violate "field names are
+    excluded" the moment a tool schema nests a sub-object -- no tool output
+    in this codebase does today, but this is enforced structurally rather
+    than left as a latent trap for a future one.
+
     Bool values ARE kept (``str(True)``/``str(False)`` tokenize to "true"/
     "false") -- unlike ``None``, a bool is a real, citable value (e.g. an
     active/resolved status flag), and an answer that echoes it back should
@@ -173,6 +226,8 @@ def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
     for record in records_of(result):
         for field, value in record.items():
             if field == _PROVENANCE_FIELD or value is None:
+                continue
+            if isinstance(value, (dict, list)):
                 continue
             values.append(str(value))
     return significant_tokens(" ".join(values))

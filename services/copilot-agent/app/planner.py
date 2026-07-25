@@ -195,6 +195,27 @@ class PlannerResult:
     # Empty for an ``ollama_client`` double with no ``call_stats`` (see
     # ``Planner.run``'s defensive ``getattr``).
     llm_calls: list[LlmCallStats] = field(default_factory=list)
+    # Issue #158 (gate-3 review MAJOR finding): the MODEL's own answer text,
+    # captured by ``app.extraction.apply_recency_notice`` immediately BEFORE
+    # it splices a machine-generated recency notice onto ``answer``. ``None``
+    # (the default) means no notice has been applied -- ``answer`` IS the
+    # model's own text, unmodified.
+    #
+    # Why this exists: a recency notice is built from the STALE RECORD'S OWN
+    # DATE (``app.verification._recency_notice_text``, e.g. "Note: lab
+    # results from 2014-02-01 may not reflect the patient's current
+    # status.") and appended to ``answer`` -- text the MODEL never wrote,
+    # containing raw record data. Issue #158's per-tool-call engagement check
+    # (``app.tool_call_scoping.engaged_call_ids``) tokenizes whichever answer
+    # text it is given; if it were given the POST-notice ``answer``, the
+    # notice's own appended date would token-overlap with the stale call's
+    # OWN raw values and wrongly engage a call the model itself never
+    # discussed -- the exact self-engagement bug this field exists to
+    # prevent. Any future engagement/grounding-style check over "what did the
+    # model's own prose actually say" MUST read ``answer_pre_notice`` when it
+    # is not ``None``, never bare ``answer`` -- see
+    # ``app.extraction.run_verification``'s use of it.
+    answer_pre_notice: str | None = None
 
 
 @dataclass(frozen=True)

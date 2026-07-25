@@ -145,13 +145,15 @@ class ClaimExtractorLike(Protocol):
     chunks. Also defaults to ``()`` and is only ever passed non-empty, for
     the same backward-compatibility reason.
 
-    ``engaged_call_ids`` (issue #158) is the same kind of ADDITIVE, optional
+    ``engaged`` (issue #158) is the same kind of ADDITIVE, optional
     capability: when supplied (not ``None``), the tool-result catalog and
     tool-result messages are narrowed to only the named ``call_i`` ids (see
     ``app.tool_call_scoping``). Defaults to ``None`` (no narrowing, today's
     behavior) and is only ever passed non-``None`` when
     ``Settings.copilot_extraction_tool_call_scoping_enabled`` is on, for the
-    same backward-compatibility reason."""
+    same backward-compatibility reason. Named ``engaged``, not
+    ``engaged_call_ids``, so it does not shadow the imported
+    ``app.tool_call_scoping.engaged_call_ids`` FUNCTION within this module."""
 
     def extract_claims(
         self,
@@ -161,7 +163,7 @@ class ClaimExtractorLike(Protocol):
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
         patient_facts: Sequence[Citation] = (),
-        engaged_call_ids: frozenset[str] | None = None,
+        engaged: frozenset[str] | None = None,
     ) -> list[Claim]: ...
 
 
@@ -344,7 +346,7 @@ class ClaimExtractor:
         raw_results: Sequence[dict[str, Any] | None],
         retrieved_chunks: Sequence[RerankedChunk] = (),
         patient_facts: Sequence[Citation] = (),
-        engaged_call_ids: frozenset[str] | None = None,
+        engaged: frozenset[str] | None = None,
     ) -> list[Claim]:
         """Return the cited claims decomposed from ``answer``.
 
@@ -369,16 +371,18 @@ class ClaimExtractor:
         ``app.chat.get_patient_fact_provider``, is what enforces that scope;
         this method has no patient-identity concept of its own).
 
-        ``engaged_call_ids`` (issue #158, additive): when supplied (not
-        ``None``), narrows the tool-result catalog AND tool-result messages
-        to only the named ``call_i`` ids -- the PREVENTION half of the #158
-        gate (see ``app.tool_call_scoping``'s module docstring). Unengaged
-        calls are skipped, never renumbered: ``call_2``'s catalog entry still
-        reads "call_2" even if ``call_1`` was dropped. ``None`` (the default,
-        and what every caller not opting into
+        ``engaged`` (issue #158, additive): when supplied (not ``None``),
+        narrows the tool-result catalog AND tool-result messages to only the
+        named ``call_i`` ids -- the PREVENTION half of the #158 gate (see
+        ``app.tool_call_scoping``'s module docstring). Unengaged calls are
+        skipped, never renumbered: ``call_2``'s catalog entry still reads
+        "call_2" even if ``call_1`` was dropped. ``None`` (the default, and
+        what every caller not opting into
         ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes)
-        means no narrowing -- byte-identical to today."""
-        catalog = _build_catalog(tools, raw_results, engaged_call_ids)
+        means no narrowing -- byte-identical to today. Named ``engaged``, not
+        ``engaged_call_ids``, so it does not shadow the module-level
+        ``engaged_call_ids`` function imported above."""
+        catalog = _build_catalog(tools, raw_results, engaged)
         guideline_catalog = _build_guideline_catalog(retrieved_chunks)
         fact_catalog = _build_fact_catalog(patient_facts)
         if not catalog and not guideline_catalog and not fact_catalog:
@@ -400,7 +404,7 @@ class ClaimExtractor:
         # to a clean "Lisinopril".
         messages = [
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
-            *_build_tool_result_messages(tools, raw_results, engaged_call_ids),
+            *_build_tool_result_messages(tools, raw_results, engaged),
             {"role": "assistant", "content": answer},
             {"role": "user", "content": instructions},
         ]
@@ -429,36 +433,37 @@ class ClaimExtractor:
         return _coerce_misrouted_guideline_refs(list(extracted.claims), retrieved_chunks)
 
 
-def _is_unengaged(call_id: str, engaged_call_ids: frozenset[str] | None) -> bool:
+def _is_unengaged(call_id: str, engaged: frozenset[str] | None) -> bool:
     """Issue #158: whether ``call_id`` must be skipped from the extractor's
     catalog/tool-result-message input -- ``True`` only when narrowing is
-    ACTIVE (``engaged_call_ids`` is not ``None``) AND ``call_id`` is not in
-    it. Shared by ``_build_catalog`` and ``_build_tool_result_messages``
-    (identical skip logic, previously duplicated between the two)."""
-    return engaged_call_ids is not None and call_id not in engaged_call_ids
+    ACTIVE (``engaged`` is not ``None``) AND ``call_id`` is not in it. Shared
+    by ``_build_catalog`` and ``_build_tool_result_messages`` (identical skip
+    logic, previously duplicated between the two)."""
+    return engaged is not None and call_id not in engaged
 
 
 def _build_catalog(
     tools: Sequence[ToolName],
     raw_results: Sequence[dict[str, Any] | None],
-    engaged_call_ids: frozenset[str] | None = None,
+    engaged: frozenset[str] | None = None,
 ) -> str:
     """Positional catalog of every citable ``(call, record, field)`` -- values
     omitted. Empty string when nothing is citable (no records at all).
 
-    ``engaged_call_ids`` (issue #158, additive): when supplied (not
-    ``None``), a call whose ``call_i`` id is NOT in this set is skipped
-    entirely -- its records never reach the catalog. The ``i`` index is
-    never renumbered for the calls that remain (this loop is a plain
-    ``enumerate`` over the FULL ``raw_results``, unaffected by which entries
-    get skipped), so ``call_2``'s line still reads "call_2" even when
-    ``call_1`` was skipped for being unengaged -- see
-    ``app.tool_call_scoping``'s module docstring for why that positional id
-    is load-bearing."""
+    ``engaged`` (issue #158, additive): when supplied (not ``None``), a call
+    whose ``call_i`` id is NOT in this set is skipped entirely -- its records
+    never reach the catalog. The ``i`` index is never renumbered for the
+    calls that remain (this loop is a plain ``enumerate`` over the FULL
+    ``raw_results``, unaffected by which entries get skipped), so
+    ``call_2``'s line still reads "call_2" even when ``call_1`` was skipped
+    for being unengaged -- see ``app.tool_call_scoping``'s module docstring
+    for why that positional id is load-bearing. Named ``engaged``, not
+    ``engaged_call_ids``, so it does not shadow the module-level
+    ``engaged_call_ids`` function imported above."""
     lines: list[str] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
         call_id = f"call_{i}"
-        if _is_unengaged(call_id, engaged_call_ids):
+        if _is_unengaged(call_id, engaged):
             continue
         records = records_of(result)
         if not records:
@@ -627,19 +632,18 @@ def _build_fact_catalog(citations: Sequence[Citation]) -> str:
 def _build_tool_result_messages(
     tools: Sequence[ToolName],
     raw_results: Sequence[dict[str, Any] | None],
-    engaged_call_ids: frozenset[str] | None = None,
+    engaged: frozenset[str] | None = None,
 ) -> list[dict[str, str]]:
     """Inert tool-result DATA messages carrying the RAW values (so the model
     can map claims to the right record). Safe: this feeds the tool-less,
     constrained, deterministically-validated extractor -- never the planner.
 
-    ``engaged_call_ids`` (issue #158, additive): same narrowing/index-
-    preservation contract as ``_build_catalog`` above -- see that function's
-    docstring."""
+    ``engaged`` (issue #158, additive): same narrowing/index-preservation
+    contract as ``_build_catalog`` above -- see that function's docstring."""
     messages: list[dict[str, str]] = []
     for i, (tool, result) in enumerate(zip(tools, raw_results)):
         call_id = f"call_{i}"
-        if _is_unengaged(call_id, engaged_call_ids):
+        if _is_unengaged(call_id, engaged):
             continue
         if not records_of(result):
             continue
@@ -757,16 +761,54 @@ def run_verification(
     than counting as verified -- this is what actually holds against a test
     double/extractor that ignores the narrowed catalog. Coarser than
     ``require_answer_grounding`` above (per-CALL, not per-claim-text) and
-    orthogonal to it -- both may be on at once. The engaged-call set is
-    derived from the FULL (unnarrowed) ``normalized`` results (recomputed,
-    pure and cheap, at each of the two use sites below), so provenance
-    re-validation (``index`` below) always has the complete data available
-    regardless of this flag; only the EXTRACTOR's view is narrowed.
+    orthogonal to it -- both may be on at once.
+
+    Engagement is computed (recomputed, pure and cheap, at each of the two
+    use sites below) from TWO deliberately specific inputs, both gate-3-
+    review fixes over the original #158 implementation:
+
+      - ``result.raw_results`` -- the PRE-normalization tool data, NOT
+        ``normalized`` (used everywhere else in this function, including
+        provenance re-validation's ``index`` below). ``normalize_raw_results``
+        reshapes vitals so the concept becomes a FIELD NAME (``{weight:
+        220}``), which this module's own docstring says is deliberately
+        excluded from engagement tokens (field names never count, only
+        values) -- computing engagement from the NORMALIZED copy would
+        silently lose the vitals concept word ("weight") as a value an
+        answer could engage through, leaving only its numbers/units/dates.
+        The RAW EAV record (``{vital_type: "weight", value: 220}``) still
+        has "weight" as a VALUE, so engagement correctly reads it. Provenance
+        re-validation is UNAFFECTED -- ``index``/``CacheIndex`` still builds
+        from ``normalized`` exactly as before; only the engagement
+        computation's input changed.
+      - ``result.answer_pre_notice`` when set, else ``result.answer`` --
+        NEVER the raw ``result.answer`` unconditionally. ``apply_recency_notice``
+        (called BEFORE this function, in ``app.chat``/``runner.pipeline``)
+        splices a machine-generated notice built from a STALE RECORD'S OWN
+        DATE onto ``result.answer``; naively engaging off the post-notice
+        text would let that appended date self-engage the very call the
+        notice is ABOUT, even when the model's own prose never discussed it
+        (see ``app.planner.PlannerResult.answer_pre_notice``'s docstring).
+
+    KNOWN, NOT FIXED HERE: ``require_answer_grounding`` above has the SAME
+    class of exposure -- ``apply_answer_grounding`` is called with
+    ``result.answer`` (post-notice), so a claim about a stale record could
+    gain spurious lexical grounding via the notice's own appended text. That
+    gate is already flag-OFF-by-default and documented unfit to enable for
+    other, larger reasons (see ``Settings.copilot_claim_answer_grounding_enabled``);
+    this observation is deliberately NOT acted on in this PR (out of scope --
+    #158 is call-level scoping only) and is called out in the PR report
+    instead.
+
     Default ``False`` (what every caller not opting into
     ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes) skips
     both prevention and enforcement entirely -- byte-identical to today."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
+    # See "Engagement is computed..." above: deliberately result.answer_pre_
+    # notice (falling back to result.answer when unset), never result.answer
+    # unconditionally.
+    engagement_answer = result.answer_pre_notice if result.answer_pre_notice is not None else result.answer
 
     extract_kwargs: dict[str, Any] = {}
     if retrieved_chunks:
@@ -774,7 +816,7 @@ def run_verification(
     if patient_facts:
         extract_kwargs["patient_facts"] = patient_facts
     if require_tool_call_scoping:
-        extract_kwargs["engaged_call_ids"] = engaged_call_ids(normalized, result.answer)
+        extract_kwargs["engaged"] = engaged_call_ids(result.raw_results, engagement_answer)
     claims = extractor.extract_claims(answer=result.answer, tools=tools, raw_results=normalized, **extract_kwargs)
     index = CacheIndex.from_raw_results(normalized)
     corpus_index = CorpusChunkIndex.from_chunks(retrieved_chunks) if retrieved_chunks else None
@@ -801,11 +843,17 @@ def run_verification(
     if require_tool_call_scoping:
         # Recomputed (not reused from the extract_kwargs computation above)
         # -- engaged_call_ids is pure, cheap, and deterministic over the same
-        # (normalized, result.answer) inputs both times, so recomputing here
-        # is simpler than threading an Optional local across the two
-        # flag-gated blocks just to avoid one extra call.
-        claim_results = apply_tool_call_scoping(claim_results, engaged_call_ids(normalized, result.answer))
+        # (result.raw_results, engagement_answer) inputs both times, so
+        # recomputing here is simpler than threading an Optional local across
+        # the two flag-gated blocks just to avoid one extra call.
+        claim_results = apply_tool_call_scoping(
+            claim_results, engaged_call_ids(result.raw_results, engagement_answer)
+        )
     if require_answer_grounding:
+        # KNOWN, NOT FIXED HERE (see this function's docstring, "KNOWN, NOT
+        # FIXED HERE"): result.answer is POST-notice, same self-engagement
+        # exposure class as #158's engagement computation had before the
+        # answer_pre_notice fix above -- deliberately unchanged in this PR.
         claim_results = apply_answer_grounding(claim_results, result.answer)
     if support_judge is not None:
         claim_results = apply_semantic_support(claim_results, support_judge)
@@ -833,11 +881,29 @@ def run_verification(
     return verdict_result, rendered
 
 
-def _with_answer(result: PlannerResult, answer: str) -> PlannerResult:
-    """A copy of ``result`` with only ``answer`` replaced -- the passthrough
+def _with_answer(
+    result: PlannerResult, answer: str, *, answer_pre_notice: str | None = None
+) -> PlannerResult:
+    """A copy of ``result`` with ``answer`` replaced -- the passthrough
     construction shared by ``apply_recency_notice`` and ``apply_subject_check``,
-    the two deterministic text-level post-processors over ``PlannerResult``."""
-    return PlannerResult(answer=answer, trace=result.trace, raw_results=result.raw_results, llm_calls=result.llm_calls)
+    the two deterministic text-level post-processors over ``PlannerResult``.
+
+    ``answer_pre_notice`` (issue #158): defaults to ``None``, which PRESERVES
+    ``result.answer_pre_notice`` unchanged (every caller except
+    ``apply_recency_notice`` wants this -- ``apply_subject_check`` and
+    ``clarify_unresolvable_referent`` replace the answer with a fixed,
+    hardcoded string that never depends on raw record values, so they have
+    nothing new to protect and must not accidentally CLEAR an
+    already-set ``answer_pre_notice`` from an earlier step). Only
+    ``apply_recency_notice`` passes an explicit value (the answer text as it
+    was immediately before the notice was spliced on)."""
+    return PlannerResult(
+        answer=answer,
+        trace=result.trace,
+        raw_results=result.raw_results,
+        llm_calls=result.llm_calls,
+        answer_pre_notice=answer_pre_notice if answer_pre_notice is not None else result.answer_pre_notice,
+    )
 
 
 def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResult:
@@ -881,12 +947,24 @@ def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResu
     because that is what the eval's ``answer_contains`` assertion inspects and
     what the SSE ``answer`` frame carries today; a structured representation
     is the cleaner future form and would let the P3.8 UI render recency as its
-    own badge rather than inline prose."""
+    own badge rather than inline prose.
+
+    Issue #158 (gate-3 review MAJOR finding): sets ``answer_pre_notice`` on
+    the returned result to ``result.answer`` -- the MODEL's own text, exactly
+    as it was immediately before this notice is appended. See
+    ``app.planner.PlannerResult.answer_pre_notice``'s docstring for why this
+    exists: the notice text itself is built from a stale record's own date
+    and would otherwise let issue #158's engagement check self-engage a call
+    the model never actually discussed."""
     tools = [entry.tool for entry in result.trace]
     notices = recency_notices(tools, result.raw_results, now)
     if not notices:
         return result
-    return _with_answer(result, result.answer + "\n\n" + "\n".join(notices))
+    return _with_answer(
+        result,
+        result.answer + "\n\n" + "\n".join(notices),
+        answer_pre_notice=result.answer,
+    )
 
 
 # Explicit foreign patient NUMBER the question introduces: "patient 999",

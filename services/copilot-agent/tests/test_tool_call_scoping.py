@@ -110,6 +110,21 @@ def test_engaged_call_ids_keeps_boolean_values_as_real_tokens():
     assert engaged == frozenset({"call_0"})
 
 
+def test_engaged_call_ids_skips_nested_dict_and_list_values_so_their_keys_never_engage():
+    # Gate-3 review NOTE 1: str() on a nested dict value stringifies its
+    # KEYS too (e.g. str({"internal_code": "x"}) contains the literal text
+    # "internal_code"), which would violate "field names are excluded" the
+    # moment any tool schema nests a sub-object. This call's fields are
+    # ENTIRELY a dict and a list -- if they were naively stringified, the
+    # dict key "internal_code" would leak into the token set and wrongly
+    # engage the call; with the fix, neither contributes any token at all.
+    call_with_nested_values = [{"metadata": {"internal_code": "sensitive_keyword"}, "other": [1, 2, 3]}]
+
+    engaged = engaged_call_ids(call_with_nested_values, "sensitive_keyword mentioned.")
+
+    assert engaged == frozenset()
+
+
 # --------------------------------------------------------------------------
 # apply_tool_call_scoping -- the enforcement half
 # --------------------------------------------------------------------------
