@@ -2,6 +2,7 @@
   "session-1-initial-n8": {
     "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
     "backfilled": true,
+    "ended_at": "2026-07-25T18:29:06+00:00",
     "engine": "llama_server",
     "flags": {
       "answer_grounding_enabled": false,
@@ -13,11 +14,14 @@
     "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
     "model": "qwen3-8b",
     "parallel": 1,
-    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+    "started_at": "2026-07-25T18:22:53+00:00",
+    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+    "window_precision": "approximate"
   },
   "session-2-sixteen-more-1785004556": {
     "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
     "backfilled": true,
+    "ended_at": "2026-07-25T18:56:18+00:00",
     "engine": "llama_server",
     "flags": {
       "answer_grounding_enabled": false,
@@ -29,6 +33,8 @@
     "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
     "model": "qwen3-8b",
     "parallel": 1,
-    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+    "started_at": "2026-07-25T18:43:50+00:00",
+    "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+    "window_precision": "approximate"
   }
 }

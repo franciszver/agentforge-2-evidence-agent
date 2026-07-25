@@ -276,10 +276,9 @@
   "run_metadata": {
     "sessions": {
       "session-1-initial-n8": {
-        "started_at": "2026-07-25T18:22:53+00:00",
-        "ended_at": "2026-07-25T18:29:06+00:00",
         "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
         "backfilled": true,
+        "ended_at": "2026-07-25T18:29:06+00:00",
         "engine": "llama_server",
         "flags": {
           "answer_grounding_enabled": false,
@@ -291,13 +290,14 @@
         "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
         "model": "qwen3-8b",
         "parallel": 1,
-        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+        "started_at": "2026-07-25T18:22:53+00:00",
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+        "window_precision": "approximate"
       },
       "session-2-sixteen-more-1785004556": {
-        "started_at": "2026-07-25T18:43:50+00:00",
-        "ended_at": "2026-07-25T18:56:18+00:00",
         "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
         "backfilled": true,
+        "ended_at": "2026-07-25T18:56:18+00:00",
         "engine": "llama_server",
         "flags": {
           "answer_grounding_enabled": false,
@@ -309,10 +309,12 @@
         "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
         "model": "qwen3-8b",
         "parallel": 1,
-        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)"
+        "started_at": "2026-07-25T18:43:50+00:00",
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+        "window_precision": "approximate"
       }
     },
-    "session_windows_note": "started_at = earliest draw's started_at; ended_at = latest draw's (started_at + latency_seconds) -- i.e. when that draw actually finished, not just when it began. A session with {started_at: null, ended_at: null} predates the started_at field entirely; manual_session_windows is the only sanctioned way to backfill an approximate one (see the two pre-schema committed sessions).",
+    "session_windows_note": "started_at/ended_at/window_precision: 'exact' means derived from this session's OWN draws (started_at = earliest draw's started_at; ended_at = latest draw's started_at + latency_seconds, i.e. when that draw actually finished). 'approximate' means no draw in this session carries a real started_at (pre-schema/backfilled draws), so the window was persisted directly into session_metadata.json instead -- see each such session's own flags_source/backfilled fields for how that approximate window was derived. A session with window_precision: null has neither a computed nor a persisted window at all.",
     "session_provenance_note": "app_git_sha/engine/model/flags/flags_source/loop_order/parallel/temperature/backfilled are PERSISTED per-session facts (evals/results/issue-160/session_metadata.json), captured once by the live run that produced that session and never re-derived on a later --summarize-only regeneration. A session showing loop_order starting with \"unknown\" has no persisted entry."
   }
 }
