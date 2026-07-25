@@ -8,6 +8,39 @@
 > fork). Phase 1's OpenEMR base is [Gauntlet-HQ/openemr-base-clean](https://github.com/Gauntlet-HQ/openemr-base-clean),
 > itself derived from [OpenEMR](https://github.com/openemr/openemr) (GPL v3).
 
+![Phase-2 evidence agent demo — three questions against the live stack: a narrative answer marked Blocked on citation-axis grounds (no single citable chart field, not a safety-conflict block), an allergy question answered against a chart with no allergies on file where the three medication claims — but not the answer's own headline claim — carry citation chips, and an honest "no recent lab results" answer whose absence itself carries a citation chip.](docs/assets/demo.gif)
+
+*Captured from live runs against the local Phase-2 stack — a narrative
+question comes back **Blocked**, which here is the citation-axis verdict
+(no single citable chart field for this answer), not a safety-conflict
+flag; the panel's own legend describes Blocked as "a safety conflict
+stopped the answer," which does not match this particular beat — a
+mismatch tracked as
+[#151](https://github.com/franciszver/agentforge-2-evidence-agent/issues/151).
+An allergy question comes back **Verified**: the chart has no allergies
+on file, and the three medication claims each carry a citation chip
+naming the record field checked, though the answer's own headline claim
+("no recorded allergies...") does not. And a patient with no lab data
+gets an honest "no recent lab results" answer whose absence itself
+carries a citation chip.*
+
+*Two caveats worth stating plainly rather than glossing over: verdicts
+are **not deterministic** — the same question, run repeatedly against the
+same stack, can return different answers, different cited claims, or a
+different verdict outright. A blood-pressure question answered correctly
+with a matching citation on 1 of 4 draws, and on the other 3 declined to
+answer while citing an unrelated respiratory-rate claim the user never
+asked about — all four still verdict `verified`
+([#149](https://github.com/franciszver/agentforge-2-evidence-agent/issues/149));
+the allergy question above returned `verified` on 5 of 6 draws and
+`blocked` on 1, with the answer text semantically identical every time — the verdict
+itself flipping
+([#150](https://github.com/franciszver/agentforge-2-evidence-agent/issues/150)).
+
+Separately, a `verified` verdict confirms that the citation attached to a
+claim matches the record — not that the claim, or the answer, actually
+addresses the question the user asked.*
+
 ## Week 1 vs Week 2
 
 This project ran in two stretches, kept visibly separate here rather than
@@ -16,8 +49,14 @@ blended into one undifferentiated feature list.
 ### Week 1 (Phase 1 baseline, inherited unchanged at v1.0)
 
 A verification-first clinical co-pilot embedded in OpenEMR: a physician asks
-a question about the open chart and gets an answer where **every factual
-claim is deterministically re-checked against the raw record and cited**.
+a question about the open chart and gets an answer where the verification
+layer is designed to deterministically re-check every extracted factual
+claim against the raw record and cite it — coverage per claim is not yet
+universal in practice (see the Phase-2 demo caption above).
+
+![Clinical Co-Pilot demo — a physician asks "What is he taking, and does anything conflict with starting ibuprofen?" on Phil Belford's chart, the answer streams in, then a Verified badge and tappable citation chips appear, each chip revealing the record value it was checked against.](docs/demo/clinical-copilot-demo.gif)
+
+*75-second demo of this Week-1/Phase-1 baseline co-pilot — [MP4 version](docs/demo/clinical-copilot-demo.mp4)*
 
 - **Data:** structured OpenEMR data via typed tools (medications, labs,
   encounters, vitals) — no retrieval, one tool call per planner turn.
@@ -109,8 +148,3 @@ findings, and remediation notes.
 [Multimodal Evidence Agent project board](https://github.com/users/franciszver/projects/3)
 tracks all work — stages as milestones, tasks as issues, one issue = one
 branch = one PR.
-
----
-
-*Demo assets (`DEMO_SCRIPT.md`) and interview prep land in Stage 5/6; this
-README is updated as those close.*
