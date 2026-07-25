@@ -207,11 +207,21 @@ class ClaimSegmentRecord:
 class DrawRecord:
     """One live ``POST /chat`` draw. Deliberately carries no raw answer or
     claim TEXT anywhere -- only a hash/length/counts/enums/booleans (#163
-    artifact-discipline parity)."""
+    artifact-discipline parity).
+
+    ``session_id`` (#160 follow-up: 16-more-draws sign-off) identifies which
+    booted-stack run this draw came from -- so a second batch of draws never
+    silently mixes into the first without a visible label. Two batches
+    against the SAME question produce draws that differ only in
+    ``session_id``/``draw_index``; ``attribute_mechanisms``/
+    ``summarize_question`` are session-agnostic (a caller decides whether to
+    pass them one session's draws or several combined -- see
+    ``build_report``'s ``combined``/``by_session`` split)."""
 
     question_id: str
     patient_id: int
     draw_index: int
+    session_id: str
     correlation_id: str | None
     conversation_id: str | None
     tool_calls: list[ToolCallRecord]
@@ -257,6 +267,7 @@ def build_draw_record(
     *,
     question: Question,
     draw_index: int,
+    session_id: str,
     events: list[tuple[str, dict[str, Any]]],
     latency_seconds: float,
     http_status: int | None,
@@ -266,12 +277,15 @@ def build_draw_record(
     no network, no hashing side effects beyond ``hashlib`` on already-
     in-memory text (never persisted). ``error`` non-``None`` means the HTTP
     call itself failed or never completed; every downstream field is then
-    left ``None``/empty rather than guessing."""
+    left ``None``/empty rather than guessing. ``session_id`` is caller-
+    supplied (one value per live-run invocation -- see ``main()``), never
+    derived here."""
     if error is not None:
         return DrawRecord(
             question_id=question.id,
             patient_id=question.patient_id,
             draw_index=draw_index,
+            session_id=session_id,
             correlation_id=None,
             conversation_id=None,
             tool_calls=[],
@@ -323,6 +337,7 @@ def build_draw_record(
         question_id=question.id,
         patient_id=question.patient_id,
         draw_index=draw_index,
+        session_id=session_id,
         correlation_id=correlation_id,
         conversation_id=conversation_id,
         tool_calls=tool_calls,
@@ -435,8 +450,35 @@ def summarize_question(question_id: str, draws: list[DrawRecord]) -> dict[str, A
     return report
 
 
+def group_by_session(draws: list[DrawRecord]) -> dict[str, list[DrawRecord]]:
+    """Split draws by ``session_id`` -- preserves first-seen session order
+    (not sorted) so ``by_session`` in the report reads oldest-session-first."""
+    grouped: dict[str, list[DrawRecord]] = {}
+    for draw in draws:
+        grouped.setdefault(draw.session_id, []).append(draw)
+    return grouped
+
+
 def build_report(per_question: dict[str, list[DrawRecord]]) -> dict[str, Any]:
-    return {question_id: summarize_question(question_id, draws) for question_id, draws in per_question.items()}
+    """Per question: a ``combined`` summary over ALL draws (every session
+    mixed) plus a ``by_session`` breakdown (one summary per distinct
+    ``session_id``, in first-seen order) and the explicit ``session_ids``
+    list -- so a reader can never mistake a multi-session combined number for
+    a single-session one, and can never miss that more than one session's
+    draws went into ``combined`` (#160 16-more-draws follow-up: "no silent
+    mixing")."""
+    report: dict[str, Any] = {}
+    for question_id, draws in per_question.items():
+        by_session = group_by_session(draws)
+        report[question_id] = {
+            "session_ids": list(by_session.keys()),
+            "combined": summarize_question(question_id, draws),
+            "by_session": {
+                session_id: summarize_question(question_id, session_draws)
+                for session_id, session_draws in by_session.items()
+            },
+        }
+    return report
 
 
 # --- live run (network I/O -- never exercised by the unit-test suite) ---------
@@ -476,6 +518,7 @@ def post_chat_draw(
     base_url: str,
     question: Question,
     draw_index: int,
+    session_id: str,
     token: str,
 ) -> DrawRecord:
     """Make ONE real, live ``POST /chat`` call and turn its SSE response into
@@ -499,6 +542,7 @@ def post_chat_draw(
                 return build_draw_record(
                     question=question,
                     draw_index=draw_index,
+                    session_id=session_id,
                     events=[],
                     latency_seconds=latency,
                     http_status=status,
@@ -509,6 +553,7 @@ def post_chat_draw(
         return build_draw_record(
             question=question,
             draw_index=draw_index,
+            session_id=session_id,
             events=events,
             latency_seconds=latency,
             http_status=status,
@@ -519,6 +564,7 @@ def post_chat_draw(
         return build_draw_record(
             question=question,
             draw_index=draw_index,
+            session_id=session_id,
             events=[],
             latency_seconds=latency,
             http_status=None,
@@ -527,25 +573,37 @@ def post_chat_draw(
 
 
 def main() -> None:
+    import uuid
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--draws", type=int, default=_DEFAULT_DRAWS, help="draws per question (default 8)")
+    parser.add_argument("--start-index", type=int, default=0, help="starting draw_index for this session (default 0; bump for a second batch so indices don't collide)")
     parser.add_argument("--base-url", default=_DEFAULT_BASE_URL, help="agent base URL (default in-container localhost:8000)")
     parser.add_argument("--token", default=_DEFAULT_TOKEN, help="bearer token (flag-OFF stub validator accepts any non-empty value)")
+    parser.add_argument("--session-id", default=None, help="label for this run's draws (default: a fresh random id) -- distinguishes this batch from any prior batch appended to the same *.jsonl, so report.json's by_session never silently mixes them")
     parser.add_argument("--summarize-only", action="store_true", help="skip live runs; just re-aggregate evals/results/issue-160/*.jsonl")
     args = parser.parse_args()
 
     if not args.summarize_only:
         import httpx  # live-run-only dependency -- see post_chat_draw's docstring
 
+        session_id = args.session_id or f"session-{uuid.uuid4().hex[:12]}"
+        print(f"[issue-160] session_id={session_id}")
+
         for question in TARGET_QUESTIONS:
-            for draw_index in range(args.draws):
+            for draw_index in range(args.start_index, args.start_index + args.draws):
                 with httpx.Client(timeout=180.0) as client:
                     draw = post_chat_draw(
-                        client, base_url=args.base_url, question=question, draw_index=draw_index, token=args.token
+                        client,
+                        base_url=args.base_url,
+                        question=question,
+                        draw_index=draw_index,
+                        session_id=session_id,
+                        token=args.token,
                     )
                 path = append_draw(draw)
                 status = f"ERROR {draw.error}" if draw.error else f"verdict={draw.verdict} tools={tool_sequence_of(draw)}"
-                print(f"[issue-160] {question.id} draw {draw_index}: {status} -> {path}")
+                print(f"[issue-160] {question.id} draw {draw_index} ({session_id}): {status} -> {path}")
 
     per_question = {q.id: load_draws(q.id) for q in TARGET_QUESTIONS}
     report = build_report(per_question)

@@ -75,6 +75,8 @@ from runner.issue_160_live_chat_harness import (
     ToolCallRecord,
     attribute_mechanisms,
     build_draw_record,
+    build_report,
+    group_by_session,
     parse_sse_lines,
     sequence_label,
     summarize_question,
@@ -113,6 +115,7 @@ class TestSchema:
             question_id="issue-149-bp",
             patient_id=1,
             draw_index=0,
+            session_id="session-a",
             correlation_id="corr-1",
             conversation_id="conv-1",
             tool_calls=[ToolCallRecord(order=0, tool="get_vitals", args={}, error=None)],
@@ -132,6 +135,7 @@ class TestSchema:
         assert "answer_text" not in field_names
         assert "claim_text" not in field_names
         assert draw.answer_hash == "deadbeef"
+        assert draw.session_id == "session-a"
 
 
 # --- parse_sse_lines ----------------------------------------------------------
@@ -196,6 +200,7 @@ class TestBuildDrawRecord:
         draw = build_draw_record(
             question=BP_QUESTION,
             draw_index=0,
+            session_id="session-test",
             events=_bp_events(),
             latency_seconds=2.5,
             http_status=200,
@@ -203,6 +208,7 @@ class TestBuildDrawRecord:
         )
 
         assert draw.question_id == BP_QUESTION.id
+        assert draw.session_id == "session-test"
         assert draw.patient_id == 1
         assert draw.conversation_id == "conv-1"
         assert draw.correlation_id == "corr-1"
@@ -230,7 +236,13 @@ class TestBuildDrawRecord:
         ]
 
         draw = build_draw_record(
-            question=ALLERGY_QUESTION, draw_index=1, events=events, latency_seconds=1.0, http_status=200, error=None
+            question=ALLERGY_QUESTION,
+            draw_index=1,
+            session_id="session-test",
+            events=events,
+            latency_seconds=1.0,
+            http_status=200,
+            error=None,
         )
 
         assert [tc.tool for tc in draw.tool_calls] == ["get_medications", "get_allergies"]
@@ -240,6 +252,7 @@ class TestBuildDrawRecord:
         draw = build_draw_record(
             question=BP_QUESTION,
             draw_index=2,
+            session_id="session-test",
             events=[],
             latency_seconds=180.0,
             http_status=None,
@@ -261,14 +274,26 @@ class TestBuildDrawRecord:
 class TestToolSequence:
     def test_sequence_of_extracts_ordered_tool_names(self) -> None:
         draw = build_draw_record(
-            question=BP_QUESTION, draw_index=0, events=_bp_events(), latency_seconds=1.0, http_status=200, error=None
+            question=BP_QUESTION,
+            draw_index=0,
+            session_id="session-test",
+            events=_bp_events(),
+            latency_seconds=1.0,
+            http_status=200,
+            error=None,
         )
 
         assert tool_sequence_of(draw) == ("get_vitals",)
 
     def test_empty_sequence_for_error_draw(self) -> None:
         draw = build_draw_record(
-            question=BP_QUESTION, draw_index=0, events=[], latency_seconds=1.0, http_status=None, error="boom"
+            question=BP_QUESTION,
+            draw_index=0,
+            session_id="session-test",
+            events=[],
+            latency_seconds=1.0,
+            http_status=None,
+            error="boom",
         )
 
         assert tool_sequence_of(draw) == ()
@@ -288,6 +313,7 @@ def _draw(
     answer_text: str = "same answer",
     verdict: str = "verified",
     error: str | None = None,
+    session_id: str = "session-a",
 ) -> DrawRecord:
     tool_calls = [ToolCallRecord(order=i, tool=t, args={}, error=None) for i, t in enumerate(tools)]
     if error is not None:
@@ -295,6 +321,7 @@ def _draw(
             question_id="q",
             patient_id=1,
             draw_index=draw_index,
+            session_id=session_id,
             correlation_id=None,
             conversation_id=None,
             tool_calls=[],
@@ -311,6 +338,7 @@ def _draw(
         question_id="q",
         patient_id=1,
         draw_index=draw_index,
+        session_id=session_id,
         correlation_id=f"corr-{draw_index}",
         conversation_id=f"conv-{draw_index}",
         tool_calls=tool_calls,
@@ -400,6 +428,53 @@ class TestSummarizeQuestion:
         assert "latency_seconds" in summary
         assert summary["latency_seconds"]["min"] == pytest.approx(1.0)
         assert summary["mechanism"]["generation_nondeterminism"] is True
+
+
+# --- session grouping / combined-vs-by-session report (#160 follow-up) --------
+
+
+class TestGroupBySession:
+    def test_splits_by_session_id_preserving_first_seen_order(self) -> None:
+        draws = [
+            _draw(0, session_id="session-a"),
+            _draw(1, session_id="session-b"),
+            _draw(2, session_id="session-a"),
+        ]
+
+        grouped = group_by_session(draws)
+
+        assert list(grouped.keys()) == ["session-a", "session-b"]
+        assert [d.draw_index for d in grouped["session-a"]] == [0, 2]
+        assert [d.draw_index for d in grouped["session-b"]] == [1]
+
+
+class TestBuildReportCombinedAndBySession:
+    def test_combined_mixes_all_sessions_by_session_keeps_them_apart(self) -> None:
+        """The exact scenario the 16-more-draws follow-up must never get
+        wrong: session A alone is stable (all 'verified'); session B alone
+        introduces a verdict flip. combined must reflect ALL draws pooled;
+        by_session must let a reader see each session's own, unmixed
+        picture."""
+        session_a = [_draw(i, session_id="session-a", verdict="verified") for i in range(2)]
+        session_b = [
+            _draw(2, session_id="session-b", verdict="verified"),
+            _draw(3, session_id="session-b", verdict="blocked"),
+        ]
+        draws = session_a + session_b
+
+        report = build_report({"q": draws})
+
+        assert report["q"]["session_ids"] == ["session-a", "session-b"]
+        assert report["q"]["combined"]["n_draws"] == 4
+        assert report["q"]["combined"]["verdict_distribution"] == {"verified": 3, "blocked": 1}
+        assert report["q"]["by_session"]["session-a"]["n_draws"] == 2
+        assert report["q"]["by_session"]["session-a"]["verdict_distribution"] == {"verified": 2}
+        assert report["q"]["by_session"]["session-b"]["n_draws"] == 2
+        assert report["q"]["by_session"]["session-b"]["verdict_distribution"] == {"verified": 1, "blocked": 1}
+        # #160 follow-up mutation check: if by_session were dropped in favor
+        # of combined-only, session-a's own (stable) picture would be lost --
+        # confirmed this assertion fails without the by_session key at all.
+        assert "by_session" in report["q"]
 
 
 # --- no-tool-stub property -----------------------------------------------------
