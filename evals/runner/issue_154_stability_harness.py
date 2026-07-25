@@ -75,13 +75,33 @@ precedent exactly.
 ``summarize()`` (also runnable standalone against an existing ``draws/``
 directory via ``--summarize-only``) aggregates every draw's summary file
 into ``evals/results/issue-154/summary.json``: per question, N, the verdict
-distribution, the extracted (``total_claim_count``) distribution, and
-whether the answer text varied. **Exact-text stability only** -- this
-harness does a byte-for-byte string comparison of ``planner_result.answer``
-across draws; it does NOT do semantic/paraphrase comparison (that would
-need its own judge call, like ``issue_130_spike.py``'s SourceRef-relevance
-judge, which is out of scope here). The summary says explicitly which kind
-of comparison was done rather than implying more than was checked.
+distribution, the extracted (``total_claim_count``) distribution, the
+extraction-failure distribution, and whether the answer text varied.
+**Exact-text stability only** -- this harness does a byte-for-byte string
+comparison of ``planner_result.answer`` across draws; it does NOT do
+semantic/paraphrase comparison (that would need its own judge call, like
+``issue_130_spike.py``'s SourceRef-relevance judge, which is out of scope
+here). The summary says explicitly which kind of comparison was done rather
+than implying more than was checked.
+
+**A zero-claim ``blocked`` draw is NOT one thing.** It can mean claim
+extraction's retry exhaustion fail-closed, an empty catalog with nothing to
+extract from, or an answer with genuinely nothing verifiable -- three
+different causes with the byte-identical ``verdict=blocked,
+total_claim_count=0`` shape. See ``DrawResult.extraction_failed`` and
+``summarize()``'s docstring for exactly which of the three each draw's row
+lets you tell apart. This harness also calls ``app.correlation
+.configure_logging()`` itself (see ``main()``) -- unlike ``app.main``, it
+never imports that module, so without this the retry-exhaustion warning
+would silently fall through to ``logging.lastResort`` with the correlation
+id dropped, in no artifact.
+
+**The two target questions are not like-for-like stability comparisons.**
+The BP case (#149) triggers an extra judge-model call the allergy case
+(#150) does not (``needs_semantic_support()`` -- see ``summarize()``'s
+docstring for the mechanism). Read each question's own distribution across
+its own draws; do not compare the BP question's rate against the allergy
+question's rate as if they exercised the same pipeline surface.
 
 Usage (from repo root, live model reachable -- e.g. inside
 ``development-easy-agent-1`` after ``docker cp``-ing fresh sources in, see
@@ -96,9 +116,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -124,6 +147,7 @@ for _root in reversed(_agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT) +
         sys.path.insert(0, _root_str)
 
 from app.config import Settings  # noqa: E402
+from app.correlation import configure_logging  # noqa: E402
 from app.llama_server_client import LlamaServerClient  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
 from app.schemas.planner import ToolName  # noqa: E402
@@ -217,6 +241,52 @@ class DrawResult:
     stripped_claim_count: int | None
     answer: str | None
     exception: str | None = None
+    # #154 F1: which of the THREE zero-claim causes actually happened, per
+    # draw -- see ``summarize()``'s docstring for the full breakdown.
+    # ``True`` iff ``app.extraction``'s retry-exhaustion warning ("claim
+    # extraction exhausted retries...") fired during this draw (captured by
+    # ``_RetryExhaustionWatcher`` below); ``False`` for a draw that completed
+    # without it (including one whose pipeline itself raised, so it never
+    # reached extraction); ``None`` only if the draw's exception happened
+    # before extraction could even be attempted is still ``False`` here --
+    # exception draws are excluded from this field's meaning entirely and
+    # should be read via ``exception`` instead.
+    extraction_failed: bool = False
+
+
+class _RetryExhaustionWatcher(logging.Handler):
+    """Non-pytest equivalent of ``caplog`` for one thing only: did
+    ``app.extraction``'s retry-exhaustion warning (see ``app/extraction.py``'s
+    ``except LLMEngineError`` block, logger ``app.extraction``, message
+    ``"claim extraction exhausted retries..."``) fire during this draw?
+
+    ``caplog`` works by temporarily attaching a handler to the root logger
+    for the duration of one test; this does the same thing for the duration
+    of one draw, attached directly to the ``app.extraction`` logger (matching
+    ``tests/test_extraction.py``'s own ``caplog.set_level(..., logger=
+    "app.extraction")`` scoping) so it does not depend on -- or interfere
+    with -- whatever handlers ``configure_logging()`` installed on the root
+    logger for the process's actual structured-log output. Attach with the
+    ``fired`` context manager below; do not use this handler directly."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.fired = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if "exhausted retries" in record.getMessage():
+            self.fired = True
+
+
+@contextmanager
+def _watch_for_retry_exhaustion() -> Iterator[_RetryExhaustionWatcher]:
+    watcher = _RetryExhaustionWatcher()
+    logger = logging.getLogger("app.extraction")
+    logger.addHandler(watcher)
+    try:
+        yield watcher
+    finally:
+        logger.removeHandler(watcher)
 
 
 def run_one_draw(case: EvalCase, draw_index: int, client: OllamaLike) -> tuple[DrawResult, list[RecordedCall]]:
@@ -226,23 +296,30 @@ def run_one_draw(case: EvalCase, draw_index: int, client: OllamaLike) -> tuple[D
     alongside the summary. Exceptions from the pipeline itself are caught
     and recorded (never raised) as a failed :class:`DrawResult` so one bad
     draw doesn't abort the whole multi-draw session -- same discipline as
-    ``issue_130_spike.py``'s ``run_one_draw``."""
+    ``issue_130_spike.py``'s ``run_one_draw``.
+
+    Also watches (``_watch_for_retry_exhaustion``) whether ``app.extraction``'s
+    retry-exhaustion warning fired during this draw, so the returned
+    :class:`DrawResult` can distinguish "extraction infrastructure failed"
+    from a merely zero-claim draw -- see ``summarize()``'s docstring."""
     recorder = RecordingOllamaClient(client)  # type: ignore[arg-type]
-    try:
-        result = run_case(case, recorder)  # type: ignore[arg-type]
-    except Exception as exc:  # noqa: BLE001 -- harness run: record failure, keep going
-        return (
-            DrawResult(
-                case_id=case.id,
-                draw_index=draw_index,
-                verdict=None,
-                total_claim_count=None,
-                stripped_claim_count=None,
-                answer=None,
-                exception=repr(exc),
-            ),
-            recorder.calls,
-        )
+    with _watch_for_retry_exhaustion() as watcher:
+        try:
+            result = run_case(case, recorder)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001 -- harness run: record failure, keep going
+            return (
+                DrawResult(
+                    case_id=case.id,
+                    draw_index=draw_index,
+                    verdict=None,
+                    total_claim_count=None,
+                    stripped_claim_count=None,
+                    answer=None,
+                    exception=repr(exc),
+                    extraction_failed=watcher.fired,
+                ),
+                recorder.calls,
+            )
 
     verdict_result = result.verdict_result
     draw = DrawResult(
@@ -252,6 +329,7 @@ def run_one_draw(case: EvalCase, draw_index: int, client: OllamaLike) -> tuple[D
         total_claim_count=verdict_result.total_claim_count if verdict_result is not None else None,
         stripped_claim_count=verdict_result.stripped_claim_count if verdict_result is not None else None,
         answer=result.planner_result.answer,
+        extraction_failed=watcher.fired,
     )
     return draw, recorder.calls
 
@@ -280,10 +358,53 @@ def summarize(draws_dir: Path) -> dict[str, Any]:
     """Aggregate every ``draws/<case_id>-draw*.json`` summary artifact (the
     ``.calls.json`` transcripts are audit trail only -- not read here) into
     a per-question report: N, the verdict distribution, the extracted-claim
-    (``total_claim_count``) distribution, and whether the answer text
-    varied -- EXACT string comparison only, explicitly labeled as such (see
-    module docstring's "Exact-text stability only"). Never touches any
-    verdict or recording -- pure read-and-aggregate."""
+    (``total_claim_count``) distribution, the extraction-failure distribution
+    (see below), and whether the answer text varied -- EXACT string
+    comparison only, explicitly labeled as such (see module docstring's
+    "Exact-text stability only"). Never touches any verdict or recording --
+    pure read-and-aggregate.
+
+    **A zero-claim ``blocked`` draw has THREE possible causes** (#154 F1 --
+    do not read ``total_claim_count == 0`` alone as "nothing verifiable"):
+
+      1. **Claim-extraction retry exhaustion.** ``app.extraction.ClaimExtractor
+         .extract_claims`` caught ``LLMEngineError`` after the client's own
+         internal retries and gave up, returning ``[]``. This is an
+         INFRASTRUCTURE failure (a flaky/overloaded model backend), not a
+         judgment about the answer. Identified by ``extraction_failed: true``
+         in this draw's row (captured live per-draw by
+         ``_watch_for_retry_exhaustion`` watching for ``app.extraction``'s
+         "claim extraction exhausted retries" warning -- see F2 below for why
+         that warning would otherwise be silently dropped).
+      2. **Empty catalogs.** ``ClaimExtractor.extract_claims``
+         (``app/extraction.py`` ~line 356) returns ``[]`` before ever calling
+         the model, when the tool-result catalog, guideline catalog, AND
+         patient-fact catalog are all empty -- there was nothing to extract
+         claims FROM. ``extraction_failed`` is ``False`` for this cause (no
+         warning fires; extraction was never attempted).
+      3. **Genuinely nothing verifiable.** The model was called, extraction
+         succeeded, and it correctly found zero claims worth verifying in the
+         answer text. ``extraction_failed`` is also ``False`` here.
+
+    ``extraction_failed`` (this summary's ``extraction_failed_distribution``)
+    is therefore the field that separates cause 1 from causes 2 and 3. This
+    harness does NOT further distinguish cause 2 from cause 3 -- both produce
+    an identical zero-claim, non-warning row; telling them apart would
+    require inspecting the tool/guideline/fact inputs given to that draw
+    (available in the ``.calls.json`` transcript) rather than anything this
+    summary aggregates. A reader who needs that distinction should go look at
+    the specific draw's recorded call inputs.
+
+    **#154 F4 -- the two target questions' rates are not like-for-like.**
+    The BP case (``bp-stage2-question``, #149) carries a
+    ``GuidelineCitationPresentAssertion``, which makes
+    ``runner.pipeline``'s ``needs_semantic_support()`` return ``True`` for
+    it and NOT for the allergy-conflict case (#150) -- so every BP draw
+    makes one extra judge-model call the allergy draw does not. Per-question
+    stability (each question's own verdict/claim-count distribution across
+    its own draws) is still valid to read; comparing the BP question's rate
+    directly against the allergy question's rate as if they exercised the
+    same pipeline surface is not."""
     per_case: dict[str, dict[str, Any]] = {}
 
     for path in sorted(draws_dir.glob("*.json")):
@@ -298,6 +419,7 @@ def summarize(draws_dir: Path) -> dict[str, Any]:
                 "n_exceptions": 0,
                 "verdict_distribution": Counter(),
                 "total_claim_count_distribution": Counter(),
+                "extraction_failed_distribution": Counter(),
                 "answers_seen": [],
             },
         )
@@ -307,17 +429,31 @@ def summarize(draws_dir: Path) -> dict[str, Any]:
             continue
         bucket["verdict_distribution"][payload["verdict"]] += 1
         bucket["total_claim_count_distribution"][payload["total_claim_count"]] += 1
+        bucket["extraction_failed_distribution"][bool(payload.get("extraction_failed", False))] += 1
         bucket["answers_seen"].append(payload["answer"])
 
     report: dict[str, Any] = {}
     for case_id, bucket in per_case.items():
         distinct_answers = list(dict.fromkeys(bucket["answers_seen"]))  # order-preserving dedupe
+        n_counted = bucket["n_draws"] - bucket["n_exceptions"]
         report[case_id] = {
             "n_draws": bucket["n_draws"],
             "n_exceptions": bucket["n_exceptions"],
+            # #154 F3: every *_distribution below is computed over these
+            # ``n_counted`` non-exception draws only -- they do NOT sum to
+            # ``n_draws`` when ``n_exceptions > 0``. n_counted = n_draws -
+            # n_exceptions, spelled out explicitly so a reader never has to
+            # infer it.
+            "n_counted": n_counted,
             "verdict_distribution": dict(bucket["verdict_distribution"]),
             "total_claim_count_distribution": {
                 str(k): v for k, v in bucket["total_claim_count_distribution"].items()
+            },
+            # #154 F1: True count = retry-exhaustion draws (cause 1 above);
+            # False count = causes 2+3 combined (extraction not attempted, or
+            # attempted and genuinely found nothing -- not distinguished).
+            "extraction_failed_distribution": {
+                str(k): v for k, v in bucket["extraction_failed_distribution"].items()
             },
             "answer_text_comparison": "exact",  # NOT semantic -- see module docstring
             "answer_text_varied": len(distinct_answers) > 1,
@@ -342,6 +478,20 @@ def main() -> None:
         help="skip live runs; just re-aggregate evals/results/issue-154/draws/",
     )
     args = parser.parse_args()
+
+    # #154 F2: ``app.main`` is the only place that previously called this
+    # (at import time, module-level). This harness imports ``runner.pipeline``
+    # -> ``app.extraction`` directly and never imports ``app.main``, so
+    # without this the root logger has no handlers during a harness run: the
+    # retry-exhaustion warning (see ``app/extraction.py``'s ``except
+    # LLMEngineError`` block) falls through to ``logging.lastResort``, which
+    # prints a bare, unstructured line to stderr with ``error_type`` and the
+    # correlation id DROPPED, and lands in no artifact. Calling it here,
+    # unconditionally (idempotent -- see its own docstring) and before any
+    # draw runs, matches ``app.main``'s invocation (no arguments -> default
+    # INFO level) so a harness run gets the same structured JSON log lines
+    # ``app.main`` would produce in production.
+    configure_logging()
 
     if not args.summarize_only:
         ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
