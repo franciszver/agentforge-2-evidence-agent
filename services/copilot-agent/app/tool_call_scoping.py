@@ -45,6 +45,14 @@ digit strings specially), so an answer that quotes a bare number ("Her
 weight is 220 lb.") engages the vitals call whose record contains that same
 number as a value (220), even with no other shared vocabulary.
 
+``None`` field values are skipped entirely when building a call's value
+text -- never stringified to the literal word "none" (see
+``_call_value_tokens``'s docstring for why: "none" is not a stopword, so
+that would let an answer merely containing the word "none" spuriously
+engage any call with a null field). Bool values ARE kept (``True``/``False``
+tokenize to "true"/"false") -- a null field asserts nothing, but a bool
+field asserts something real.
+
 **Field NAMES are deliberately excluded from the value text.** Only VALUES
 are tokenized -- a field named ``respiratory_rate`` does not itself engage a
 call just because the answer happens to use the word "rate" for something
@@ -155,11 +163,24 @@ def _records_of(result: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
     """The significant tokens of every record's field VALUES (never field
-    names) in one tool call's raw result -- see module docstring."""
+    names) in one tool call's raw result -- see module docstring.
+
+    ``None`` values are skipped entirely, never stringified -- a null field
+    asserts nothing citable, and ``str(None)`` would otherwise contribute
+    the literal token "none" to the set. "none" is NOT in ``_STOPWORDS``
+    (only "no"/"not" are), so without this skip, ANY answer containing the
+    word "none" ("No known allergies -- none noted.") would spuriously
+    engage a call purely because one of its fields happened to be null,
+    never because of real record data.
+
+    Bool values ARE kept (``str(True)``/``str(False)`` tokenize to "true"/
+    "false") -- unlike ``None``, a bool is a real, citable value (e.g. an
+    active/resolved status flag), and an answer that echoes it back should
+    count as genuine engagement."""
     values: list[str] = []
     for record in _records_of(result):
         for field, value in record.items():
-            if field == _PROVENANCE_FIELD:
+            if field == _PROVENANCE_FIELD or value is None:
                 continue
             values.append(str(value))
     return significant_tokens(" ".join(values))

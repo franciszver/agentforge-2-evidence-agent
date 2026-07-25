@@ -80,6 +80,36 @@ def test_engaged_call_ids_zero_significant_token_answer_engages_no_calls():
     assert engaged == frozenset()
 
 
+def test_engaged_call_ids_a_null_field_never_spuriously_engages_a_call():
+    # Correctness regression (gate finding #6): a record field whose value
+    # is Python ``None`` must NOT contribute the literal token "none" to the
+    # call's value-token set -- "none" is not in _STOPWORDS (only "no"/
+    # "not" are), so naive ``str(None)`` stringification would make ANY
+    # answer containing the word "none" ("No known allergies -- none
+    # noted.") spuriously engage a call purely because one of its fields
+    # happens to be null, never because of real record data. This call's
+    # ONLY field is None -- if the bug were present, this would be the ONE
+    # token distinguishing it, and the call would wrongly show as engaged.
+    call_with_only_a_null_field = [{"items": [{"reaction": None}]}]
+
+    engaged = engaged_call_ids(call_with_only_a_null_field, "None reported.")
+
+    assert engaged == frozenset()
+
+
+def test_engaged_call_ids_keeps_boolean_values_as_real_tokens():
+    # Adjacent hazard, checked and decided: unlike ``None`` above, a bool
+    # value IS a real, citable value (e.g. an "active"/"resolved" status
+    # flag) -- it stringifies to "true"/"false" and DOES tokenize, so an
+    # answer that echoes it back still proves engagement. Not a bug; pinned
+    # here so a future change can't silently start skipping bools too.
+    call_with_a_bool_field = [{"active": True}]
+
+    engaged = engaged_call_ids(call_with_a_bool_field, "The record is true today.")
+
+    assert engaged == frozenset({"call_0"})
+
+
 # --------------------------------------------------------------------------
 # apply_tool_call_scoping -- the enforcement half
 # --------------------------------------------------------------------------
