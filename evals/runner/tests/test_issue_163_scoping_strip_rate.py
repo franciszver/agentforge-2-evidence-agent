@@ -45,8 +45,10 @@ from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResu
 from runner.issue_163_scoping_strip_rate import (
     ArmRecord,
     CaseRecord,
+    _case_index_entry,
     arm_record_from_results,
     build_case_record,
+    build_report,
     summarize,
 )
 
@@ -111,14 +113,23 @@ class TestArmRecordFromResults:
         assert arm.claims == []
 
 
-class TestBuildCaseRecord:
-    def _off_on(self, off_verdict: Verdict, on_verdict: Verdict) -> tuple[ArmRecord, ArmRecord]:
-        off = arm_record_from_results(_verdict_result(off_verdict, 1, 0 if off_verdict == Verdict.VERIFIED else 1), [_claim(CitationStatus.VALID)])
-        on = arm_record_from_results(_verdict_result(on_verdict, 1, 0 if on_verdict == Verdict.VERIFIED else 1), [_claim(CitationStatus.VALID)])
-        return off, on
+def _off_on(off_verdict: Verdict, on_verdict: Verdict) -> tuple[ArmRecord, ArmRecord]:
+    """Module-level helper (hoisted out of ``TestBuildCaseRecord`` -- issue
+    #163 gate-1 review) shared by ``TestBuildCaseRecord`` and
+    ``TestSummarize``/``TestBuildReport`` so those other classes don't need
+    to instantiate ``TestBuildCaseRecord`` just to reach it."""
+    off = arm_record_from_results(
+        _verdict_result(off_verdict, 1, 0 if off_verdict == Verdict.VERIFIED else 1), [_claim(CitationStatus.VALID)]
+    )
+    on = arm_record_from_results(
+        _verdict_result(on_verdict, 1, 0 if on_verdict == Verdict.VERIFIED else 1), [_claim(CitationStatus.VALID)]
+    )
+    return off, on
 
+
+class TestBuildCaseRecord:
     def test_verified_to_blocked_flip_is_flagged_and_counts_as_newly_blocked(self) -> None:
-        off, on = self._off_on(Verdict.VERIFIED, Verdict.BLOCKED)
+        off, on = _off_on(Verdict.VERIFIED, Verdict.BLOCKED)
 
         record = build_case_record(
             case_id="case-1",
@@ -137,7 +148,7 @@ class TestBuildCaseRecord:
         assert record.newly_blocked is True
 
     def test_stable_verdict_is_not_a_flip(self) -> None:
-        off, on = self._off_on(Verdict.VERIFIED, Verdict.VERIFIED)
+        off, on = _off_on(Verdict.VERIFIED, Verdict.VERIFIED)
 
         record = build_case_record(
             case_id="case-2",
@@ -154,7 +165,7 @@ class TestBuildCaseRecord:
         assert record.newly_blocked is False
 
     def test_already_blocked_off_is_not_newly_blocked(self) -> None:
-        off, on = self._off_on(Verdict.BLOCKED, Verdict.BLOCKED)
+        off, on = _off_on(Verdict.BLOCKED, Verdict.BLOCKED)
 
         record = build_case_record(
             case_id="case-3",
@@ -213,8 +224,8 @@ class TestBuildCaseRecord:
 
 class TestSummarize:
     def test_per_category_and_total_rows(self) -> None:
-        flip_off, flip_on = TestBuildCaseRecord()._off_on(Verdict.VERIFIED, Verdict.BLOCKED)
-        stable_off, stable_on = TestBuildCaseRecord()._off_on(Verdict.VERIFIED, Verdict.VERIFIED)
+        flip_off, flip_on = _off_on(Verdict.VERIFIED, Verdict.BLOCKED)
+        stable_off, stable_on = _off_on(Verdict.VERIFIED, Verdict.VERIFIED)
         records = [
             build_case_record(
                 case_id="c1",
@@ -258,3 +269,62 @@ class TestSummarize:
         assert report["total"]["comparable_cases"] == 2
         assert report["total"]["verdict_flips"] == 1
         assert report["total"]["newly_blocked"] == 1
+
+
+class TestCaseIndexEntry:
+    def test_light_index_row_shape(self) -> None:
+        off, on = _off_on(Verdict.VERIFIED, Verdict.BLOCKED)
+        record = build_case_record(
+            case_id="c1",
+            category="citation_present",
+            applicable=True,
+            engaged_call_ids=["call_0"],
+            total_call_ids=["call_0"],
+            off=off,
+            on=on,
+        )
+
+        entry = _case_index_entry(record)
+
+        # Issue #163 gate-1 review: report.json's per-case index is
+        # DELIBERATELY light -- exactly these five keys, never a full
+        # CaseRecord dump (that lives only in draws/<case_id>.json). Pinning
+        # the exact key set here means adding an ArmRecord/claim field back
+        # into this dict is a conscious, reviewed choice, not a silent
+        # reversion to the old duplicated-data shape.
+        assert entry == {
+            "case_id": "c1",
+            "category": "citation_present",
+            "comparable": True,
+            "verdict_flip": True,
+            "newly_blocked": True,
+        }
+
+
+class TestBuildReport:
+    def test_report_carries_light_index_not_full_case_records(self) -> None:
+        off, on = _off_on(Verdict.VERIFIED, Verdict.VERIFIED)
+        records = [
+            build_case_record(
+                case_id="c1",
+                category="citation_present",
+                applicable=True,
+                engaged_call_ids=["call_0"],
+                total_call_ids=["call_0"],
+                off=off,
+                on=on,
+            ),
+        ]
+
+        report = build_report(records)
+
+        assert report["case_count"] == 1
+        assert "generated_at" in report
+        assert report["cases"] == [_case_index_entry(records[0])]
+        # The full per-arm claim/citation detail (ArmRecord.claims,
+        # CitationCheckResult statuses, ...) must NOT be reachable from
+        # report.json at all -- it lives solely in draws/<case_id>.json.
+        assert "off" not in report["cases"][0]
+        assert "on" not in report["cases"][0]
+        assert "claims" not in report["cases"][0]
+        assert report["summary"] == summarize(records)

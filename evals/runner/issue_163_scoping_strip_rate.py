@@ -101,9 +101,9 @@ but ONE verification arm raises (e.g. extraction retry exhaustion) is
 recorded with that arm's ``error`` set and ``comparable=False`` -- the OTHER
 arm's result (if it succeeded) is still reported, never discarded, and never
 retried. Both are real per-case outcomes and are reported as such, not
-silently retried or excluded. No case is drawn twice; the only exception is
-one mechanical retry for a bare infrastructure failure (connection refused,
-not a model response) -- see ``main``'s retry note.
+silently retried or excluded. No case is drawn twice, and ``main`` makes
+exactly one unconditional attempt per case -- there is no retry of any kind
+(mechanical or otherwise) anywhere in this harness.
 
 **Downstream-only tool data, same scope limit #154 documents.** Every case's
 ``tool_data`` is the case's own canned fixture (``runner.tool_stub
@@ -123,6 +123,18 @@ case is from this session's single draw, no mixing with older runs").
 ``summarize()``/``--summarize-only`` re-aggregates an existing ``draws/``
 directory into ``evals/results/issue-163/report.json`` without any live
 call, same precedent as ``issue_154_stability_harness.py``.
+
+**``draws/`` is the ONE full-detail source; ``report.json`` never duplicates
+it.** ``report.json`` carries the per-category/total ``summary()`` output
+plus a LIGHT per-case index (``case_id``, ``category``, ``comparable``,
+``verdict_flip``, ``newly_blocked`` -- see ``_case_index_entry``) for a
+human skimming the committed artifact to find which case ids to look up.
+The full per-arm claim/citation detail lives ONLY in ``draws/<case_id>
+.json`` -- ``report.json`` used to also embed a full copy of every
+``CaseRecord`` in a ``"cases"`` array, which meant the same data existed in
+two places that could silently diverge (e.g. a ``--fresh`` rerun that
+regenerates ``draws/`` but not ``report.json``, or vice versa). There is now
+exactly one place a reader goes for full case detail.
 
 **Live-model runs stay OUT of CI.** Same three guarantees
 ``issue_154_stability_harness.py``'s docstring documents (collection-glob
@@ -193,6 +205,7 @@ from app.ollama_client import OllamaClient  # noqa: E402
 from app.openemr_client import OpenEmrClient  # noqa: E402
 from app.planner import Planner, PlannerResult  # noqa: E402
 from app.schemas.ingestion import Citation  # noqa: E402
+from app.schemas.reranking import RerankedChunk  # noqa: E402
 from app.tool_call_scoping import engaged_call_ids  # noqa: E402
 from app.verdict import Verdict, VerdictResult  # noqa: E402
 from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult  # noqa: E402
@@ -415,9 +428,20 @@ def _offline_openemr_client() -> OpenEmrClient:
     )
 
 
-def _run_planner(case: EvalCase, ollama_client: OllamaLike) -> PlannerResult:
+def _run_planner(
+    case: EvalCase,
+    ollama_client: OllamaLike,
+    *,
+    retrieved_chunks: list[RerankedChunk],
+    patient_facts: list[Citation],
+) -> PlannerResult:
     """Exactly ``runner.pipeline.run_case``'s pre-verification section --
-    see module docstring, "Why the planner section is duplicated"."""
+    see module docstring, "Why the planner section is duplicated". Issue
+    #163 gate-1 review: ``retrieved_chunks``/``patient_facts`` are computed
+    ONCE by ``run_one_case`` (mirroring ``pipeline.run_case``'s own
+    documented one-source, two-consumers design for the SAME fixtures) and
+    passed in here, rather than each of this function and
+    ``_run_verification_arm`` re-deriving them from ``case`` independently."""
     if detect_foreign_patient_reference(
         case.question, case.patient_id, case.patient_name, roster_provider=lambda: case.patient_roster or []
     ):
@@ -431,9 +455,7 @@ def _run_planner(case: EvalCase, ollama_client: OllamaLike) -> PlannerResult:
         patient_id=case.patient_id,
         registry=registry,
     )
-    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
     guideline_excerpts = [chunk.text for chunk in retrieved_chunks]
-    patient_facts: list[Citation] = [fixture.to_citation() for fixture in case.patient_facts]
     planner_kwargs: dict[str, list[Citation]] = {}
     if patient_facts:
         planner_kwargs["document_facts"] = patient_facts
@@ -468,13 +490,19 @@ def _capture_claim_results() -> Iterator[list[list[ClaimCheckResult]]]:
 
 
 def _run_verification_arm(
-    case: EvalCase, planner_result: PlannerResult, ollama_client: OllamaLike, *, require_tool_call_scoping: bool
+    case: EvalCase,
+    planner_result: PlannerResult,
+    ollama_client: OllamaLike,
+    *,
+    retrieved_chunks: list[RerankedChunk],
+    patient_facts: list[Citation],
+    require_tool_call_scoping: bool,
 ) -> ArmRecord:
     """One arm's ``run_verification`` call, with claim-level detail
     captured. Exceptions are caught here (not propagated) so one failing arm
-    never blocks the other arm or the rest of the run."""
-    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
-    patient_facts: list[Citation] = [fixture.to_citation() for fixture in case.patient_facts]
+    never blocks the other arm or the rest of the run. ``retrieved_chunks``/
+    ``patient_facts`` are the SAME objects ``run_one_case`` already computed
+    once for ``_run_planner`` -- see that function's docstring."""
     extractor = ClaimExtractor(ollama_client=ollama_client)  # type: ignore[arg-type]
     support_judge = ollama_client if needs_semantic_support(case) else None
     try:
@@ -501,9 +529,19 @@ def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord,
     one case's full call sequence (planner + OFF extraction (+judge) + ON
     extraction (+judge)) is captured together, mirroring #154's per-draw
     recording precedent."""
+    # Issue #163 gate-1 review: computed ONCE here, mirroring
+    # ``pipeline.run_case``'s documented one-source-two-consumers design for
+    # these SAME fixtures -- threaded into ``_run_planner`` and BOTH
+    # ``_run_verification_arm`` calls below rather than each recomputing its
+    # own copy from ``case``.
+    retrieved_chunks = [fixture.to_reranked_chunk() for fixture in case.retrieved_chunks]
+    patient_facts: list[Citation] = [fixture.to_citation() for fixture in case.patient_facts]
+
     recorder = RecordingOllamaClient(ollama_client)  # type: ignore[arg-type]
     try:
-        planner_result = _run_planner(case, recorder)  # type: ignore[arg-type]
+        planner_result = _run_planner(
+            case, recorder, retrieved_chunks=retrieved_chunks, patient_facts=patient_facts  # type: ignore[arg-type]
+        )
     except Exception as exc:  # noqa: BLE001 -- harness run: record failure, keep going
         record = build_case_record(
             case_id=case.id,
@@ -535,8 +573,22 @@ def run_one_case(case: EvalCase, ollama_client: OllamaLike) -> tuple[CaseRecord,
         )
         return record, recorder.calls
 
-    off = _run_verification_arm(case, planner_result, recorder, require_tool_call_scoping=False)  # type: ignore[arg-type]
-    on = _run_verification_arm(case, planner_result, recorder, require_tool_call_scoping=True)  # type: ignore[arg-type]
+    off = _run_verification_arm(
+        case,
+        planner_result,
+        recorder,  # type: ignore[arg-type]
+        retrieved_chunks=retrieved_chunks,
+        patient_facts=patient_facts,
+        require_tool_call_scoping=False,
+    )
+    on = _run_verification_arm(
+        case,
+        planner_result,
+        recorder,  # type: ignore[arg-type]
+        retrieved_chunks=retrieved_chunks,
+        patient_facts=patient_facts,
+        require_tool_call_scoping=True,
+    )
     record = build_case_record(
         case_id=case.id,
         category=case.category,
@@ -607,6 +659,34 @@ def load_draws(draws_dir: Path) -> list[CaseRecord]:
     return records
 
 
+def _case_index_entry(record: CaseRecord) -> dict[str, Any]:
+    """The LIGHT per-case row ``report.json`` carries -- just enough for a
+    human skimming the committed artifact to find which case id to open in
+    ``draws/`` for full detail. See module docstring, "``draws/`` is the ONE
+    full-detail source" -- this is deliberately NOT ``asdict(record)``."""
+    return {
+        "case_id": record.case_id,
+        "category": record.category,
+        "comparable": record.comparable,
+        "verdict_flip": record.verdict_flip,
+        "newly_blocked": record.newly_blocked,
+    }
+
+
+def build_report(records: list[CaseRecord]) -> dict[str, Any]:
+    """The full ``report.json`` payload: generated-at timestamp, case count,
+    the per-category/total ``summarize()`` output, and the light per-case
+    index (``_case_index_entry``) -- never a full copy of every
+    ``CaseRecord`` (that lives solely in ``draws/<case_id>.json``, loaded via
+    ``load_draws``)."""
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "case_count": len(records),
+        "cases": [_case_index_entry(r) for r in records],
+        "summary": summarize(records),
+    }
+
+
 def save_report(report: dict[str, Any]) -> Path:
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     path = _RESULTS_DIR / "report.json"
@@ -615,19 +695,28 @@ def save_report(report: dict[str, Any]) -> Path:
 
 
 def print_table(summary: dict[str, Any]) -> None:
-    header = f"{'category':<20}{'cases':>7}{'claims':>9}{'downgraded':>12}{'flips':>8}{'newly_blocked':>15}"
+    """Human-facing per-category + total table. Includes an ``errors``
+    column (issue #163 gate-1 review) -- ``summarize()`` already computes
+    this count per bucket; previously it was silently absent from this
+    printout even though it is real, non-zero-worthy signal (a case whose
+    draw or a verification arm raised)."""
+    header = (
+        f"{'category':<20}{'cases':>7}{'claims':>9}{'downgraded':>12}{'flips':>8}{'newly_blocked':>15}{'errors':>8}"
+    )
     print(header)
     print("-" * len(header))
     for category, bucket in sorted(summary["by_category"].items()):
         print(
             f"{category:<20}{bucket['cases']:>7}{bucket['claims_total_off']:>9}"
             f"{bucket['claims_downgraded']:>12}{bucket['verdict_flips']:>8}{bucket['newly_blocked']:>15}"
+            f"{bucket['errors']:>8}"
         )
     print("-" * len(header))
     total = summary["total"]
     print(
         f"{'TOTAL':<20}{total['cases']:>7}{total['claims_total_off']:>9}"
         f"{total['claims_downgraded']:>12}{total['verdict_flips']:>8}{total['newly_blocked']:>15}"
+        f"{total['errors']:>8}"
     )
 
 
@@ -690,15 +779,9 @@ def main() -> None:
             print(f"[issue-163] {case.id} ({case.category}): {status} -> {summary_path}, {calls_path}")
 
     records = load_draws(_DRAWS_DIR)
-    summary = summarize(records)
-    report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "case_count": len(records),
-        "cases": [asdict(r) for r in records],
-        "summary": summary,
-    }
+    report = build_report(records)
     save_report(report)
-    print_table(summary)
+    print_table(report["summary"])
 
 
 if __name__ == "__main__":
