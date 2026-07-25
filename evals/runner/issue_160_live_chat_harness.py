@@ -38,7 +38,13 @@ the ``ChatEvent`` frame contract; three frames matter here:
     here: the raw chart VALUES a tool call returns are never sent over SSE
     at all (only the client-facing ``tool_call`` frame's ``tool``/``args``/
     ``error`` -- see ``app/chat.py``'s ``ToolCallTrace`` docstring: "Raw
-    record free-text must NEVER land here").
+    record free-text must NEVER land here"). ``args`` itself is still
+    persisted VERBATIM with no allowlist/redaction (gate-2 security
+    advisory, #160) -- safe only because ``TARGET_QUESTIONS``' tools are
+    all argless today; extending the question set to any tool whose args
+    can carry free-text/PHI-adjacent input requires adding a redaction pass
+    first (see the code comment at ``build_draw_record``'s ``tool_call``
+    branch).
   * ``answer`` -- ``{"answer": str}``, the final verified answer text. This
     harness NEVER writes that raw string to any committed artifact -- only
     a SHA-256 hash and a character length survive into ``DrawRecord``
@@ -338,6 +344,17 @@ def build_draw_record(
             conversation_id = data.get("conversation_id")
             correlation_id = data.get("correlation_id")
         elif event_name == "tool_call":
+            # SECURITY/PHI (gate-2 advisory, #160): args is persisted
+            # VERBATIM, no allowlist or redaction. Currently benign only
+            # because both TARGET_QUESTIONS' tools (get_vitals,
+            # get_medications, get_allergies) are argless -- grep-confirmed
+            # every committed args value under evals/results/issue-160/ is
+            # {}. This does NOT generalize: before pointing this harness at
+            # any tool whose args can carry free-text or PHI-adjacent input
+            # (a search query, a date-range note, a name lookup, ...), add
+            # an explicit allowlist/redaction pass here first -- an
+            # unredacted args dict would otherwise land verbatim in a
+            # committed, public-repo JSONL artifact.
             tool_calls.append(
                 ToolCallRecord(
                     order=len(tool_calls),
