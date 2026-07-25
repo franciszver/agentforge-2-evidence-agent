@@ -378,7 +378,25 @@ class ClaimExtractor:
         ]
         try:
             extracted = self._ollama.extract(messages, VerifiedAnswer)
-        except LLMEngineError:
+        except LLMEngineError as exc:
+            # #154 (diagnosed by #149/#150): the client already retried
+            # internally (``llama_server_extract_max_retries`` /
+            # ``ollama_extract_max_retries``) and logged each attempt; this
+            # is the ONE place that logs the *consequence* -- extraction
+            # gives up entirely and the caller gets zero claims, which
+            # ``app.verdict``'s ``NONE_VERIFIED`` row fail-closes to
+            # ``blocked`` regardless of the safety axis. Without this, that
+            # collapse was only inferable from a `claim_count=0` in the
+            # "verification computed" log below, indistinguishable from an
+            # answer with nothing citable in the first place. No explicit
+            # ``correlation_id`` here -- ``app.correlation.configure_logging``'s
+            # ``LogRecordFactory`` already stamps every record with it (see
+            # that module's docstring), so it is on this line for free.
+            # Non-PHI: error type only, never the answer or tool data.
+            _logger.warning(
+                "claim extraction exhausted retries; returning no claims (fails closed to blocked)",
+                extra={"error_type": type(exc).__name__},
+            )
             return []
         return _coerce_misrouted_guideline_refs(list(extracted.claims), retrieved_chunks)
 
