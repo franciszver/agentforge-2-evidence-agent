@@ -218,6 +218,16 @@ def _call_value_tokens(result: dict[str, Any] | None) -> set[str]:
     in this codebase does today, but this is enforced structurally rather
     than left as a latent trap for a future one.
 
+    Note the key-leak rationale above is a DICT-specific argument -- it does
+    not actually apply to ``list``: ``str(["Lisinopril", "Metformin"])``
+    leaks no keys, only its own values. Lists are skipped anyway, for
+    uniformity with ``dict`` and out of general conservatism about
+    stringifying compound values, not because they share the key-leak
+    failure mode. The accepted consequence is fail-closed, not fail-open: a
+    future scalar-``list`` field (e.g. a list of drug names) would
+    contribute NO engagement tokens at all rather than leak anything --
+    unengageable, never wrongly engaged.
+
     Bool values ARE kept (``str(True)``/``str(False)`` tokenize to "true"/
     "false") -- unlike ``None``, a bool is a real, citable value (e.g. an
     active/resolved status flag), and an answer that echoes it back should
