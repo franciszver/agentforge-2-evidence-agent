@@ -484,32 +484,17 @@ class TestNoToolStub:
     """Pins the #154-escaping property: this harness has no import path back
     into in-process/pinned-tool-data pipeline machinery."""
 
-    def test_source_has_no_tool_stub_or_pipeline_import_lines(self) -> None:
-        """Scans only actual ``import``/``from ... import`` statement lines
-        (not prose/comments/docstrings, which legitimately discuss #154's
-        tool_stub/pipeline machinery by name when explaining why THIS module
-        avoids it)."""
-        source = _HARNESS_MODULE_PATH.read_text(encoding="utf-8")
-        import_lines = [
-            line.strip()
-            for line in source.splitlines()
-            if line.strip().startswith(("import ", "from "))
-        ]
-
-        forbidden_substrings = [
-            "runner.tool_stub",
-            "build_fake_registry",
-            "runner.pipeline",
-            "runner.schema",
-            "app",  # catches "from app..."/"import app..." on any import line
-        ]
-        for line in import_lines:
-            for needle in forbidden_substrings:
-                assert needle not in line, (
-                    f"harness import line {line!r} references {needle!r} -- reintroduces #154's blind spot"
-                )
-
     def test_module_has_no_app_dot_star_imports_via_ast(self) -> None:
+        """Gate-1 simplify (#160): this AST-based check SUBSUMES a prior
+        string-scan test that grepped raw ``import``/``from ...`` lines for
+        forbidden substrings (``runner.tool_stub``, ``runner.pipeline``,
+        ``app``, ...) -- removed as redundant, since everything that scan
+        could catch, parsing the actual import AST catches too, and more
+        robustly: a multi-line ``from x import (\\n    y,\\n)`` or an
+        aliased ``import app.planner as p`` defeats a line-level substring
+        scan but not this walk over ``ast.ImportFrom``/``ast.Import`` nodes,
+        which sees the real module/alias names regardless of source
+        formatting."""
         import ast
 
         source = _HARNESS_MODULE_PATH.read_text(encoding="utf-8")
@@ -519,6 +504,7 @@ class TestNoToolStub:
                 assert not node.module.startswith("app"), f"forbidden in-process import: {node.module}"
                 assert not node.module.startswith("runner.pipeline")
                 assert not node.module.startswith("runner.tool_stub")
+                assert not node.module.startswith("runner.schema")
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     assert not alias.name.startswith("app"), f"forbidden in-process import: {alias.name}"

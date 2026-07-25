@@ -357,6 +357,19 @@ def build_draw_record(
                 citation_count = len(segment.get("citations", [])) if passed else 0
                 claims.append(ClaimSegmentRecord(index=index, passed=passed, citation_count=citation_count))
 
+    # Ambiguity accepted, not fixed (gate-1 simplify note): a successful
+    # (error=None) draw whose ``events`` list is empty collapses claim_count
+    # to None -- the same value an error draw uses -- so this field alone
+    # cannot distinguish "0 events because nothing was parsed" from "0
+    # events because the call itself failed." In practice this case is
+    # unreachable through the live wire protocol: every real /chat response
+    # always emits at least a ``conversation`` frame before anything else
+    # (see app/chat.py's _stream_chat), so error=None with events=[] never
+    # happens from post_chat_draw -- only a caller constructing a
+    # DrawRecord by hand (as this module's own tests do for isolated
+    # fixtures) could hit it. A reader who needs to be certain should check
+    # ``error`` first regardless: it is already the authoritative signal for
+    # "did the HTTP call itself fail," independent of this field.
     claim_count = len(claims) if events else None
 
     return DrawRecord(
