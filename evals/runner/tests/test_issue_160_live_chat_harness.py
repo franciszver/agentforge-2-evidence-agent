@@ -1,0 +1,1006 @@
+"""Red-first schema + attribution-logic tests for the issue #160 live-`/chat`
+N-draw stability harness (``evals/runner/issue_160_live_chat_harness.py``).
+
+**Why this harness exists / what it removes.** Issue #154's harness
+(``evals/runner/issue_154_stability_harness.py``) pins ``tool_data`` and
+never reaches the real ``OpenEmrClient`` -- its own docstring calls this a
+"hard scope limit": it measures variance strictly DOWNSTREAM of tool
+results (answer-composition given FIXED tool data, extraction,
+verification) and explicitly "does not and cannot reproduce or refute
+variance that originates upstream, in the planner's live tool-calling
+against the real chart." Issue #160's harness is that missing upstream
+measurement: it POSTs the REAL, running ``/chat`` endpoint over HTTP N
+times per question, so the planner's tool selection AND the real chart are
+both live, exactly like the original #149/#150 manual draws that surfaced
+the instability in the first place.
+
+**What this file does and does not cover.** The harness's live half (HTTP
+POST to a running agent container's ``/chat``, SSE streaming, parsing a
+live response) needs a booted dev stack and is exercised by hand (see the
+harness module's own docstring for the exact in-container invocation) --
+never in this suite, which must stay fast, network-free, and CI-safe. This
+file pins only the harness's PURE, in-memory logic:
+
+  1. the ``DrawRecord``/``ToolCallRecord``/``ClaimSegmentRecord`` schema
+     (frozen dataclasses -- shape pinned so a future refactor can't silently
+     drop a field the report depends on),
+  2. ``parse_sse_lines`` -- turning raw SSE text lines into ``(event, data)``
+     pairs, fed literal fixture text (no network, no ``httpx`` mock needed),
+  3. ``build_draw_record`` -- turning one draw's parsed events into a
+     ``DrawRecord``, including the "never persist raw answer text" contract
+     (only a hash + length survive) and the "per-claim outcome, not raw
+     citation status" contract (SSE's ``verification`` frame only carries
+     claim-vs-notice segments -- see ``app.rendering``'s module docstring,
+     quoted in the harness module's own docstring, for why a finer-grained
+     ``CitationStatus`` is not on the wire at all),
+  4. ``attribute_mechanisms`` -- the three-way (tool-selection /
+     generation-nondeterminism / downstream) mechanism attribution that is
+     this harness's entire point, per its own module docstring.
+
+**No-tool-stub property (the #154 failure mode this harness exists to
+escape).** ``TestNoToolStub`` statically inspects the harness module's own
+source text and asserts it never imports ``runner.tool_stub``,
+``runner.pipeline``, ``runner.schema``, or any ``app.*`` module at all --
+i.e. it cannot possibly fall back to in-process planner calls against
+canned ``tool_data``, by construction, because it has no import path to any
+of that machinery. A harness that measures the live HTTP surface has no
+legitimate reason to import ``app.planner``/``app.extraction`` or
+``runner.tool_stub.build_fake_registry`` -- their mere presence in the
+import list would mean some code path re-creates #154's blind spot instead
+of removing it.
+
+Written BEFORE ``runner.issue_160_live_chat_harness`` exists (strict
+red-first, per ``CLAUDE.md``'s "Red first -- strict TDD, everywhere"): the
+first commit of this file fails on the module import with
+``ModuleNotFoundError`` -- the intended red state.
+
+This module's name (``test_issue_160_...py``) matches pytest's collection
+glob deliberately, unlike the live harness itself -- this file contains no
+live call and must run in CI like any other test."""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from runner.issue_160_live_chat_harness import (
+    ALLERGY_QUESTION,
+    BP_QUESTION,
+    ClaimSegmentRecord,
+    DrawRecord,
+    DuplicateCorrelationIdError,
+    Question,
+    ToolCallRecord,
+    _assert_correlation_ids_unique,
+    aggregate_orphan_data_lines,
+    attribute_mechanisms,
+    build_draw_record,
+    build_report,
+    build_run_metadata,
+    compute_session_windows,
+    count_duplicate_draw_indices,
+    count_orphan_data_lines,
+    group_by_session,
+    is_run_valid,
+    parse_sse_lines,
+    record_session_provenance,
+    sequence_label,
+    summarize_question,
+    tool_sequence_of,
+)
+
+_HARNESS_MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "issue_160_live_chat_harness.py"
+)
+
+
+# --- schema pinning ----------------------------------------------------------
+
+
+class TestSchema:
+    def test_question_targets_match_149_150(self) -> None:
+        assert BP_QUESTION.patient_id == 1
+        assert "blood pressure" in BP_QUESTION.question.lower()
+        assert ALLERGY_QUESTION.patient_id == 2
+        assert "allergy conflict" in ALLERGY_QUESTION.question.lower()
+
+    def test_tool_call_record_shape(self) -> None:
+        record = ToolCallRecord(order=0, tool="get_vitals", args={}, error=None)
+        assert record.order == 0
+        assert record.tool == "get_vitals"
+        assert record.args == {}
+        assert record.error is None
+
+    def test_claim_segment_record_shape(self) -> None:
+        record = ClaimSegmentRecord(index=0, passed=True, citation_count=1)
+        assert record.passed is True
+        assert record.citation_count == 1
+
+    def test_draw_record_shape_and_no_raw_answer_field(self) -> None:
+        draw = DrawRecord(
+            question_id="issue-149-bp",
+            patient_id=1,
+            draw_index=0,
+            session_id="session-a",
+            started_at="2026-01-01T00:00:00+00:00",
+            correlation_id="corr-1",
+            conversation_id="conv-1",
+            tool_calls=[ToolCallRecord(order=0, tool="get_vitals", args={}, error=None)],
+            answer_hash="deadbeef",
+            answer_length=42,
+            claim_count=1,
+            claims=[ClaimSegmentRecord(index=0, passed=True, citation_count=1)],
+            verdict="partially_verified",
+            latency_seconds=1.23,
+            http_status=200,
+            orphan_data_line_count=0,
+            error=None,
+        )
+        # #163 artifact-discipline parity: the schema has no field that
+        # could hold raw answer/claim text -- only hash/length/counts/enums.
+        field_names = set(DrawRecord.__dataclass_fields__)
+        assert "answer" not in field_names
+        assert "answer_text" not in field_names
+        assert "claim_text" not in field_names
+        assert draw.answer_hash == "deadbeef"
+        assert draw.session_id == "session-a"
+
+
+# --- parse_sse_lines ----------------------------------------------------------
+
+
+class TestParseSseLines:
+    def test_parses_event_data_pairs(self) -> None:
+        lines = [
+            "event: conversation",
+            'data: {"conversation_id": "c1", "correlation_id": "r1"}',
+            "",
+            "event: tool_call",
+            'data: {"tool": "get_vitals", "args": {}, "error": null}',
+            "",
+            "event: done",
+            "data: {}",
+            "",
+        ]
+
+        events = parse_sse_lines(lines)
+
+        assert events == [
+            ("conversation", {"conversation_id": "c1", "correlation_id": "r1"}),
+            ("tool_call", {"tool": "get_vitals", "args": {}, "error": None}),
+            ("done", {}),
+        ]
+
+    def test_ignores_blank_and_comment_lines(self) -> None:
+        lines = [":keepalive", "", "event: done", "data: {}", ""]
+
+        events = parse_sse_lines(lines)
+
+        assert events == [("done", {})]
+
+
+# --- build_draw_record --------------------------------------------------------
+
+
+def _bp_events() -> list[tuple[str, dict]]:
+    return [
+        ("conversation", {"conversation_id": "conv-1", "correlation_id": "corr-1"}),
+        ("tool_call", {"tool": "get_vitals", "args": {}, "error": None}),
+        ("reasoning_delta", {"text": "thinking..."}),
+        ("answer", {"answer": "BP was 130/80, normal."}),
+        (
+            "verification",
+            {
+                "verdict": "partially_verified",
+                "segments": [
+                    {"type": "claim", "text": "...", "citations": [{"tool_call_id": "call_0"}]},
+                    {"type": "notice", "text": "Not found in record."},
+                ],
+                "warnings": {"allergy_conflicts": [], "blocking_interactions": [], "warning_interactions": []},
+            },
+        ),
+        ("done", {}),
+    ]
+
+
+class TestBuildDrawRecord:
+    def test_happy_path_hashes_answer_never_stores_raw_text(self) -> None:
+        draw = build_draw_record(
+            question=BP_QUESTION,
+            draw_index=0,
+            session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
+            events=_bp_events(),
+            latency_seconds=2.5,
+            http_status=200,
+            orphan_data_line_count=0,
+            error=None,
+        )
+
+        assert draw.question_id == BP_QUESTION.id
+        assert draw.session_id == "session-test"
+        assert draw.started_at == "2026-01-01T00:00:00+00:00"
+        assert draw.orphan_data_line_count == 0
+        assert draw.patient_id == 1
+        assert draw.conversation_id == "conv-1"
+        assert draw.correlation_id == "corr-1"
+        assert draw.tool_calls == [ToolCallRecord(order=0, tool="get_vitals", args={}, error=None)]
+        assert draw.verdict == "partially_verified"
+        assert draw.claim_count == 2
+        assert draw.claims == [
+            ClaimSegmentRecord(index=0, passed=True, citation_count=1),
+            ClaimSegmentRecord(index=1, passed=False, citation_count=0),
+        ]
+        expected_hash = hashlib.sha256(b"BP was 130/80, normal.").hexdigest()
+        assert draw.answer_hash == expected_hash
+        assert draw.answer_length == len("BP was 130/80, normal.")
+        assert draw.error is None
+        assert draw.http_status == 200
+
+    def test_multiple_tool_calls_preserve_order(self) -> None:
+        events = [
+            ("conversation", {"conversation_id": "c", "correlation_id": "r"}),
+            ("tool_call", {"tool": "get_medications", "args": {}, "error": None}),
+            ("tool_call", {"tool": "get_allergies", "args": {}, "error": None}),
+            ("answer", {"answer": "no conflict"}),
+            ("verification", {"verdict": "verified", "segments": [], "warnings": {}}),
+            ("done", {}),
+        ]
+
+        draw = build_draw_record(
+            question=ALLERGY_QUESTION,
+            draw_index=1,
+            session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
+            events=events,
+            latency_seconds=1.0,
+            http_status=200,
+            orphan_data_line_count=0,
+            error=None,
+        )
+
+        assert [tc.tool for tc in draw.tool_calls] == ["get_medications", "get_allergies"]
+        assert [tc.order for tc in draw.tool_calls] == [0, 1]
+
+    def test_error_draw_carries_no_answer_or_verdict(self) -> None:
+        draw = build_draw_record(
+            question=BP_QUESTION,
+            draw_index=2,
+            session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
+            events=[],
+            latency_seconds=180.0,
+            http_status=None,
+            orphan_data_line_count=None,
+            error="ConnectTimeout",
+        )
+
+        assert draw.error == "ConnectTimeout"
+        assert draw.answer_hash is None
+        assert draw.answer_length is None
+        assert draw.verdict is None
+        assert draw.claim_count is None
+        assert draw.tool_calls == []
+        assert draw.claims == []
+        assert draw.orphan_data_line_count is None
+
+
+# --- tool_sequence_of / sequence_label ----------------------------------------
+
+
+class TestToolSequence:
+    def test_sequence_of_extracts_ordered_tool_names(self) -> None:
+        draw = build_draw_record(
+            question=BP_QUESTION,
+            draw_index=0,
+            session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
+            events=_bp_events(),
+            latency_seconds=1.0,
+            http_status=200,
+            orphan_data_line_count=0,
+            error=None,
+        )
+
+        assert tool_sequence_of(draw) == ("get_vitals",)
+
+    def test_empty_sequence_for_error_draw(self) -> None:
+        draw = build_draw_record(
+            question=BP_QUESTION,
+            draw_index=0,
+            session_id="session-test",
+            started_at="2026-01-01T00:00:00+00:00",
+            events=[],
+            latency_seconds=1.0,
+            http_status=None,
+            orphan_data_line_count=None,
+            error="boom",
+        )
+
+        assert tool_sequence_of(draw) == ()
+
+    def test_sequence_label_joins_names(self) -> None:
+        assert sequence_label(("get_medications", "get_allergies")) == "get_medications -> get_allergies"
+        assert sequence_label(()) == "()"
+
+
+# --- attribute_mechanisms -----------------------------------------------------
+
+
+def _draw(
+    draw_index: int,
+    *,
+    tools: tuple[str, ...] = ("get_vitals",),
+    answer_text: str = "same answer",
+    verdict: str = "verified",
+    error: str | None = None,
+    session_id: str = "session-a",
+) -> DrawRecord:
+    tool_calls = [ToolCallRecord(order=i, tool=t, args={}, error=None) for i, t in enumerate(tools)]
+    if error is not None:
+        return DrawRecord(
+            question_id="q",
+            patient_id=1,
+            draw_index=draw_index,
+            session_id=session_id,
+            started_at=None,
+            correlation_id=None,
+            conversation_id=None,
+            tool_calls=[],
+            answer_hash=None,
+            answer_length=None,
+            claim_count=None,
+            claims=[],
+            verdict=None,
+            latency_seconds=1.0,
+            http_status=None,
+            orphan_data_line_count=None,
+            error=error,
+        )
+    return DrawRecord(
+        question_id="q",
+        patient_id=1,
+        draw_index=draw_index,
+        session_id=session_id,
+        started_at=f"2026-01-01T00:00:{draw_index:02d}+00:00",
+        correlation_id=f"corr-{session_id}-{draw_index}",
+        conversation_id=f"conv-{draw_index}",
+        tool_calls=tool_calls,
+        answer_hash=hashlib.sha256(answer_text.encode()).hexdigest(),
+        answer_length=len(answer_text),
+        claim_count=1,
+        claims=[ClaimSegmentRecord(index=0, passed=True, citation_count=1)],
+        verdict=verdict,
+        latency_seconds=1.0,
+        http_status=200,
+        orphan_data_line_count=0,
+        error=None,
+    )
+
+
+class TestAttributeMechanisms:
+    def test_stable_draws_flag_no_mechanism(self) -> None:
+        draws = [_draw(i) for i in range(4)]
+
+        report = attribute_mechanisms(draws)
+
+        assert report["mechanism"]["tool_selection_variance"] is False
+        assert report["mechanism"]["generation_nondeterminism"] is False
+        assert report["mechanism"]["downstream_variance"] is False
+        assert report["distinct_tool_sequences"] == 1
+
+    def test_same_sequence_same_hash_different_verdict_is_downstream(self) -> None:
+        """Mutation checked: swapping the downstream-detection condition from
+        'more than one distinct verdict within a (sequence, hash) group' to
+        'more than one distinct verdict overall' makes this assertion fail to
+        distinguish downstream variance from tool-selection variance --
+        confirmed by hand this exact fixture only trips the downstream flag,
+        not the tool-selection one."""
+        draws = [
+            _draw(0, answer_text="same text", verdict="verified"),
+            _draw(1, answer_text="same text", verdict="blocked"),
+        ]
+
+        report = attribute_mechanisms(draws)
+
+        assert report["mechanism"]["downstream_variance"] is True
+        assert report["mechanism"]["tool_selection_variance"] is False
+        assert report["mechanism"]["generation_nondeterminism"] is False
+        seq = sequence_label(("get_vitals",))
+        assert report["answer_hash_distribution"][seq][hashlib.sha256(b"same text").hexdigest()] == 2
+
+    def test_same_sequence_different_hash_is_generation_nondeterminism(self) -> None:
+        draws = [
+            _draw(0, answer_text="answer A", verdict="verified"),
+            _draw(1, answer_text="answer B", verdict="verified"),
+        ]
+
+        report = attribute_mechanisms(draws)
+
+        assert report["mechanism"]["generation_nondeterminism"] is True
+        assert report["mechanism"]["downstream_variance"] is False
+        assert report["mechanism"]["tool_selection_variance"] is False
+
+    def test_different_sequence_is_tool_selection_variance(self) -> None:
+        draws = [
+            _draw(0, tools=("get_vitals",)),
+            _draw(1, tools=("get_vitals", "get_encounters")),
+        ]
+
+        report = attribute_mechanisms(draws)
+
+        assert report["mechanism"]["tool_selection_variance"] is True
+        assert report["distinct_tool_sequences"] == 2
+
+    def test_errors_excluded_from_counted_but_tracked(self) -> None:
+        draws = [_draw(0), _draw(1, error="ConnectTimeout")]
+
+        report = attribute_mechanisms(draws)
+
+        assert report["n_draws"] == 2
+        assert report["n_errors"] == 1
+        assert report["n_counted"] == 1
+
+
+class TestSummarizeQuestion:
+    def test_includes_latency_and_verdict_distribution(self) -> None:
+        draws = [_draw(0, verdict="verified"), _draw(1, verdict="blocked", answer_text="different")]
+
+        summary = summarize_question("q", draws)
+
+        assert summary["n_draws"] == 2
+        assert summary["verdict_distribution"] == {"verified": 1, "blocked": 1}
+        assert "latency_seconds" in summary
+        assert summary["latency_seconds"]["min"] == pytest.approx(1.0)
+        assert summary["mechanism"]["generation_nondeterminism"] is True
+
+
+# --- session grouping / combined-vs-by-session report (#160 follow-up) --------
+
+
+class TestGroupBySession:
+    def test_splits_by_session_id_preserving_first_seen_order(self) -> None:
+        draws = [
+            _draw(0, session_id="session-a"),
+            _draw(1, session_id="session-b"),
+            _draw(2, session_id="session-a"),
+        ]
+
+        grouped = group_by_session(draws)
+
+        assert list(grouped.keys()) == ["session-a", "session-b"]
+        assert [d.draw_index for d in grouped["session-a"]] == [0, 2]
+        assert [d.draw_index for d in grouped["session-b"]] == [1]
+
+
+class TestBuildReportCombinedAndBySession:
+    def test_combined_mixes_all_sessions_by_session_keeps_them_apart(self) -> None:
+        """The exact scenario the 16-more-draws follow-up must never get
+        wrong: session A alone is stable (all 'verified'); session B alone
+        introduces a verdict flip. combined must reflect ALL draws pooled;
+        by_session must let a reader see each session's own, unmixed
+        picture."""
+        session_a = [_draw(i, session_id="session-a", verdict="verified") for i in range(2)]
+        session_b = [
+            _draw(2, session_id="session-b", verdict="verified"),
+            _draw(3, session_id="session-b", verdict="blocked"),
+        ]
+        draws = session_a + session_b
+
+        report = build_report({"q": draws})
+
+        assert report["q"]["session_ids"] == ["session-a", "session-b"]
+        assert report["q"]["combined"]["n_draws"] == 4
+        assert report["q"]["combined"]["verdict_distribution"] == {"verified": 3, "blocked": 1}
+        assert report["q"]["by_session"]["session-a"]["n_draws"] == 2
+        assert report["q"]["by_session"]["session-a"]["verdict_distribution"] == {"verified": 2}
+        assert report["q"]["by_session"]["session-b"]["n_draws"] == 2
+        assert report["q"]["by_session"]["session-b"]["verdict_distribution"] == {"verified": 1, "blocked": 1}
+        # #160 follow-up mutation check: if by_session were dropped in favor
+        # of combined-only, session-a's own (stable) picture would be lost --
+        # confirmed this assertion fails without the by_session key at all.
+        assert "by_session" in report["q"]
+
+
+# --- run_valid gate (gate-3/Opus MINOR 3) --------------------------------------
+
+
+class TestRunValidGate:
+    def test_run_valid_true_when_no_errors_and_all_fields_present(self) -> None:
+        assert is_run_valid([_draw(0), _draw(1)]) is True
+
+    def test_run_valid_false_when_any_error_present(self) -> None:
+        assert is_run_valid([_draw(0), _draw(1, error="boom")]) is False
+
+    def test_run_valid_false_when_a_counted_draw_missing_verdict(self) -> None:
+        """A malformed-but-not-erroring draw (error=None, verdict=None)
+        shouldn't be producible by build_draw_record in practice (see its
+        own gate-1 simplify comment on the analogous claim_count ambiguity),
+        but is_run_valid must catch it defensively rather than assume
+        build_draw_record is the only caller."""
+        malformed = replace(_draw(0), verdict=None)
+
+        assert is_run_valid([malformed]) is False
+
+    def test_mechanism_booleans_are_null_not_false_when_run_invalid(self) -> None:
+        """Mutation checked: if attribute_mechanisms computed the three
+        mechanism booleans unconditionally (ignoring run_valid), an invalid
+        run (one error draw + one stable draw) would render
+        tool_selection_variance=False instead of None -- confirmed this
+        assertion fails under that mutation (reads False, `is None` fails)."""
+        report = attribute_mechanisms([_draw(0), _draw(1, error="boom")])
+
+        assert report["run_valid"] is False
+        assert report["mechanism"]["tool_selection_variance"] is None
+        assert report["mechanism"]["generation_nondeterminism"] is None
+        assert report["mechanism"]["downstream_variance"] is None
+
+    def test_mechanism_booleans_stay_boolean_when_run_valid(self) -> None:
+        report = attribute_mechanisms([_draw(0), _draw(1)])
+
+        assert report["run_valid"] is True
+        assert report["mechanism"]["tool_selection_variance"] is False
+
+
+# --- duplicate draw-index detection (gate-3/Opus MINOR 2) -----------------------
+
+
+class TestDuplicateDrawIndices:
+    def test_zero_when_all_indices_unique_within_session(self) -> None:
+        draws = [_draw(0, session_id="s"), _draw(1, session_id="s")]
+
+        assert count_duplicate_draw_indices(draws) == 0
+
+    def test_counts_repeats_within_one_session_not_across_sessions(self) -> None:
+        """Mutation checked: using bare draw_index (not (session_id,
+        draw_index)) as the dedup key would falsely flag session-a's
+        draw_index=0 and session-b's draw_index=0 as a duplicate -- two
+        DIFFERENT sessions legitimately both starting at index 0 must NOT be
+        counted; only session-a's own genuinely repeated index 0 must be."""
+        draws = [
+            _draw(0, session_id="session-a"),
+            _draw(0, session_id="session-a"),  # genuine duplicate within session-a
+            _draw(0, session_id="session-b"),  # different session, same index -- not a duplicate
+        ]
+
+        assert count_duplicate_draw_indices(draws) == 1
+
+
+# --- orphan SSE data-line detection (gate-3/Opus MINOR 3) ------------------------
+
+
+class TestOrphanDataLines:
+    def test_count_orphan_data_lines_skips_paired_lines(self) -> None:
+        assert count_orphan_data_lines(["event: done", "data: {}", ""]) == 0
+
+    def test_count_orphan_data_lines_counts_unpaired_data(self) -> None:
+        """Mutation checked: dropping the 'pending_event is None' guard
+        (counting every data: line unconditionally) makes this assertion
+        fail (would report 2, not 1) -- the well-formed 'event: done'/
+        'data: {}' pair must not be counted as orphaned."""
+        lines = ['data: {"stray": true}', "event: done", "data: {}"]
+
+        assert count_orphan_data_lines(lines) == 1
+
+    def test_aggregate_orphan_data_lines_separates_known_from_unknown(self) -> None:
+        known_zero = _draw(0)  # orphan_data_line_count=0 (see _draw's default)
+        known_three = replace(_draw(1), orphan_data_line_count=3)
+        unknown = replace(_draw(2), orphan_data_line_count=None)
+
+        result = aggregate_orphan_data_lines([known_zero, known_three, unknown])
+
+        assert result == {"total": 3, "draws_with_unknown_count": 1}
+
+
+# --- correlation_id uniqueness (gate-3/Opus MINOR 2) -----------------------------
+
+
+class TestCorrelationIdUniqueness:
+    def test_passes_when_all_unique(self) -> None:
+        _assert_correlation_ids_unique("q", [_draw(0), _draw(1)])  # must not raise
+
+    def test_raises_on_duplicate_correlation_id_among_non_error_draws(self) -> None:
+        """Mutation checked: removing this uniqueness check entirely (a
+        no-op function body) makes this test fail -- no exception is raised
+        where one is expected. The duplicate here is a genuine data-
+        corruption shape: two different draw_index rows sharing one
+        server-generated correlation_id."""
+        d0 = _draw(0)
+        d1 = replace(_draw(1), correlation_id=d0.correlation_id)
+
+        with pytest.raises(DuplicateCorrelationIdError) as exc_info:
+            _assert_correlation_ids_unique("q", [d0, d1])
+
+        assert d0.correlation_id in str(exc_info.value)
+
+    def test_error_draws_are_exempt_from_uniqueness_check(self) -> None:
+        """Error draws all carry correlation_id=None (build_draw_record's
+        error branch) -- None must never collide with itself as a
+        'duplicate,' or every multi-error run would falsely raise."""
+        _assert_correlation_ids_unique(
+            "q", [_draw(0, error="boom"), _draw(1, error="boom")]
+        )  # must not raise
+
+
+# --- session windows / run_metadata (gate-3/Opus MAJOR 2) -----------------------
+
+
+def _draw_record(*, session_id: str, draw_index: int, started_at: str | None, latency_seconds: float = 1.0, orphan: int | None = 0) -> DrawRecord:
+    return DrawRecord(
+        question_id="q",
+        patient_id=1,
+        draw_index=draw_index,
+        session_id=session_id,
+        started_at=started_at,
+        correlation_id=f"c-{session_id}-{draw_index}",
+        conversation_id=f"conv-{session_id}-{draw_index}",
+        tool_calls=[],
+        answer_hash="h",
+        answer_length=1,
+        claim_count=0,
+        claims=[],
+        verdict="verified",
+        latency_seconds=latency_seconds,
+        http_status=200,
+        orphan_data_line_count=orphan,
+        error=None,
+    )
+
+
+class TestComputeSessionWindows:
+    def test_computes_earliest_start_and_latest_finish(self) -> None:
+        d0 = _draw_record(session_id="s1", draw_index=0, started_at="2026-01-01T00:00:00+00:00", latency_seconds=10.0)
+        d1 = _draw_record(session_id="s1", draw_index=1, started_at="2026-01-01T00:00:20+00:00", latency_seconds=5.0)
+
+        windows = compute_session_windows([d0, d1])
+
+        assert windows["s1"]["started_at"] == "2026-01-01T00:00:00+00:00"
+        # ended_at = latest (started_at + latency): d1's 00:00:20 + 5s = 00:00:25,
+        # which beats d0's 00:00:00 + 10s = 00:00:10.
+        assert windows["s1"]["ended_at"] == "2026-01-01T00:00:25+00:00"
+
+    def test_none_when_no_draw_in_session_has_started_at(self) -> None:
+        d0 = _draw_record(session_id="old-session", draw_index=0, started_at=None)
+
+        windows = compute_session_windows([d0])
+
+        assert windows["old-session"] == {"started_at": None, "ended_at": None}
+
+
+_SAMPLE_PROVENANCE: dict[str, Any] = {
+    "app_git_sha": "deadbeef",
+    "engine": "llama_server",
+    "model": "qwen3-8b",
+    "flags": {
+        "evidence_retrieval_enabled": True,
+        "semantic_support_enabled": True,
+        "answer_grounding_enabled": False,
+        "tool_call_scoping_enabled": False,
+    },
+    "flags_source": "test fixture",
+    "loop_order": "sequential-per-question",
+    "parallel": 1,
+    "temperature": "0",
+    "backfilled": True,
+}
+
+
+class TestBuildRunMetadata:
+    """Gate-3/Opus DEFECT 2: build_run_metadata no longer takes global
+    backfilled/app_git_sha/engine/model/flags/loop_order/parallel/
+    temperature kwargs -- it takes ONLY session_provenance (a dict keyed by
+    session_id, sourced from load_session_metadata/record_session_
+    provenance) and merges each session's provenance with its OWN
+    draw-derived window. This is what makes --summarize-only safe (see
+    TestSummarizeOnlyNeverFabricatesProvenance below)."""
+
+    def test_persisted_window_used_when_no_draw_has_started_at(self) -> None:
+        """Gate-3/Opus final-round MINOR 1: a session whose draws predate
+        started_at (all None) now falls back to a window PERSISTED directly
+        in session_provenance (not a separate manual_session_windows
+        parameter, which no longer exists)."""
+        old = _draw_record(session_id="old-session", draw_index=0, started_at=None, orphan=None)
+        persisted_with_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "approx-start",
+            "ended_at": "approx-end",
+            "window_precision": "approximate",
+        }
+
+        metadata = build_run_metadata({"q": [old]}, session_provenance={"old-session": persisted_with_window})
+
+        assert metadata["sessions"]["old-session"]["started_at"] == "approx-start"
+        assert metadata["sessions"]["old-session"]["ended_at"] == "approx-end"
+        assert metadata["sessions"]["old-session"]["window_precision"] == "approximate"
+
+    def test_draw_derived_window_always_beats_a_persisted_one(self) -> None:
+        """Mutation checked: reverting the merge order in build_run_metadata
+        from '{**provenance, **window}' back to '{**window, **provenance}'
+        (the exact bug this final round fixes) would let persisted_with_
+        window's stale started_at silently override the REAL one computed
+        from live's own draw -- confirmed this assertion fails under that
+        reverted order (would read "STALE-SHOULD-LOSE", not the real
+        timestamp)."""
+        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+        persisted_with_stale_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "STALE-SHOULD-LOSE",
+            "ended_at": "STALE-SHOULD-LOSE",
+            "window_precision": "approximate",
+        }
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"live-session": persisted_with_stale_window})
+
+        assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
+        assert metadata["sessions"]["live-session"]["window_precision"] == "exact"
+
+    def test_session_provenance_merged_per_session(self) -> None:
+        live = _draw_record(session_id="live-session", draw_index=0, started_at="2026-02-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"live-session": _SAMPLE_PROVENANCE})
+
+        assert metadata["sessions"]["live-session"]["app_git_sha"] == "deadbeef"
+        assert metadata["sessions"]["live-session"]["flags"]["evidence_retrieval_enabled"] is True
+        assert metadata["sessions"]["live-session"]["backfilled"] is True
+        # window fields (from the draw, not the provenance dict) still present alongside
+        assert metadata["sessions"]["live-session"]["started_at"] == "2026-02-01T00:00:00+00:00"
+
+    def test_session_with_no_persisted_provenance_gets_explicit_unknown(self) -> None:
+        """Mutation checked: if build_run_metadata fell back to a fabricated/
+        current-environment guess instead of _UNKNOWN_SESSION_PROVENANCE for
+        a session missing from session_provenance, this assertion (loop_order
+        starting with "unknown") would fail -- confirmed the pre-DEFECT-2
+        top-level design (which stamped ITS OWN args.interleave onto every
+        session unconditionally) would have failed this exact case."""
+        orphan_session_draw = _draw_record(session_id="never-persisted", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [orphan_session_draw]}, session_provenance={})
+
+        entry = metadata["sessions"]["never-persisted"]
+        assert entry["loop_order"].startswith("unknown")
+        assert entry["app_git_sha"] is None
+        assert entry["flags"] is None
+        assert entry["backfilled"] is None
+        # the window is still real, derived from the draw itself -- only
+        # provenance is the placeholder
+        assert entry["started_at"] == "2026-01-01T00:00:00+00:00"
+
+    def test_no_top_level_flags_or_loop_order(self) -> None:
+        """Gate-3/Opus DEFECT 2(b): a multi-session report must not carry a
+        single top-level 'the flags'/'the loop order' -- every session's own
+        entry carries its own."""
+        live = _draw_record(session_id="s", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+
+        metadata = build_run_metadata({"q": [live]}, session_provenance={"s": _SAMPLE_PROVENANCE})
+
+        assert "flags" not in metadata
+        assert "loop_order" not in metadata
+        assert "backfilled" not in metadata
+        assert "app_git_sha" not in metadata
+
+
+# --- session-provenance sidecar persistence (gate-3/Opus DEFECT 2/3) ------------
+
+
+class TestSessionProvenanceSidecar:
+    def test_load_session_metadata_returns_empty_dict_when_file_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        assert harness.load_session_metadata() == {}
+
+    def test_record_then_load_roundtrips(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+
+        assert harness.load_session_metadata() == {"session-a": _SAMPLE_PROVENANCE}
+
+    def test_recording_a_second_session_does_not_clobber_the_first(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mutation checked: replacing record_session_provenance's
+        read-modify-write (load existing, set one key, write back) with a
+        naive 'write {session_id: provenance} only' would make this
+        assertion fail -- session-a's entry would be gone after session-b is
+        recorded. This is DEFECT 2(b)'s core fix: a second batch's run must
+        never overwrite an earlier session's provenance."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+        other_provenance = {**_SAMPLE_PROVENANCE, "app_git_sha": "different-sha"}
+        harness.record_session_provenance("session-b", other_provenance)
+
+        metadata = harness.load_session_metadata()
+
+        assert metadata["session-a"] == _SAMPLE_PROVENANCE
+        assert metadata["session-b"] == other_provenance
+
+    def test_write_is_atomic_via_tmp_file_and_os_replace(self) -> None:
+        """Gate-3/Opus final-round MINOR 2: pins the atomic-write pattern by
+        inspecting record_session_provenance's own source -- a bare
+        path.write_text (the pre-fix implementation) truncates the target
+        file before writing, so a crash mid-write leaves a corrupt/partial
+        JSON file; os.replace onto a fully-written .tmp sibling is atomic on
+        both POSIX and Windows. Mutation checked: reverting to
+        'path.write_text(...)' with no tmp/replace step makes both
+        assertions below fail."""
+        source = inspect.getsource(record_session_provenance)
+
+        assert "os.replace" in source
+        assert ".tmp" in source
+
+    def test_no_leftover_tmp_file_after_a_successful_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+
+        harness.record_session_provenance("session-a", _SAMPLE_PROVENANCE)
+
+        files = sorted(p.name for p in tmp_path.iterdir())
+        assert files == ["session_metadata.json"]  # no session_metadata.json.tmp left behind
+
+
+class TestSummarizeOnlyNeverFabricatesProvenance:
+    """Gate-3/Opus DEFECT 2(a)/3: --summarize-only must reconstruct a
+    report's run_metadata purely from PERSISTED facts (session_metadata.json
+    + each draw's own started_at) -- it must never call record_session_
+    provenance (which reads the CURRENT environment/args) and must never let
+    a fresh guess overwrite what's already durably stored."""
+
+    def test_build_run_metadata_alone_never_reads_the_environment(self) -> None:
+        """Mutation checked: if build_run_metadata called _read_env_bool/
+        _read_env_str/os.environ.get internally (reintroducing DEFECT 2(a)'s
+        bug -- deriving facts instead of reading session_provenance), a
+        session missing from session_provenance would pick up THIS
+        process's environment instead of the explicit _UNKNOWN_SESSION_
+        PROVENANCE placeholder -- confirmed by inspecting the function's own
+        source for any os.environ/_read_env_ reference."""
+        source = inspect.getsource(build_run_metadata)
+
+        assert "os.environ" not in source
+        assert "_read_env_bool" not in source
+        assert "_read_env_str" not in source
+
+    def test_persisted_provenance_survives_a_summarize_only_style_rebuild(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Simulates exactly what --summarize-only does: load whatever is
+        persisted (no new record_session_provenance call), rebuild
+        run_metadata from it. The persisted facts must come back unchanged,
+        proving a summarize-only regeneration cannot silently rewrite them."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+        harness.record_session_provenance("session-1-initial-n8", _SAMPLE_PROVENANCE)
+
+        draw = _draw_record(session_id="session-1-initial-n8", draw_index=0, started_at="2026-01-01T00:00:00+00:00")
+        # The "--summarize-only" path: read persisted metadata, do NOT record anything new.
+        metadata = build_run_metadata({"q": [draw]}, session_provenance=harness.load_session_metadata())
+
+        assert metadata["sessions"]["session-1-initial-n8"]["app_git_sha"] == "deadbeef"
+        assert metadata["sessions"]["session-1-initial-n8"]["loop_order"] == "sequential-per-question"
+        assert metadata["sessions"]["session-1-initial-n8"]["backfilled"] is True
+
+    def test_persisted_window_survives_a_summarize_only_style_rebuild(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Gate-3/Opus final-round MINOR 1 -- the exact bug the reviewer hit:
+        a backfilled session's window used to live ONLY in a caller-supplied
+        manual_session_windows override at migration time, never persisted,
+        so a later --summarize-only regeneration (which never re-supplies
+        that override) got {started_at: null, ended_at: null} back instead
+        of the approximate window. Now the window is PART of what
+        record_session_provenance persists, so a summarize-only-style
+        rebuild (load whatever's on disk, don't record anything new) must
+        reproduce it exactly."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setattr(harness, "_RESULTS_DIR", tmp_path)
+        provenance_with_window = {
+            **_SAMPLE_PROVENANCE,
+            "started_at": "2026-07-25T18:22:53+00:00",
+            "ended_at": "2026-07-25T18:29:06+00:00",
+            "window_precision": "approximate",
+        }
+        harness.record_session_provenance("session-1-initial-n8", provenance_with_window)
+
+        # This session's draws all predate started_at (None) -- exactly the
+        # backfilled shape -- so compute_session_windows contributes nothing
+        # and the persisted window must carry the report.
+        backfilled_draw = _draw_record(session_id="session-1-initial-n8", draw_index=0, started_at=None, orphan=None)
+        metadata = build_run_metadata({"q": [backfilled_draw]}, session_provenance=harness.load_session_metadata())
+
+        entry = metadata["sessions"]["session-1-initial-n8"]
+        assert entry["started_at"] == "2026-07-25T18:22:53+00:00"
+        assert entry["ended_at"] == "2026-07-25T18:29:06+00:00"
+        assert entry["window_precision"] == "approximate"
+
+
+# --- _read_env_bool truthy/falsy set (gate-3/Opus DEFECT 1/3) -------------------
+
+
+class TestReadEnvBoolTruthySet:
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "t", "T", "yes", "YES", "y", "Y", "on", "On"])
+    def test_true_values(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", value)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "False", "f", "F", "no", "NO", "n", "N", "off", "Off"])
+    def test_false_values(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", value)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", True) is False
+
+    def test_unset_returns_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.delenv("TEST_BOOL_FLAG", raising=False)
+
+        assert harness._read_env_bool("TEST_BOOL_FLAG", True) is True
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is False
+
+    def test_t_and_y_specifically_recognized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mutation checked: DEFECT 1 flagged the ORIGINAL truthy set
+        ({'1','true','yes','on'}) as narrower than pydantic-core's LAX bool
+        parser, which also accepts bare 't'/'y'. Reverting to the original
+        set makes this assertion fail (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=t
+        would misread as False)."""
+        import runner.issue_160_live_chat_harness as harness
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", "t")
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
+
+        monkeypatch.setenv("TEST_BOOL_FLAG", "y")
+        assert harness._read_env_bool("TEST_BOOL_FLAG", False) is True
+
+
+# --- no-tool-stub property -----------------------------------------------------
+
+
+class TestNoToolStub:
+    """Pins the #154-escaping property: this harness has no import path back
+    into in-process/pinned-tool-data pipeline machinery."""
+
+    def test_module_has_no_app_dot_star_imports_via_ast(self) -> None:
+        """Gate-1 simplify (#160): this AST-based check SUBSUMES a prior
+        string-scan test that grepped raw ``import``/``from ...`` lines for
+        forbidden substrings (``runner.tool_stub``, ``runner.pipeline``,
+        ``app``, ...) -- removed as redundant, since everything that scan
+        could catch, parsing the actual import AST catches too, and more
+        robustly: a multi-line ``from x import (\\n    y,\\n)`` or an
+        aliased ``import app.planner as p`` defeats a line-level substring
+        scan but not this walk over ``ast.ImportFrom``/``ast.Import`` nodes,
+        which sees the real module/alias names regardless of source
+        formatting."""
+        import ast
+
+        source = _HARNESS_MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                assert not node.module.startswith("app"), f"forbidden in-process import: {node.module}"
+                assert not node.module.startswith("runner.pipeline")
+                assert not node.module.startswith("runner.tool_stub")
+                assert not node.module.startswith("runner.schema")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("app"), f"forbidden in-process import: {alias.name}"
+
+    def test_build_draw_record_is_pure_no_network_import(self) -> None:
+        """A quick smoke check that build_draw_record's own source never
+        mentions httpx/socket -- it must be a pure transform over already-
+        fetched events, with all network I/O confined to the live-run
+        functions this suite does not exercise."""
+        source = inspect.getsource(build_draw_record)
+        assert "httpx" not in source
+        assert "socket" not in source

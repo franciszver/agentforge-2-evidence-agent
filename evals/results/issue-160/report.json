@@ -1,0 +1,320 @@
+{
+  "issue-149-bp": {
+    "session_ids": [
+      "session-1-initial-n8",
+      "session-2-sixteen-more-1785004556"
+    ],
+    "combined": {
+      "n_draws": 24,
+      "n_errors": 0,
+      "n_counted": 24,
+      "run_valid": true,
+      "n_duplicate_indices": 0,
+      "orphan_data_lines": {
+        "total": 0,
+        "draws_with_unknown_count": 24
+      },
+      "distinct_tool_sequences": 1,
+      "tool_sequence_distribution": {
+        "get_vitals": 24
+      },
+      "answer_hash_distribution": {
+        "get_vitals": {
+          "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": 24
+        }
+      },
+      "verdict_distribution": {
+        "partially_verified": 24
+      },
+      "verdict_distribution_by_sequence_hash": {
+        "get_vitals": {
+          "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": {
+            "partially_verified": 24
+          }
+        }
+      },
+      "mechanism": {
+        "tool_selection_variance": false,
+        "generation_nondeterminism": false,
+        "downstream_variance": false,
+        "generation_nondeterminism_sequences": [],
+        "downstream_variance_keys": []
+      },
+      "question_id": "issue-149-bp",
+      "latency_seconds": {
+        "min": 27.129855940000198,
+        "max": 28.410248132999186,
+        "mean": 27.774241034916866
+      }
+    },
+    "by_session": {
+      "session-1-initial-n8": {
+        "n_draws": 8,
+        "n_errors": 0,
+        "n_counted": 8,
+        "run_valid": true,
+        "n_duplicate_indices": 0,
+        "orphan_data_lines": {
+          "total": 0,
+          "draws_with_unknown_count": 8
+        },
+        "distinct_tool_sequences": 1,
+        "tool_sequence_distribution": {
+          "get_vitals": 8
+        },
+        "answer_hash_distribution": {
+          "get_vitals": {
+            "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": 8
+          }
+        },
+        "verdict_distribution": {
+          "partially_verified": 8
+        },
+        "verdict_distribution_by_sequence_hash": {
+          "get_vitals": {
+            "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": {
+              "partially_verified": 8
+            }
+          }
+        },
+        "mechanism": {
+          "tool_selection_variance": false,
+          "generation_nondeterminism": false,
+          "downstream_variance": false,
+          "generation_nondeterminism_sequences": [],
+          "downstream_variance_keys": []
+        },
+        "question_id": "issue-149-bp",
+        "latency_seconds": {
+          "min": 27.129855940000198,
+          "max": 28.410248132999186,
+          "mean": 27.65694346800001
+        }
+      },
+      "session-2-sixteen-more-1785004556": {
+        "n_draws": 16,
+        "n_errors": 0,
+        "n_counted": 16,
+        "run_valid": true,
+        "n_duplicate_indices": 0,
+        "orphan_data_lines": {
+          "total": 0,
+          "draws_with_unknown_count": 16
+        },
+        "distinct_tool_sequences": 1,
+        "tool_sequence_distribution": {
+          "get_vitals": 16
+        },
+        "answer_hash_distribution": {
+          "get_vitals": {
+            "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": 16
+          }
+        },
+        "verdict_distribution": {
+          "partially_verified": 16
+        },
+        "verdict_distribution_by_sequence_hash": {
+          "get_vitals": {
+            "56f255e2ba3e3b9f60346037b686a37a3570eb05bcb01a011170a63539624125": {
+              "partially_verified": 16
+            }
+          }
+        },
+        "mechanism": {
+          "tool_selection_variance": false,
+          "generation_nondeterminism": false,
+          "downstream_variance": false,
+          "generation_nondeterminism_sequences": [],
+          "downstream_variance_keys": []
+        },
+        "question_id": "issue-149-bp",
+        "latency_seconds": {
+          "min": 27.440384212000936,
+          "max": 28.34541396699933,
+          "mean": 27.832889818375293
+        }
+      }
+    }
+  },
+  "issue-150-allergy": {
+    "session_ids": [
+      "session-1-initial-n8",
+      "session-2-sixteen-more-1785004556"
+    ],
+    "combined": {
+      "n_draws": 24,
+      "n_errors": 0,
+      "n_counted": 24,
+      "run_valid": true,
+      "n_duplicate_indices": 0,
+      "orphan_data_lines": {
+        "total": 0,
+        "draws_with_unknown_count": 24
+      },
+      "distinct_tool_sequences": 1,
+      "tool_sequence_distribution": {
+        "get_medications -> get_allergies": 24
+      },
+      "answer_hash_distribution": {
+        "get_medications -> get_allergies": {
+          "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": 24
+        }
+      },
+      "verdict_distribution": {
+        "partially_verified": 24
+      },
+      "verdict_distribution_by_sequence_hash": {
+        "get_medications -> get_allergies": {
+          "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": {
+            "partially_verified": 24
+          }
+        }
+      },
+      "mechanism": {
+        "tool_selection_variance": false,
+        "generation_nondeterminism": false,
+        "downstream_variance": false,
+        "generation_nondeterminism_sequences": [],
+        "downstream_variance_keys": []
+      },
+      "question_id": "issue-150-allergy",
+      "latency_seconds": {
+        "min": 18.257450587001586,
+        "max": 19.717368059000364,
+        "mean": 18.896235631250118
+      }
+    },
+    "by_session": {
+      "session-1-initial-n8": {
+        "n_draws": 8,
+        "n_errors": 0,
+        "n_counted": 8,
+        "run_valid": true,
+        "n_duplicate_indices": 0,
+        "orphan_data_lines": {
+          "total": 0,
+          "draws_with_unknown_count": 8
+        },
+        "distinct_tool_sequences": 1,
+        "tool_sequence_distribution": {
+          "get_medications -> get_allergies": 8
+        },
+        "answer_hash_distribution": {
+          "get_medications -> get_allergies": {
+            "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": 8
+          }
+        },
+        "verdict_distribution": {
+          "partially_verified": 8
+        },
+        "verdict_distribution_by_sequence_hash": {
+          "get_medications -> get_allergies": {
+            "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": {
+              "partially_verified": 8
+            }
+          }
+        },
+        "mechanism": {
+          "tool_selection_variance": false,
+          "generation_nondeterminism": false,
+          "downstream_variance": false,
+          "generation_nondeterminism_sequences": [],
+          "downstream_variance_keys": []
+        },
+        "question_id": "issue-150-allergy",
+        "latency_seconds": {
+          "min": 18.402970163000646,
+          "max": 19.62996842999928,
+          "mean": 18.902853929624598
+        }
+      },
+      "session-2-sixteen-more-1785004556": {
+        "n_draws": 16,
+        "n_errors": 0,
+        "n_counted": 16,
+        "run_valid": true,
+        "n_duplicate_indices": 0,
+        "orphan_data_lines": {
+          "total": 0,
+          "draws_with_unknown_count": 16
+        },
+        "distinct_tool_sequences": 1,
+        "tool_sequence_distribution": {
+          "get_medications -> get_allergies": 16
+        },
+        "answer_hash_distribution": {
+          "get_medications -> get_allergies": {
+            "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": 16
+          }
+        },
+        "verdict_distribution": {
+          "partially_verified": 16
+        },
+        "verdict_distribution_by_sequence_hash": {
+          "get_medications -> get_allergies": {
+            "e6ae5325ca4e6a6d0ee9acf1ed81626d5e1bf89f1c5808f8d1bddd1a577274c3": {
+              "partially_verified": 16
+            }
+          }
+        },
+        "mechanism": {
+          "tool_selection_variance": false,
+          "generation_nondeterminism": false,
+          "downstream_variance": false,
+          "generation_nondeterminism_sequences": [],
+          "downstream_variance_keys": []
+        },
+        "question_id": "issue-150-allergy",
+        "latency_seconds": {
+          "min": 18.257450587001586,
+          "max": 19.717368059000364,
+          "mean": 18.892926482062876
+        }
+      }
+    }
+  },
+  "run_metadata": {
+    "sessions": {
+      "session-1-initial-n8": {
+        "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+        "backfilled": true,
+        "ended_at": "2026-07-25T18:29:06+00:00",
+        "engine": "llama_server",
+        "flags": {
+          "answer_grounding_enabled": false,
+          "evidence_retrieval_enabled": true,
+          "semantic_support_enabled": true,
+          "tool_call_scoping_enabled": false
+        },
+        "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+        "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+        "model": "qwen3-8b",
+        "parallel": 1,
+        "started_at": "2026-07-25T18:22:53+00:00",
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+        "window_precision": "approximate"
+      },
+      "session-2-sixteen-more-1785004556": {
+        "app_git_sha": "bfebefb2f3923e7ffe5c00a8ffce09e59e923e0a",
+        "backfilled": true,
+        "ended_at": "2026-07-25T18:56:18+00:00",
+        "engine": "llama_server",
+        "flags": {
+          "answer_grounding_enabled": false,
+          "evidence_retrieval_enabled": true,
+          "semantic_support_enabled": true,
+          "tool_call_scoping_enabled": false
+        },
+        "flags_source": "container env captured 2026-07-25 post-run by orchestrator (container uninterrupted since the draws) -- docker exec development-easy-agent-1 env dump, both committed sessions' draws ran against this same uninterrupted container. CORRECTED (gate-3/Opus re-review DEFECT 1): evidence_retrieval_enabled IS a compose-level override -- docker-compose.copilot.yml:289 sets COPILOT_EVIDENCE_RETRIEVAL_ENABLED: \"true\" on the agent service, confirmed active at runtime by the captured dump (COPILOT_EVIDENCE_RETRIEVAL_ENABLED=true) -- NOT the app.config.Settings default (False) as an earlier version of this note incorrectly claimed. The other three flags (semantic_support, answer_grounding, tool_call_scoping) were NOT present in the captured dump, i.e. not overridden -- their values are the app.config.Settings field defaults.",
+        "loop_order": "sequential-per-question (all draws of one question back-to-back, warm single slot) -- predates the --interleave default added in the gate-3 follow-up",
+        "model": "qwen3-8b",
+        "parallel": 1,
+        "started_at": "2026-07-25T18:43:50+00:00",
+        "temperature": "0 (llama_server_client.py source-confirmed default; not runtime-verified during this run)",
+        "window_precision": "approximate"
+      }
+    },
+    "session_windows_note": "started_at/ended_at/window_precision: 'exact' means derived from this session's OWN draws (started_at = earliest draw's started_at; ended_at = latest draw's started_at + latency_seconds, i.e. when that draw actually finished). 'approximate' means no draw in this session carries a real started_at (pre-schema/backfilled draws), so the window was persisted directly into session_metadata.json instead -- see each such session's own flags_source/backfilled fields for how that approximate window was derived. A session with window_precision: null has neither a computed nor a persisted window at all.",
+    "session_provenance_note": "app_git_sha/engine/model/flags/flags_source/loop_order/parallel/temperature/backfilled are PERSISTED per-session facts (evals/results/issue-160/session_metadata.json), captured once by the live run that produced that session and never re-derived on a later --summarize-only regeneration. A session showing loop_order starting with \"unknown\" has no persisted entry."
+  }
+}
