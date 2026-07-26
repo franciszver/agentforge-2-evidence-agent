@@ -107,6 +107,7 @@ Notes on this exact form (each verified against the current compose file / image
 - Path `/data/traces/traces.db`, NOT the `Settings.trace_db_path` default of `/data/traces.db` — the compose overlay's `agent` service sets `TRACE_DB_PATH: /data/traces/traces.db` to scope the persistent `agenttracedata` volume mount (see that file's volumes comment, #180).
 - `python3 -c "import sqlite3; ..."`, NOT `sqlite3 <db> "<query>"` — the agent image (`python:3.11-slim` base) has no `sqlite3` CLI binary, only the stdlib module. A bare `docker exec ... sqlite3 ...` form does not work against this image.
 - `<CORRELATION_ID>` is the id shown on the (still-open) `/review` page next to the thumbs-down badge — that page tells the operator *which* trace to query; this command is how they read the one field it withholds.
+- The `WHERE` clause is deliberately scoped to one `correlation_id`, parameterized (not string-formatted). Do not broaden it into a table dump ("just to look around") — that turns a narrow, single-record read into exactly the unscoped PHI exposure #176 removed from `/review` in the first place; if a wider query is genuinely needed, that need itself is a sign this decision (below) should be revisited, not a reason to widen the copy-pasted command.
 
 **Decision (2026-07-26, #179): document this manual query as the sanctioned path, not a new authenticated proxy or CLI.** Options considered:
 
