@@ -97,17 +97,18 @@ Promoting a thumbs-down to a real regression case means writing the actual `fail
 ```bash
 docker exec -it development-easy-agent-1 \
   python3 -c "import sqlite3; conn = sqlite3.connect('/data/traces/traces.db'); \
-  rows = conn.execute('SELECT feedback_comment FROM spans WHERE correlation_id = ? AND feedback_comment IS NOT NULL', ('<CORRELATION_ID>',)).fetchall(); \
-  [print(r[0]) for r in rows]"
+  rows = conn.execute('SELECT id, feedback_comment FROM spans WHERE correlation_id = ? AND feedback_comment IS NOT NULL ORDER BY id DESC', ('<CORRELATION_ID>',)).fetchall(); \
+  [print(r) for r in rows]"
 ```
 
 Notes on this exact form (each verified against the current compose file / image, not assumed):
 
-- Container name `development-easy-agent-1` matches this repo's other `docker exec ...-agent-1` recipes (`docs/DEMO_SCRIPT.md`, `docs/ARCHITECTURE.md`'s capacity-run recipe); the compose service is `agent` (`docker/development-easy/docker-compose.copilot.yml`) if invoking via `docker compose exec agent ...` instead.
+- Container name `development-easy-agent-1` matches this repo's other `docker exec ...-agent-1` recipes (`docs/DEMO_SCRIPT.md`, `docs/ARCHITECTURE.md`'s capacity-run recipe); the compose service is `agent` (`docker/development-easy/docker-compose.copilot.yml`) if invoking via `docker compose exec agent ...` instead. This exact container name is a function of the compose *project* name (the directory the stack was brought up from) — it only holds for the primary `docker/development-easy` checkout. Against a non-primary stack (an `openemr-cmd worktree`, or any clone/checkout under a different directory name), find the real name with `docker compose ps --format '{{.Names}}'` from that stack's compose directory, or use `openemr-cmd worktree exec <branch> exec agent <cmd>`-style indirection rather than assuming this literal name.
 - Path `/data/traces/traces.db`, NOT the `Settings.trace_db_path` default of `/data/traces.db` — the compose overlay's `agent` service sets `TRACE_DB_PATH: /data/traces/traces.db` to scope the persistent `agenttracedata` volume mount (see that file's volumes comment, #180).
 - `python3 -c "import sqlite3; ..."`, NOT `sqlite3 <db> "<query>"` — the agent image (`python:3.11-slim` base) has no `sqlite3` CLI binary, only the stdlib module. A bare `docker exec ... sqlite3 ...` form does not work against this image.
 - `<CORRELATION_ID>` is the id shown on the (still-open) `/review` page next to the thumbs-down badge — that page tells the operator *which* trace to query; this command is how they read the one field it withholds.
 - The `WHERE` clause is deliberately scoped to one `correlation_id`, parameterized (not string-formatted). Do not broaden it into a table dump ("just to look around") — that turns a narrow, single-record read into exactly the unscoped PHI exposure #176 removed from `/review` in the first place; if a wider query is genuinely needed, that need itself is a sign this decision (below) should be revisited, not a reason to widen the copy-pasted command.
+- `SELECT id, ...` and `ORDER BY id DESC`, not a bare unordered `SELECT feedback_comment`: `app.feedback`'s write path inserts a new span unconditionally, with no uniqueness constraint on `correlation_id` (`app.dashboard_metrics`'s dedup — `ORDER BY (feedback_comment IS NOT NULL) DESC, id DESC` — exists precisely because more than one feedback row per correlation id happens, e.g. a clinician submits, reloads, and resubmits). Without an explicit order the query can return rows in an unspecified sequence; ordering newest-first and printing `id` alongside the comment lets the operator tell which row is current before hand-writing `failure_mode` from it, rather than possibly reading a superseded comment.
 
 **Decision (2026-07-26, #179): document this manual query as the sanctioned path, not a new authenticated proxy or CLI.** Options considered:
 
