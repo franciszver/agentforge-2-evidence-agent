@@ -33,6 +33,15 @@ Only non-PHI data is ever stored:
     reason (``app.review_page``'s ``/review`` redacts it; the P4.5 dashboard
     never rendered it; ``/review/promote`` never re-emits it into the public
     ``evals/`` repo, #157). It stays on disk here only.
+  * an ``owner_token_hash`` (#180, HMAC-SHA256 of the request's bearer
+    token, via :func:`hash_owner_token`) on the ``REQUEST`` span -- never
+    the raw token. Same keyed-hash discipline as ``args_hash`` (a bearer
+    token is a secret-shaped value, not PHI, but read access to this file
+    must not be enough to correlate/replay it), and the same
+    ``Settings.trace_args_hash_secret`` key. Lets ``caller_owns_trace``
+    (the ``POST /feedback`` ownership check, #180) verify a later caller
+    presented the SAME token without ever storing or comparing the raw
+    value.
 
 Raw tool args, raw tool results, the question/answer text, and any patient
 record value (drug names, allergy substances, lab values, free text) are
@@ -102,7 +111,8 @@ CREATE TABLE IF NOT EXISTS spans (
     span_id TEXT,
     parent_span_id TEXT,
     worker_name TEXT,
-    sub_task_type TEXT
+    sub_task_type TEXT,
+    owner_token_hash TEXT
 )
 """
 _INDEX = "CREATE INDEX IF NOT EXISTS idx_spans_correlation_id ON spans (correlation_id)"
@@ -130,6 +140,7 @@ _COLUMNS = (
     "parent_span_id",
     "worker_name",
     "sub_task_type",
+    "owner_token_hash",
 )
 
 
@@ -186,6 +197,7 @@ class Span:
     parent_span_id: str | None = None
     worker_name: str | None = None
     sub_task_type: str | None = None
+    owner_token_hash: str | None = None
 
 
 def hash_args(args: Mapping[str, Any], secret: str) -> str:
@@ -199,6 +211,32 @@ def hash_args(args: Mapping[str, Any], secret: str) -> str:
     """
     canonical = json.dumps(dict(args), sort_keys=True, default=str)
     return hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+
+def hash_owner_token(token: str, secret: str) -> str:
+    """HMAC-SHA256 hex digest of a bearer token, keyed by ``secret``.
+
+    Issue #180: the ``/feedback`` ownership check binds a feedback write to
+    the SAME bearer token that originated the trace (``record_request_span``'s
+    ``owner_token`` argument), not to a claimed identity -- see
+    ``app.chat.get_token_validator``'s docstring: even with
+    ``copilot_per_user_token_enabled`` on, OpenEMR's introspection response
+    (``app.openemr_auth.IntrospectionResult``) carries no subject/username
+    claim to check ownership against, only ``active``/``exp``/the SMART
+    launch ``patient``. The raw token itself is therefore the only
+    caller-distinguishing value available at either seam, and the front-end
+    panel already caches ONE token per browser session and reuses it for
+    both ``/chat`` and ``/feedback`` (see
+    ``interface/.../public/assets/js/copilot-chat.js``'s token-broker
+    comment) -- so "same token" is exactly "same session that started this
+    trace", which is the ownership question ``/feedback`` needs answered.
+
+    Keyed (not a bare hash) for the same reason as :func:`hash_args`: a
+    bearer token is a secret-shaped value an attacker with read access to
+    the trace store must not be able to dictionary-attack or correlate
+    across records via an unkeyed digest.
+    """
+    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
 
 
 def record_span_best_effort(logger: logging.Logger, operation: str, write: Callable[[], object]) -> None:
@@ -340,15 +378,67 @@ class TraceStore:
         finally:
             connection.close()
 
-    def record_request_span(self, *, correlation_id: str, start_ts: float, end_ts: float, ok: bool) -> int:
-        """Record the whole-invocation span (one per ``POST /chat`` call)."""
+    def record_request_span(
+        self,
+        *,
+        correlation_id: str,
+        start_ts: float,
+        end_ts: float,
+        ok: bool,
+        owner_token: str | None = None,
+    ) -> int:
+        """Record the whole-invocation span (one per ``POST /chat`` call).
+
+        ``owner_token`` (#180): the caller's raw bearer token for THIS
+        invocation, hashed via :func:`hash_owner_token` and stored as
+        ``owner_token_hash`` -- never the raw token. This is what
+        :meth:`caller_owns_trace` later checks a ``/feedback`` caller's own
+        token against. ``None`` (the default) records no owner -- every
+        production call site (``app.chat._stream_chat``) always supplies
+        the request's token; ``None`` is only reachable from a caller that
+        predates #180 (a test, or -- deliberately -- nothing else), and
+        ``caller_owns_trace`` treats a trace with no recorded owner as
+        UNOWNABLE (rejects every claimant), not as open to anyone -- see
+        that method's docstring.
+        """
         return self._insert(
             span_type=SpanType.REQUEST,
             correlation_id=correlation_id,
             start_ts=start_ts,
             end_ts=end_ts,
             status=_status(ok),
+            owner_token_hash=hash_owner_token(owner_token, self._hash_secret) if owner_token else None,
         )
+
+    def caller_owns_trace(self, correlation_id: str, token: str) -> bool:
+        """#180: does ``token`` match the bearer token that originated
+        ``correlation_id``'s trace?
+
+        Fail-closed in every direction that isn't a proven match:
+
+        * No ``REQUEST`` span at all for ``correlation_id`` (unknown,
+          purged, or the request span write itself failed -- best-effort,
+          see ``record_span_best_effort``) -> ``False``. An unrecorded
+          originator is never treated as fair game, only as unclaimable.
+        * A ``REQUEST`` span exists but carries no ``owner_token_hash``
+          (predates #180, or was recorded via a caller that passed no
+          ``owner_token``) -> ``False``, for the same reason: silently
+          falling back to "anyone may attach feedback" on legacy or
+          malformed data would resurrect exactly the gap #180 fixes.
+        * A recorded hash that does not match ``token`` (hashed the same
+          way) -> ``False``: a different bearer token, i.e. a different
+          browser session, presented it.
+
+        Only an exact, constant-time (``hmac.compare_digest``) match
+        returns ``True``.
+        """
+        request_spans = [span for span in self.get_spans(correlation_id) if span.span_type == SpanType.REQUEST]
+        if not request_spans:
+            return False
+        recorded_hash = request_spans[0].owner_token_hash
+        if not recorded_hash:
+            return False
+        return hmac.compare_digest(recorded_hash, hash_owner_token(token, self._hash_secret))
 
     def record_tool_span(
         self,

@@ -43,10 +43,22 @@ def _override_ok_validator() -> None:
 client = TestClient(app)
 
 
+def _seed_owned_request_span(trace_store: TraceStore, correlation_id: str, token: str = "good-token") -> None:
+    """Record the REQUEST span a real ``/chat`` invocation would have
+    written, owned by ``token`` (#180) -- so a hermetic test that posts
+    feedback straight at ``/feedback`` (never having called ``/chat``)
+    still models a trace the poster legitimately owns, instead of an
+    unowned/unknown id that the #180 ownership check now rejects."""
+    trace_store.record_request_span(
+        correlation_id=correlation_id, start_ts=0.0, end_ts=0.1, ok=True, owner_token=token
+    )
+
+
 def test_thumbs_up_persists_and_reads_back_with_correlation_id(tmp_path: Path) -> None:
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     _override_ok_validator()
     app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _seed_owned_request_span(trace_store, "corr-1")
 
     response = client.post(
         "/feedback",
@@ -57,9 +69,9 @@ def test_thumbs_up_persists_and_reads_back_with_correlation_id(tmp_path: Path) -
     assert response.status_code == 201
 
     spans = trace_store.get_spans("corr-1")
-    assert len(spans) == 1
-    span = spans[0]
-    assert span.span_type == SpanType.FEEDBACK
+    feedback_spans = [s for s in spans if s.span_type == SpanType.FEEDBACK]
+    assert len(feedback_spans) == 1
+    span = feedback_spans[0]
     assert span.correlation_id == "corr-1"
     assert span.feedback_thumb == FeedbackThumb.UP
     assert span.feedback_comment is None
@@ -69,6 +81,7 @@ def test_thumbs_down_with_comment_persists(tmp_path: Path) -> None:
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     _override_ok_validator()
     app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _seed_owned_request_span(trace_store, "corr-2")
 
     response = client.post(
         "/feedback",
@@ -79,8 +92,9 @@ def test_thumbs_down_with_comment_persists(tmp_path: Path) -> None:
     assert response.status_code == 201
 
     spans = trace_store.get_spans("corr-2")
-    assert len(spans) == 1
-    span = spans[0]
+    feedback_spans = [s for s in spans if s.span_type == SpanType.FEEDBACK]
+    assert len(feedback_spans) == 1
+    span = feedback_spans[0]
     assert span.feedback_thumb == FeedbackThumb.DOWN
     assert span.feedback_comment == "Missed the recent A1C."
 
@@ -116,6 +130,70 @@ def test_feedback_span_shares_correlation_id_with_the_chat_response_it_rates(tmp
     assert SpanType.REQUEST in span_types
     assert SpanType.FEEDBACK in span_types
     assert all(span.correlation_id == correlation_id for span in spans)
+
+
+def test_cannot_attach_feedback_to_a_correlation_id_owned_by_a_different_token(tmp_path: Path) -> None:
+    # #180 -- the core spoofing scenario: clinician A's real /chat trace
+    # exists (a real REQUEST span, owned by A's token); an attacker holding
+    # a DIFFERENT valid bearer token (both pass the flag-off dev-permissive
+    # validator -- see _override_ok_validator, which accepts any token) has
+    # discovered A's correlation id (e.g. via the unauthenticated GET
+    # /review page, #176) and tries to attach a forged comment to it.
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
+    _override_ok_validator()
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _seed_owned_request_span(trace_store, "corr-victim", token="clinician-a-token")
+
+    response = client.post(
+        "/feedback",
+        json={"correlation_id": "corr-victim", "thumb": "down", "comment": "forged by attacker"},
+        headers={"Authorization": "Bearer attacker-token"},
+    )
+
+    assert response.status_code == 403
+    spans = trace_store.get_spans("corr-victim")
+    assert all(span.span_type != SpanType.FEEDBACK for span in spans)
+
+
+def test_can_attach_feedback_to_a_correlation_id_owned_by_the_same_token(tmp_path: Path) -> None:
+    # Presence pairing for the test above: the SAME token that originated
+    # the trace CAN attach feedback to it -- proves the check discriminates
+    # (rejects a foreign token, accepts the legitimate owner) rather than
+    # rejecting everything.
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
+    _override_ok_validator()
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _seed_owned_request_span(trace_store, "corr-owner", token="clinician-a-token")
+
+    response = client.post(
+        "/feedback",
+        json={"correlation_id": "corr-owner", "thumb": "down", "comment": "genuine"},
+        headers={"Authorization": "Bearer clinician-a-token"},
+    )
+
+    assert response.status_code == 201
+    spans = trace_store.get_spans("corr-owner")
+    feedback_spans = [s for s in spans if s.span_type == SpanType.FEEDBACK]
+    assert len(feedback_spans) == 1
+    assert feedback_spans[0].feedback_comment == "genuine"
+
+
+def test_unknown_correlation_id_with_no_originating_trace_is_rejected(tmp_path: Path) -> None:
+    # #180 fail-closed case: a correlation id with NO recorded REQUEST span
+    # at all (never originated by any /chat call, e.g. guessed outright)
+    # must be rejected, not treated as unowned/open-to-anyone.
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
+    _override_ok_validator()
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+
+    response = client.post(
+        "/feedback",
+        json={"correlation_id": "corr-never-existed", "thumb": "up"},
+        headers={"Authorization": "Bearer some-token"},
+    )
+
+    assert response.status_code == 403
+    assert trace_store.get_spans("corr-never-existed") == []
 
 
 def test_missing_correlation_id_returns_4xx_no_leak(tmp_path: Path) -> None:
@@ -182,6 +260,7 @@ def test_comment_at_max_length_is_accepted(tmp_path: Path) -> None:
     trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
     _override_ok_validator()
     app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _seed_owned_request_span(trace_store, "corr-5")
 
     response = client.post(
         "/feedback",
@@ -196,7 +275,16 @@ class _RaisingTraceStore:
     """A trace store whose ``record_feedback_span`` always raises -- models a
     real write failure (permission error, full disk, locked DB). Feedback is
     a deliberate user action, so (unlike P4.2's passive spans) a write
-    failure must surface to the caller as an error, not be swallowed."""
+    failure must surface to the caller as an error, not be swallowed.
+
+    ``caller_owns_trace`` is stubbed to ``True`` (not exercised here, #180):
+    this fake's whole point is to isolate the write-failure path, and
+    without this override the endpoint's ownership check -- reached first --
+    would raise ``AttributeError`` on this minimal double before the write
+    it is meant to exercise ever runs."""
+
+    def caller_owns_trace(self, correlation_id: str, token: str) -> bool:
+        return True
 
     def record_feedback_span(self, **kwargs: object) -> int:
         raise PermissionError("[Errno 13] Permission denied: '/data'")

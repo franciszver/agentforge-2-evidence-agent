@@ -29,31 +29,32 @@ Auth: gated by the SAME bearer-token seam as ``POST /chat``
 to prevent anonymous feedback spam. Reuses the seam rather than
 reimplementing a second one.
 
-Ownership gap (MEDIUM severity -- re-derived by #176, was previously
-mis-scored LOW; still deferred with real auth): this endpoint does not
-verify the authenticated caller originated ``correlation_id`` -- any valid
-bearer can attach feedback, including a free-text comment, to any id it can
-guess/observe. The comment field is NOT a no-PHI signal: it is
-clinician-typed free text that may incidentally contain PHI (see
-``app.trace_store`` module docstring, corrected by #176), and it IS read --
-by a human triaging a thumbs-down directly against the trace store, since
-no page renders it (#176 redacted it out of ``app.review_page``'s
-``/review``, the only UI that ever showed it). So the actual blast radius
-is: any valid bearer holding an unguessable correlation id can attach
-attacker-controlled free text -- forged as if it came from that trace's
-real clinician -- to someone else's trace, and have it read as genuine
-during triage. That is worse than "spam of a no-PHI signal with no read
-path," the premise this was previously scored against. Binding feedback to
-the originating identity still belongs with real token introspection
-(``copilot_per_user_token_enabled`` on -- see ``app.chat.get_token_validator``),
-where "the authenticated caller" first becomes a meaningful principal to check
-ownership against; with that flag off (#168, VULN-0001: the fail-closed
-default rejects every token, or -- dev-only -- the
-``copilot_dev_accept_any_bearer_token`` stub accepts any) neither validator
-carries per-user identity, so such a check would still be theatre today.
-Given the corrected severity, this gap should not simply wait for the flag
-flip without being tracked on its own -- see issue #180, filed for this
-re-derived severity.
+Ownership control (#180 -- closes the MEDIUM-severity gap #176 re-derived;
+was previously mis-scored LOW and deferred to the flag-on token-introspection
+path). Before persisting, the endpoint verifies the presented bearer token
+matches the token that originated ``target_correlation_id``'s trace, via
+``TraceStore.caller_owns_trace`` -- see that method's docstring and
+``app.trace_store.hash_owner_token``'s docstring for the full reasoning. In
+short: real per-user token introspection
+(``app.openemr_auth.IntrospectionResult``) turned out NOT to carry a
+subject/username claim even with ``copilot_per_user_token_enabled`` on --
+only ``active``/``exp``/the SMART launch ``patient`` -- so "the authenticated
+caller" never becomes a checkable principal by that route, flag on or off.
+The raw bearer token itself is the one caller-distinguishing value
+available at both ``/chat`` and ``/feedback``, and the panel already caches
+exactly one token per browser session and reuses it for both calls (see
+``app.trace_store.hash_owner_token``'s docstring), so "presented the same
+token that started this trace" is a sound, implementable proxy for
+ownership that works identically regardless of
+``copilot_per_user_token_enabled`` -- unlike the deferred introspection-based
+design, this needed no flag gate. A correlation id with no recorded owner
+(no ``REQUEST`` span, or one written before #180) is rejected, not treated
+as unclaimed -- see ``caller_owns_trace``'s fail-closed cases. A caller
+holding a foreign but otherwise-valid token can still discover a real
+``correlation_id`` via the unauthenticated ``GET /review`` page (#176) --
+that page redacts the comment itself but still lists correlation ids, so
+ids must be assumed enumerable -- this is exactly the attempted-forgery
+case this check rejects.
 
 PHI note: the comment is user-authored text about the response, not a
 patient RECORD value pulled from a tool -- but it may incidentally contain
@@ -115,6 +116,18 @@ def feedback_endpoint(
         validator(token)
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
+
+    # #180 ownership check (see module docstring's "Ownership control"
+    # section): reject unless the presented token is the SAME one that
+    # originated target_correlation_id's trace. Checked after token
+    # validation (a 401 for a garbage/expired token takes priority) and
+    # before the write -- a forged comment must never reach the store.
+    if not trace_store.caller_owns_trace(request.correlation_id, token):
+        _logger.warning(
+            "feedback rejected: caller does not own target_correlation_id",
+            extra={"target_correlation_id": request.correlation_id},
+        )
+        raise HTTPException(status_code=403, detail="caller does not own this correlation id")
 
     start_ts = time.time()
     try:

@@ -1565,6 +1565,7 @@ def _stream_chat(
     trace_store: TraceStore,
     message: str,
     user: str,
+    owner_token: str,
     clock: Clock,
     roster_cache: RosterCache,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
@@ -1847,6 +1848,7 @@ def _stream_chat(
                 start_ts=request_start_ts,
                 end_ts=time.time(),
                 ok=request_ok,
+                owner_token=owner_token,
             ),
         )
 
@@ -1952,6 +1954,7 @@ async def chat_endpoint(
             trace_store,
             request.message,
             user,
+            token,
             clock,
             roster_cache,
             evidence_retriever,

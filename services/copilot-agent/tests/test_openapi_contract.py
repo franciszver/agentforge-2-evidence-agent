@@ -160,8 +160,13 @@ def test_feedback_response_conforms_to_spec(tmp_path) -> None:
         return None
 
     app.dependency_overrides[get_token_validator] = lambda: _ok_validator
-    app.dependency_overrides[get_trace_store] = lambda: TraceStore(
-        db_path=str(tmp_path / "traces.db"), hash_secret="0" * 32
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret="0" * 32)
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+    # #180: the ownership check requires the correlation id to have been
+    # originated by this same bearer token -- seed the REQUEST span a real
+    # /chat call would have written, same as tests/test_feedback_endpoint.py.
+    trace_store.record_request_span(
+        correlation_id="corr-contract", start_ts=0.0, end_ts=0.1, ok=True, owner_token="good-token"
     )
 
     response = client.post(

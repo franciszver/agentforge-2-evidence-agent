@@ -173,6 +173,57 @@ def test_record_request_span_failure_status(store: TraceStore) -> None:
     assert span.status == SpanStatus.FAIL
 
 
+def test_record_request_span_hashes_owner_token_not_raw(store: TraceStore) -> None:
+    # #180: the raw bearer token must never be written to disk, same
+    # discipline as hash_args -- only its keyed hash.
+    store.record_request_span(
+        correlation_id="corr-owner", start_ts=0.0, end_ts=1.0, ok=True, owner_token="super-secret-token"
+    )
+
+    span = store.get_spans("corr-owner")[0]
+    assert span.owner_token_hash is not None
+    assert span.owner_token_hash != "super-secret-token"
+    assert len(span.owner_token_hash) == 64  # sha256 hex digest
+
+
+def test_record_request_span_without_owner_token_records_no_hash(store: TraceStore) -> None:
+    store.record_request_span(correlation_id="corr-no-owner", start_ts=0.0, end_ts=1.0, ok=True)
+
+    span = store.get_spans("corr-no-owner")[0]
+    assert span.owner_token_hash is None
+
+
+def test_caller_owns_trace_true_for_the_originating_token(store: TraceStore) -> None:
+    store.record_request_span(
+        correlation_id="corr-mine", start_ts=0.0, end_ts=1.0, ok=True, owner_token="clinician-a-token"
+    )
+
+    assert store.caller_owns_trace("corr-mine", "clinician-a-token") is True
+
+
+def test_caller_owns_trace_false_for_a_different_token(store: TraceStore) -> None:
+    store.record_request_span(
+        correlation_id="corr-mine", start_ts=0.0, end_ts=1.0, ok=True, owner_token="clinician-a-token"
+    )
+
+    assert store.caller_owns_trace("corr-mine", "attacker-token") is False
+
+
+def test_caller_owns_trace_false_when_no_request_span_exists(store: TraceStore) -> None:
+    # Fail-closed: an id with no originating REQUEST span at all (never
+    # recorded, e.g. guessed outright) is rejected, not left open.
+    assert store.caller_owns_trace("corr-never-existed", "any-token") is False
+
+
+def test_caller_owns_trace_false_when_request_span_recorded_no_owner(store: TraceStore) -> None:
+    # Fail-closed: a REQUEST span that predates #180 (or was written by a
+    # caller that passed no owner_token) carries no owner_token_hash --
+    # must reject every claimant, not fall back to "unclaimed = open."
+    store.record_request_span(correlation_id="corr-legacy", start_ts=0.0, end_ts=1.0, ok=True)
+
+    assert store.caller_owns_trace("corr-legacy", "any-token") is False
+
+
 def test_record_tool_span_write_and_read_back(store: TraceStore) -> None:
     store.record_tool_span(
         correlation_id="corr-2",
@@ -320,8 +371,11 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
     sentinel_note = "Patient reports chest pain since Tuesday"
     sentinel_worker_name = "evidence-retriever"
     sentinel_sub_task_type = "RetrieveSubTask"
+    sentinel_bearer_token = "Bearer-Secret-Session-Token-abc123"
 
-    store.record_request_span(correlation_id="corr-phi", start_ts=0.0, end_ts=1.0, ok=True)
+    store.record_request_span(
+        correlation_id="corr-phi", start_ts=0.0, end_ts=1.0, ok=True, owner_token=sentinel_bearer_token
+    )
     store.record_tool_span(
         correlation_id="corr-phi",
         start_ts=0.0,
@@ -365,6 +419,7 @@ def test_no_phi_persisted_across_all_span_types(store: TraceStore, db_path: str)
 
     assert sentinel_drug_name.encode() not in raw_bytes
     assert sentinel_note.encode() not in raw_bytes
+    assert sentinel_bearer_token.encode() not in raw_bytes
 
     worker_span = next(span for span in store.get_spans("corr-phi") if span.span_type == SpanType.WORKER)
     assert worker_span.worker_name == sentinel_worker_name
