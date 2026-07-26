@@ -1429,6 +1429,13 @@ def test_gates_matrix_topical_irrelevance_shape_170_known_vulnerable_all_configs
     result, claims, chunks = _appointment_topical_irrelevance_fixture()
     extractor = _FakeExtractor(claims)
 
+    # Precondition made explicit (not just asserted in prose above): the
+    # fixture's answer genuinely engages call_0, so a cell passing below is
+    # not an accident of an unengaged/degenerate fixture -- see this file's
+    # earlier, corrected fixture, which produced the OPPOSITE conclusion by
+    # accidentally failing this exact precondition.
+    assert engaged_call_ids(result.raw_results, result.answer) == frozenset({"call_0"})
+
     verdict_result, _rendered = run_verification(
         extractor,
         result,
@@ -1472,6 +1479,10 @@ def test_gates_matrix_discontinued_medication_shape_169_known_vulnerable_all_con
     """
     result, claims = _discontinued_medication_fixture()
     extractor = _FakeExtractor(claims)
+
+    # Precondition made explicit (not just asserted in prose above): see the
+    # matching assertion in the #170 matrix test above for why this matters.
+    assert engaged_call_ids(result.raw_results, result.answer) == frozenset({"call_0"})
 
     verdict_result, _rendered = run_verification(
         extractor,
