@@ -31,6 +31,7 @@ from app.chat import (
     Turn,
     get_claim_extractor,
     get_conversation_store,
+    get_dev_token_bridge,
     get_planner_factory,
     get_require_tool_call_scoping,
     get_roster_cache,
@@ -1110,15 +1111,23 @@ def test_unauthenticated_chat_never_touches_dev_token_bridge_transport(tmp_path,
     assert calls == [], "a rejected bearer token must never reach the bridge transport"
 
 
-def test_authenticated_chat_still_fetches_from_the_dev_token_bridge(monkeypatch):
-    # Presence pairing for the absence assertions above (so they cannot pass
-    # vacuously, e.g. because the bridge is unreachable for some unrelated
-    # reason): an AUTHENTICATED caller -- one whose token passes the active
-    # validator -- must still cause exactly the one fetch it always has.
-    # Exercised as a direct call (like ``test_forwarded_token.py``'s
-    # wiring tests) rather than a full ``/chat`` round trip, so this does not
-    # need to run a real ``Planner`` against a live Ollama/OpenEMR to observe
-    # the fetch.
+def test_authenticated_chat_still_fetches_from_the_dev_token_bridge():
+    # Presence pairing for the absence assertions above -- at the SAME seam
+    # (through the real ASGI app / router / FastAPI's solve_dependencies), not
+    # a bare function call. Gate 3 (Opus) finding: calling
+    # ``get_planner_factory`` directly bypasses ``get_authenticated_token``
+    # entirely, so a broken wiring that 401s EVERY caller (a botched
+    # ``get_authenticated_token`` that never actually returns) would still
+    # make a direct-call presence test pass -- it never exercises the
+    # dependency graph the fix lives in. Going through ``client.post`` means
+    # a reject-everything mutation of ``get_authenticated_token`` makes THIS
+    # test fail (401 instead of 404, 0 fetches instead of 1), which is the
+    # point of a presence pairing.
+    #
+    # Uses an unknown ``conversation_id`` so the endpoint 404s immediately
+    # after ``planner_factory`` resolves (and therefore after the bridge
+    # fetch) but before ``planner.run()`` is ever called -- no live
+    # Ollama/OpenEMR needed, and no planner double to wire in either.
     class _CountingBridge:
         def __init__(self, token: str) -> None:
             self._token = token
@@ -1129,11 +1138,20 @@ def test_authenticated_chat_still_fetches_from_the_dev_token_bridge(monkeypatch)
             return self._token
 
     bridge = _CountingBridge("real-openemr-token-177")
-    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    app.dependency_overrides[get_dev_token_bridge] = lambda: bridge
+    app.dependency_overrides[get_token_validator] = lambda: (lambda token: None)
 
-    factory = get_planner_factory(token="authenticated-caller-token", dev_token_bridge=bridge)
-    factory(1)
+    response = client.post(
+        "/chat",
+        json={
+            "message": "hello",
+            "patient_id": 1,
+            "conversation_id": "unknown-conversation-id-177",
+        },
+        headers={"Authorization": "Bearer authenticated-caller-token"},
+    )
 
+    assert response.status_code == 404
     assert bridge.calls == 1, "an authenticated caller must still fetch exactly once from the bridge"
 
 

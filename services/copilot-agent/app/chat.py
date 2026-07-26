@@ -400,17 +400,34 @@ async def get_authenticated_token(
     -- including ``get_planner_factory``, whose flag-off branch calls
     ``dev_token_bridge.get_token()`` (an outbound OAuth password-grant against
     OpenEMR). That let an unauthenticated caller (no header at all) trigger a
-    real, blocking outbound fetch on every request: unauthenticated
-    threadpool starvation, repeated failed password-grants against the demo
-    clinician account, and a timing oracle (~2s with a live bridge attempt vs
-    ~0.1s without) disclosing whether the dev-token bridge is provisioned.
+    real, blocking outbound fetch on every request: FLAG-OFF, that meant
+    unauthenticated threadpool starvation, repeated failed password-grants
+    against the demo clinician account, and a timing oracle (~2s with a live
+    bridge attempt vs ~0.1s without) disclosing whether the dev-token bridge
+    is provisioned. (Flag-ON, an unauthenticated flood could already occupy a
+    threadpool worker per request via a cache-miss introspection call -- see
+    ``_validate_token`` -- because an attacker picks a fresh, never-cached
+    token each request, guaranteeing the ``peek_cached`` miss branch and a
+    real, timeout-bounded (``openemr_api_timeout_seconds``) introspection
+    round trip. This fix does not introduce that exposure and is not a
+    regression -- pre-#177, flag-on burned TWO worker slots per unauthenticated
+    request (one for introspection, one for the bridge); this fix removes the
+    SECOND slot and removes the bridge fetch and its timing oracle entirely on
+    both branches. The remaining flag-on introspection-triggered threadpool
+    exposure is a pre-existing, separate concern -- pre-introspection rate
+    limiting or negative caching there is intentionally NOT attempted by this
+    fix and is tracked separately (issue TBD).)
 
     Pulling the check into its own dependency and making ``get_planner_factory``
     depend on IT (see that function) fixes the ordering structurally: FastAPI
     resolves a dependency's own sub-dependencies before calling its body, so
     ``get_planner_factory``'s body -- and therefore the bridge -- is now
     reached only once this dependency has already returned a validated token.
-    A request whose token fails validation never touches the bridge at all.
+    A request whose token fails validation never touches the bridge at all --
+    EXCEPT under the dev-only ``copilot_dev_accept_any_bearer_token`` flag,
+    where "validation" is the permissive stub (any non-empty bearer passes),
+    so bridge access is effectively unauthenticated in that one configuration
+    too; see ``_dev_permissive_token_validator``.
 
     Cached per-request by FastAPI's default ``Depends`` behaviour, so
     ``chat_endpoint`` and ``get_planner_factory`` both depending on this
@@ -559,7 +576,10 @@ def get_planner_factory(
     caller's bearer token has already been extracted AND validated. FastAPI
     resolves a dependency's own sub-dependencies before calling its body, so
     a request whose token fails ``get_authenticated_token`` never gets here
-    at all; it 401s there instead. Before this fix, this dependency read the
+    at all; it 401s there instead. (Under the dev-only
+    ``copilot_dev_accept_any_bearer_token`` flag, "fails" means "empty" only
+    -- any non-empty bearer passes as "authenticated" and does reach the
+    bridge; see ``get_authenticated_token``'s docstring.) Before this fix, this dependency read the
     header directly and FastAPI resolved it independently of (and, in
     practice, before) the endpoint body's own token check -- so an
     unauthenticated caller (no header, or a garbage one) still triggered the
@@ -605,9 +625,7 @@ def get_planner_factory(
         bridge_token = ""
         _logger.warning(
             "dev token bridge unavailable; tool calls for this request will "
-            "auth-fail against OpenEMR (answers will cite zero evidence) "
-            "unless the caller's own token is rejected first by the "
-            "flag-off token validator"
+            "auth-fail against OpenEMR (answers will cite zero evidence)"
         )
     return _default_planner_factory(bridge_token)
 
@@ -1931,6 +1949,24 @@ def extract_bearer_token(authorization: str | None) -> str:
     return authorization[len(prefix) :]
 
 
+# #177: the pre-auth guard below is STRUCTURAL, not positional. It works
+# because ``get_planner_factory`` (imported above) itself takes
+# ``token: str = Depends(get_authenticated_token)`` as a SUB-dependency --
+# FastAPI resolves a dependency's own sub-dependencies before calling its
+# body, so ``get_planner_factory``'s body (and the dev-token bridge fetch
+# inside it) is unreachable until validation succeeds, regardless of where
+# ``planner_factory`` is listed in THIS signature. The other dependencies
+# below are auth-safe only in the sense that none of them do outbound I/O at
+# resolution time -- they are NOT protected by signature order the way
+# ``planner_factory`` is by the sub-dependency link. If ``get_planner_factory``
+# is ever "simplified" back to reading the ``Authorization`` header directly
+# (undoing the sub-dependency), or a future dependency added here does
+# outbound I/O without depending on ``get_authenticated_token`` itself, #177
+# reopens silently -- FastAPI will not complain, and only an endpoint-level
+# test that resolves the real dependency graph (like
+# ``test_chat_endpoint.py::test_unauthenticated_chat_never_touches_dev_token_bridge_transport``)
+# will catch it. Do not "fix" this by reordering parameters here -- signature
+# order on ``chat_endpoint`` itself has never been what makes this safe.
 async def chat_endpoint(
     request: ChatRequest,
     token: str = Depends(get_authenticated_token),
