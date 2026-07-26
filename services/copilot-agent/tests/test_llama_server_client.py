@@ -76,6 +76,45 @@ def test_chat_posts_to_openai_compatible_endpoint_with_max_tokens_cap():
     assert body["stream"] is False
 
 
+def test_chat_clamps_an_options_max_tokens_override_above_the_cap():
+    """Issue #167 Gate 3 re-review finding: ``_build_body`` used to set
+    ``max_tokens`` BEFORE merging ``options`` onto the body
+    (``body.update(options)``), so ``options={"max_tokens": ...}`` silently
+    overrode the cap on this (the DEFAULT production) engine, even though
+    ``app.ollama_client``'s equivalent ceiling was already enforced AFTER
+    its own options merge. The cap is now applied after the merge here too,
+    so both engines have identical ceiling semantics: an over-cap caller
+    value falls back to the cap, not through.
+    """
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_completion("ok"))
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}], options={"max_tokens": 100_000})
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["max_tokens"] == 1536
+
+
+def test_chat_respects_an_options_max_tokens_override_below_the_cap():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_completion("ok"))
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}], options={"max_tokens": 42})
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["max_tokens"] == 42
+
+
 def test_chat_strips_leaked_thinking_preamble_from_content():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=_completion("some leaked reasoning</think>\n\nhello"))

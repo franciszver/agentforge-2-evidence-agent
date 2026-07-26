@@ -146,6 +146,41 @@ def test_chat_respects_a_caller_num_predict_below_the_ceiling():
     assert body["options"]["num_predict"] == 42
 
 
+@pytest.mark.parametrize(
+    "sentinel",
+    [
+        pytest.param(-1, id="ollama-unlimited-sentinel"),
+        pytest.param(-2, id="ollama-fill-context-sentinel"),
+        pytest.param(0, id="zero-tokens"),
+        pytest.param("1000000", id="non-int-string"),
+        pytest.param(12.5, id="non-int-float"),
+    ],
+)
+def test_chat_falls_back_to_cap_for_out_of_range_or_non_int_num_predict(sentinel: object) -> None:
+    """Issue #167 Gate 3 re-review finding: a plain ``min(caller, cap)``
+    would let Ollama's negative "unlimited" sentinels straight through
+    (``-1`` = generate until the model stops on its own; ``-2`` = fill the
+    context window -- both numerically SMALLER than CHAT_MAX_TOKENS, so
+    ``min()`` picks THEM). ``0`` and any non-int are equally invalid. All
+    five must fall back to the cap, not be passed through or raise.
+    """
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}], options={"num_predict": sentinel})
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["options"]["num_predict"] == CHAT_MAX_TOKENS
+
+
 def test_chat_strips_leaked_thinking_preamble_from_content():
     """Defense against an observed Ollama/qwen3 quirk: even with ``think:
     false``, some Ollama versions still emit the model's reasoning inline in

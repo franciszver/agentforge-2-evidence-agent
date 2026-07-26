@@ -473,10 +473,6 @@ class LlamaServerClient:
             "messages": messages,
             "stream": stream,
             "temperature": 0,
-            # Hard cap on every call -- see module docstring. Callers pass
-            # ``_EXTRACT_MAX_TOKENS`` for extract(); every other caller keeps
-            # the default ``_CHAT_MAX_TOKENS``.
-            "max_tokens": max_tokens,
         }
         if options:
             # OllamaClient's ``options`` dict is Ollama-shaped (e.g.
@@ -487,6 +483,28 @@ class LlamaServerClient:
             body["response_format"] = response_format
         if stream:
             body["stream_options"] = {"include_usage": True}
+        # Hard cap on every call, applied AFTER the options merge above --
+        # see module docstring. Issue #167 Gate 3 re-review finding: setting
+        # "max_tokens" BEFORE ``body.update(options)`` let a caller-supplied
+        # ``options={"max_tokens": ...}`` silently override the cap (the
+        # ``ollama`` engine's equivalent ceiling in
+        # ``app.ollama_client._clamped_chat_options`` was already enforced
+        # after its own options merge -- this brings the two engines back
+        # to identical ceiling semantics). ``max_tokens`` here is the
+        # CEILING for this call (``_CHAT_MAX_TOKENS`` for chat/chat_stream,
+        # ``_EXTRACT_MAX_TOKENS`` for extract -- see their call sites), not
+        # a default: an out-of-range or non-int caller value falls back to
+        # it outright, not a plain ``min()``/clamp-to-boundary (mirrors
+        # ``_clamped_chat_options``'s reasoning -- a caller should not be
+        # able to reach "generate a lot" via a sentinel-shaped value
+        # either). A caller asking for FEWER tokens is honoured as-is.
+        caller_max_tokens = body.get("max_tokens")
+        valid_caller_value = (
+            isinstance(caller_max_tokens, int)
+            and not isinstance(caller_max_tokens, bool)
+            and 1 <= caller_max_tokens <= max_tokens
+        )
+        body["max_tokens"] = caller_max_tokens if valid_caller_value else max_tokens
         return body
 
     # Message normalization and leaked-<think> stripping are pure, stateless

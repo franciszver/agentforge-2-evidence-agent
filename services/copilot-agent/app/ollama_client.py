@@ -82,11 +82,22 @@ _EMBEDDINGS_PATH = "/api/embeddings"
 # CEILING, not a default (Gate 3 follow-up): unlike ``temperature`` (a
 # behavioural knob a caller is free to override in either direction), this
 # is a retention bound protecting process memory -- see the module-level
-# rationale above. A caller MAY still ask for FEWER tokens (a smaller
-# ``options["num_predict"]`` is honoured as-is), but may never ask for
-# more: ``_clamped_chat_options`` takes ``min(caller_value,
-# CHAT_MAX_TOKENS)`` when the caller supplies one, and ``CHAT_MAX_TOKENS``
-# outright when they don't.
+# rationale above. A caller MAY still ask for FEWER tokens (a smaller, but
+# still valid, ``options["num_predict"]`` is honoured as-is), but may never
+# ask for more. ``_clamped_chat_options`` accepts a caller value ONLY if it
+# is a plain ``int`` in ``[1, CHAT_MAX_TOKENS]``; anything else -- too big,
+# non-int, or missing -- falls back to ``CHAT_MAX_TOKENS`` outright (NOT a
+# plain ``min(caller_value, CHAT_MAX_TOKENS)``, and NOT clamped to the
+# nearest boundary). This matters because Ollama's ``num_predict`` API
+# treats certain values as "unlimited" sentinels rather than literal token
+# counts: ``-1`` means generate until the model stops on its own (no cap at
+# all), ``-2`` means fill the remaining context window. Both are
+# numerically SMALLER than ``CHAT_MAX_TOKENS``, so a plain ``min()`` would
+# pass them straight through -- the two idiomatic ways to ask for "as many
+# as possible" would silently defeat the exact guard this exists to
+# enforce. ``0`` (no generation) and any non-int value are equally
+# out-of-range and also fall back to the cap rather than erroring or being
+# clamped to ``1``.
 CHAT_MAX_TOKENS = 1536
 
 
@@ -94,14 +105,20 @@ def _clamped_chat_options(options: dict[str, Any] | None) -> dict[str, Any]:
     """Merge ``options`` with a ``num_predict`` ceiling of ``CHAT_MAX_TOKENS``.
 
     Used by ``chat``/``chat_stream`` only -- see ``CHAT_MAX_TOKENS``'s
-    docstring for why this clamps (a memory-safety bound) rather than
-    merely defaults (the way ``temperature`` is merged in ``_build_body``).
+    docstring for why an out-of-range caller value (including Ollama's
+    negative "unlimited" sentinels, ``0``, or a non-int) falls all the way
+    back to ``CHAT_MAX_TOKENS`` rather than being merely defaulted (the way
+    ``temperature`` is merged in ``_build_body``) or clamped to the nearest
+    boundary via a plain ``min()``/``max()``.
     """
     merged_options: dict[str, Any] = dict(options) if options else {}
     caller_num_predict = merged_options.get("num_predict")
-    merged_options["num_predict"] = (
-        CHAT_MAX_TOKENS if caller_num_predict is None else min(caller_num_predict, CHAT_MAX_TOKENS)
+    valid = (
+        isinstance(caller_num_predict, int)
+        and not isinstance(caller_num_predict, bool)
+        and 1 <= caller_num_predict <= CHAT_MAX_TOKENS
     )
+    merged_options["num_predict"] = caller_num_predict if valid else CHAT_MAX_TOKENS
     return merged_options
 
 
