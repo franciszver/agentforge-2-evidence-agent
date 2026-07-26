@@ -6,10 +6,16 @@ FastAPI dispatches independently, so both work without a clash. The shell's
 ``<form>`` posts back to ``/chat``.
 
 Auth: the bearer token is validated through an injectable ``TokenValidator``
-seam (``get_token_validator``). The default implementation is a stub that
-only checks the token is non-empty -- TODO: replace with real OpenEMR token
-introspection. A missing header or a validator rejection both produce a 401
-before the planner is ever constructed or invoked.
+seam (``get_token_validator``). With ``copilot_per_user_token_enabled`` off
+(the shipped default), validation is FAIL-CLOSED (#168, VULN-0001): every
+token is rejected. A dev-only stub that accepts any non-empty token exists
+behind an explicit, loudly-logged opt-in
+(``copilot_dev_accept_any_bearer_token``) for local development. Real
+OpenEMR token introspection is already built and used when
+``copilot_per_user_token_enabled`` is on -- see
+``build_introspection_validator``. A missing header or a validator
+rejection both produce a 401 before the planner is ever constructed or
+invoked.
 
 Multi-turn state: an in-memory ``ConversationStore`` keyed by
 ``conversation_id``, binding each conversation to the ``patient_id`` it was
@@ -93,7 +99,7 @@ from app.config import (
     get_settings,
 )
 from app.correlation import get_correlation_id, get_span_id
-from app.dev_token_bridge import DevTokenBridge
+from app.dev_token_bridge import DevTokenBridge, DevTokenError
 from app.extraction import (
     ClaimExtractor,
     ClaimExtractorLike,
@@ -232,14 +238,36 @@ PlannerFactory = Callable[[int], PlannerProtocol]
 Clock = Callable[[], datetime]
 
 
-def _default_token_validator(token: str) -> None:
-    """Stub token validator: accepts any non-empty token.
+def _fail_closed_token_validator(token: str) -> None:
+    """#168 (VULN-0001) fix: the flag-off, dev-flag-off default. Rejects EVERY
+    token, valid-looking or not -- with ``copilot_per_user_token_enabled`` off
+    and no real introspection wired up, there is no way to actually verify a
+    token, so the safe default is to accept none, not to accept all.
 
-    The flag-OFF default (``copilot_per_user_token_enabled=False``). Replaced by
-    the introspection validator when the #124 Phase 4 flag is on.
+    Raises the same ``TokenValidationError`` every other validator raises, so
+    ``chat_endpoint``'s except clause maps this to a clean 401 exactly as
+    before -- callers cannot distinguish "no per-user auth configured" from
+    "bad token" by response shape.
+    """
+    raise TokenValidationError("token validation is not configured for this deployment")
+
+
+def _dev_permissive_token_validator(token: str) -> None:
+    """DEV-ONLY stub token validator: accepts any non-empty token.
+
+    Only reachable when ``copilot_dev_accept_any_bearer_token`` is explicitly
+    set (see ``app.config.Settings`` for why this must never be true outside
+    local development) -- restores the pre-#168 behaviour for that opt-in
+    case. Logs a loud warning on every use (no PHI, no token value) so the
+    permissive path is never silently active.
     """
     if not token:
         raise TokenValidationError("missing bearer token")
+    _logger.warning(
+        "chat request authenticated via dev-only permissive bearer-token stub "
+        "(copilot_dev_accept_any_bearer_token=true) -- any non-empty token is "
+        "accepted; this MUST NOT be enabled outside local development",
+    )
 
 
 class Introspector(Protocol):
@@ -339,12 +367,19 @@ def get_token_validator() -> TokenValidator:
     """FastAPI dependency: the active ``TokenValidator``. Override in tests.
 
     Flag ON (``copilot_per_user_token_enabled``): validates the forwarded
-    per-user bearer via OpenEMR introspection. Flag OFF: the non-empty stub,
-    byte-identical to today.
+    per-user bearer via OpenEMR introspection.
+
+    Flag OFF (the shipped default): fail-closed as of #168 (VULN-0001) --
+    every token is rejected UNLESS ``copilot_dev_accept_any_bearer_token`` is
+    also explicitly set, in which case the pre-#168 any-non-empty-token stub
+    is used instead (dev-only; see that setting's docstring).
     """
-    if get_settings().copilot_per_user_token_enabled:
+    settings = get_settings()
+    if settings.copilot_per_user_token_enabled:
         return build_introspection_validator(get_token_introspector())
-    return _default_token_validator
+    if settings.copilot_dev_accept_any_bearer_token:
+        return _dev_permissive_token_validator
+    return _fail_closed_token_validator
 
 
 LaunchBindingChecker = Callable[[str, int], None]
@@ -484,6 +519,48 @@ def get_planner_factory(
     miss) token fetch happens here, in a sync dependency FastAPI runs in its
     worker-thread pool -- not in the ``async`` ``chat_endpoint`` body, so a
     token refresh never blocks the event loop.
+
+    #168 Gate 3 (Opus) finding: an unprovisioned bridge (missing/invalid dev
+    client creds -- any deployment that isn't the local dev stack, now that
+    the flag-off default is fail-closed) used to let ``dev_token_bridge
+    .get_token()`` raise ``DevTokenError`` straight out of THIS dependency,
+    which FastAPI resolves before the endpoint body's token check ever runs
+    -- surfacing as an uncaught 500, not the 401 the body's
+    ``_fail_closed_token_validator`` promises. Beyond the wrong status code,
+    that 500-vs-401 split is itself a fingerprinting oracle (tells an
+    unauthenticated caller whether the bridge is provisioned). Caught here
+    and bound to an empty token instead, mirroring the flag-ON branch's own
+    ``TokenValidationError`` handling immediately above: the planner factory
+    still gets built (this dependency must never raise for an auth problem,
+    same reasoning as the flag-ON branch's docstring), and the empty token is
+    inert until a tool call would use it in the common case, because the
+    body's validator normally rejects with 401 first and the planner is only
+    ever *run* after validation passes.
+
+    NOT eliminated by this dependency, both flagged in #168 Gate 3 re-review
+    and deliberately left for a dedicated follow-up (moving the token check
+    ahead of this dependency needs its own red-first test and gates, not a
+    same-PR structural change):
+
+    * The ``dev_token_bridge.get_token()`` fetch attempt above still runs,
+      unauthenticated, pre-auth-check, on every flag-off request regardless
+      of whether the caller's token will pass or fail the body's validator
+      -- catching ``DevTokenError`` here stops it crashing the request, it
+      does NOT stop the attempt itself. With valid creds and OpenEMR
+      unreachable, each such request still costs a full outbound OAuth
+      password-grant attempt (bounded by ``openemr_api_timeout_seconds``,
+      currently 10.0s default, with no backoff or negative caching),
+      occupying a bounded, app-wide Starlette threadpool worker --
+      unauthenticated threadpool-starvation exposure against ``/chat``, and
+      repeated failed password-grants against the demo clinician account.
+    * On the ONE configuration where ``copilot_dev_accept_any_bearer_token``
+      is also true (the local dev stack's own setting) and the bridge is
+      ALSO unprovisioned, the caller's token is not rejected by the body's
+      validator -- the request proceeds with the empty token bound above,
+      every tool call auth-fails, and each failure is swallowed as an
+      ``OpenEmrApiError`` inside the planner loop, so the agent answers with
+      zero patient evidence instead of failing loudly. The ``_logger.warning``
+      immediately below exists so that failure mode is never silent.
     """
     if get_settings().copilot_per_user_token_enabled:
         try:
@@ -491,7 +568,17 @@ def get_planner_factory(
         except TokenValidationError:
             token = ""
         return _default_planner_factory(token)
-    return _default_planner_factory(dev_token_bridge.get_token())
+    try:
+        token = dev_token_bridge.get_token()
+    except DevTokenError:
+        token = ""
+        _logger.warning(
+            "dev token bridge unavailable; tool calls for this request will "
+            "auth-fail against OpenEMR (answers will cite zero evidence) "
+            "unless the caller's own token is rejected first by the "
+            "flag-off token validator"
+        )
+    return _default_planner_factory(token)
 
 
 def _default_clock() -> datetime:

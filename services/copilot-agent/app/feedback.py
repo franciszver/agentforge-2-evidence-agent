@@ -35,9 +35,12 @@ bearer can attach feedback to any id. Blast radius is spam of a no-PHI signal
 (a thumb/comment span; no read path, no PHI), gated behind knowing an
 unguessable correlation id disclosed only to its own requester. Binding
 feedback to the originating identity belongs with real token introspection
-(see ``app.chat._default_token_validator``'s TODO), where "the authenticated
-caller" first becomes a meaningful principal to check ownership against;
-against the current accept-any-token stub such a check would be theatre.
+(``copilot_per_user_token_enabled`` on -- see ``app.chat.get_token_validator``),
+where "the authenticated caller" first becomes a meaningful principal to check
+ownership against; with that flag off (#168, VULN-0001: the fail-closed
+default rejects every token, or -- dev-only -- the
+``copilot_dev_accept_any_bearer_token`` stub accepts any) neither validator
+carries per-user identity, so such a check would still be theatre.
 
 No PHI: the comment is user-authored text about the response, not patient
 record data -- see ``app.trace_store`` module docstring, which already

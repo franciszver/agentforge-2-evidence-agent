@@ -30,6 +30,10 @@ docs {
   new conversation, or set to a prior turn's id to continue one (a
   mismatched `patient_id` on a resumed conversation returns 409).
 
-  Dev-stack auth is a stub that accepts any non-empty bearer token -- see
-  `app.chat._default_token_validator`.
+  Dev-stack auth: the local compose stack sets
+  `COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN=true` (#168), which restores the
+  dev-only stub that accepts any non-empty bearer token -- see
+  `app.chat._dev_permissive_token_validator` /
+  `app.config.Settings.copilot_dev_accept_any_bearer_token`. Without that
+  flag (the shipped default), every token is rejected with 401.
 }

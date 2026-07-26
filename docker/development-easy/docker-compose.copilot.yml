@@ -287,6 +287,18 @@ services:
       # capability out of the box, matching COPILOT_LLM_ENGINE's default-on
       # precedent above.
       COPILOT_EVIDENCE_RETRIEVAL_ENABLED: "true"
+      # #168 (VULN-0001): with COPILOT_PER_USER_TOKEN_ENABLED unset (this
+      # dev stack's default), /chat's own bearer check is fail-closed
+      # upstream -- every token rejected -- unless this is also set. This
+      # dev stack's port is internal-network-only (no host port published)
+      # and every real tool call is already driven by the DevTokenBridge's
+      # own demo-clinician token (copilot_dev_clinician_username/password,
+      # app/config.py), not by whatever bearer the caller sends here, so
+      # accepting any non-empty bearer on this ONE dev stack is an explicit,
+      # contained opt-in -- not a silent default. See app/config.py's
+      # copilot_dev_accept_any_bearer_token docstring: MUST NEVER be set
+      # true outside local development.
+      COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN: "true"
     networks:
       - copilot_internal
     depends_on:

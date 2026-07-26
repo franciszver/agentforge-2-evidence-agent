@@ -143,6 +143,29 @@ class Settings(BaseSettings):
     copilot_per_user_token_enabled: bool = False
     copilot_introspection_cache_ttl_seconds: float = 60.0
 
+    # #168 (VULN-0001, critical, Phase 3 red-team): with
+    # copilot_per_user_token_enabled OFF (the shipped default above),
+    # app.chat.get_token_validator used to always hand back a stub that
+    # accepts ANY non-empty bearer token -- a caller on the internal docker
+    # network with a garbage token got a normal 200 with patient data. The
+    # fixed default is fail-closed: flag-off now REJECTS every token unless
+    # this flag is also explicitly set.
+    #
+    # Setting this to True restores the OLD permissive behaviour (any
+    # non-empty token accepted, no introspection call) for the flag-off path
+    # only. It exists SOLELY so a local dev stack -- where the agent's port
+    # is never published and DevTokenBridge already drives every real tool
+    # call with its own demo-clinician token (see copilot_dev_* above) --
+    # can still exercise /chat with an arbitrary bearer header without
+    # standing up full per-user introspection.
+    #
+    # MUST NEVER be enabled outside local development. It does not gate any
+    # tool call's authorization (that is always DevTokenBridge's token when
+    # copilot_per_user_token_enabled is off) -- it only controls whether
+    # /chat's own bearer check is real or a no-op. Enabling it in any shared
+    # or internet-reachable environment reopens VULN-0001 exactly as filed.
+    copilot_dev_accept_any_bearer_token: bool = False
+
     # Base dir for ``app.ingestion.LocalIngestionStore`` (P3.1's disclosed
     # local-disk placeholder for OpenEMR document storage -- see that
     # module's docstring). ``app.documents``'s GET /documents/{source_id}

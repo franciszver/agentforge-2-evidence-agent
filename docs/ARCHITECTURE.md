@@ -301,11 +301,19 @@ flowchart LR
    by OpenEMR after session + CSRF authentication, carrying
    `{sub, username, pid, iat, exp}`. It is **not** an OpenEMR OAuth token —
    it identifies the user and binds the conversation's patient id, but it
-   cannot itself authorize an OpenEMR API call. In the **default** dev
-   configuration the agent's `TokenValidator` (`chat.py`) is a stub that only
-   checks the header is non-empty; the production validator — RFC 7662
+   cannot itself authorize an OpenEMR API call. As of #168 (VULN-0001,
+   critical, Phase 3 red-team) the shipped **default** — `TokenValidator`
+   (`chat.py`) with `copilot_per_user_token_enabled` off — is **fail-closed**:
+   every bearer token is rejected (a garbage token now gets a clean 401, not
+   a 200 with patient data). A dev-only stub that accepts any non-empty
+   token still exists, but it now requires explicitly setting
+   `copilot_dev_accept_any_bearer_token` (logged loudly on every use) — the
+   local dev stack's compose file sets it, since that stack's port is
+   internal-network-only and every real tool call is already driven by the
+   dev token bridge's own demo-clinician token regardless of what this
+   validator does (see boundary 3). The production validator — RFC 7662
    introspection of a real OpenEMR token against OpenEMR's own token state — is
-   now **built and proven live** (#124) and is selected when the per-user flow
+   **built and proven live** (#124) and is selected when the per-user flow
    (boundary 3) is enabled.
 3. **Agent ↔ OpenEMR API** — this is the boundary that most diverges from
    the original design, and the divergence is load-bearing to disclose. The
@@ -393,13 +401,16 @@ Stated plainly, in order of what would need to change:
    UX choice, and enabling the real per-user path is a documented, **one-line
    flag flip** the owner controls. Framed precisely: proven live, flag-gated,
    default off — not shipped-on-by-default.
-2. **Real token introspection at `/chat` — built.** In the default dev
-   configuration `TokenValidator` is a stub. The production validator — RFC
-   7662 introspection of the forwarded `authorization_code`-flow token against
-   OpenEMR's own token state (client_secret_post, fail-closed, short-TTL
-   hash-keyed cache) — is now built and exercised live; it is selected when the
-   per-user flow above is enabled, and it supersedes the earlier
-   `DevAgentToken`-validation plan (#127).
+2. **Real token introspection at `/chat` — built.** As of #168 (VULN-0001)
+   the shipped default `TokenValidator` is fail-closed, not a stub — every
+   token is rejected unless the explicit, dev-only
+   `copilot_dev_accept_any_bearer_token` opt-in is also set (see boundary 2
+   above). The production validator — RFC 7662 introspection of the forwarded
+   `authorization_code`-flow token against OpenEMR's own token state
+   (client_secret_post, fail-closed, short-TTL hash-keyed cache) — is now
+   built and exercised live; it is selected when the per-user flow above is
+   enabled, and it supersedes the earlier `DevAgentToken`-validation plan
+   (#127).
 3. **Patient-context binding upgrade.** The current binding (every
    conversation anchored to the `pid` the panel was opened on; the tool
    layer refuses any other patient id, logging the attempt) is
