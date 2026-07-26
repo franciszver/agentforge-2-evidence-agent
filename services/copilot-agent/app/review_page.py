@@ -48,10 +48,11 @@ was previously documented as "no PHI to disclose" -- that was false.**
 (the same reasoning #157 already applied to the promote-to-eval YAML,
 which never re-emits the raw comment). So instead of gating the route, this
 page never renders the raw comment: :func:`_entry_card` substitutes a fixed
-redaction placeholder (:data:`_REDACTED_COMMENT_PLACEHOLDER`) whenever a
-comment is on file, and the field itself flows no further than
-presence-checks (``app.review_queue._latest_feedback``'s dedup rule,
-``ReviewQueueEntry.feedback_comment is not None`` here). Everything else
+redaction placeholder (:data:`_REDACTED_COMMENT_PLACEHOLDER`) whenever
+``entry.feedback_comment`` is truthy, and the field itself flows no further
+than that truthiness check here and ``app.review_queue._latest_feedback``'s
+``is not None`` dedup rule (a deliberately different check -- see that
+function's docstring). Everything else
 this page shows -- correlation id, verdict, feedback thumb, counts -- is
 exactly the non-PHI column set ``app.trace_store`` documents as safe to
 persist (see its module docstring), so it is still rendered as before.

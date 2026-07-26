@@ -13,8 +13,10 @@ reference anywhere in the emitted HTML -- see
 **No PHI, aggregates only.** Every value rendered here comes from
 ``app.dashboard_metrics.DashboardMetrics`` -- counts, rates, durations,
 token counts. The feedback COMMENT text is deliberately never read or
-rendered by this module (individual traces + comments are the P4.9 review
-queue, a different page); see
+rendered by this module -- individual traces are shown on the P4.9 review
+queue, a different page, but the comment itself is not rendered there
+either (#176: it may contain PHI, so ``app.review_page`` redacts it too --
+no page in this project renders it); see
 ``tests/test_dashboard_page.py::test_dashboard_does_not_render_feedback_comment_text``.
 
 **Auth posture: open, matching ``GET /chat`` (P0.6).** Neither page carries

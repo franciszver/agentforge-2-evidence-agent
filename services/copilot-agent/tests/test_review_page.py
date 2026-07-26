@@ -126,6 +126,12 @@ def test_review_queue_unauthenticated_does_not_expose_feedback_comment(tmp_path:
     response = client.get("/review", headers={})
 
     assert response.status_code == 200
+    # Non-vacuous: prove the entry actually rendered (and its redaction
+    # placeholder took the comment's place) before trusting the negative
+    # assertions below -- otherwise an empty page or a dropped entry would
+    # make all three PHI checks pass for the wrong reason.
+    assert "corr-phi-1" in response.text
+    assert "redacted" in response.text
     assert "Jane Doe" not in response.text
     assert "44821" not in response.text
     assert "1962-03-04" not in response.text

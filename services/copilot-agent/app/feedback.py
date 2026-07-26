@@ -29,23 +29,37 @@ Auth: gated by the SAME bearer-token seam as ``POST /chat``
 to prevent anonymous feedback spam. Reuses the seam rather than
 reimplementing a second one.
 
-Ownership gap (LOW severity, deferred with real auth): this endpoint does not
+Ownership gap (MEDIUM severity -- re-derived by #176, was previously
+mis-scored LOW; still deferred with real auth): this endpoint does not
 verify the authenticated caller originated ``correlation_id`` -- any valid
-bearer can attach feedback to any id. Blast radius is spam of a no-PHI signal
-(a thumb/comment span; no read path, no PHI), gated behind knowing an
-unguessable correlation id disclosed only to its own requester. Binding
-feedback to the originating identity belongs with real token introspection
+bearer can attach feedback, including a free-text comment, to any id it can
+guess/observe. The comment field is NOT a no-PHI signal: it is
+clinician-typed free text that may incidentally contain PHI (see
+``app.trace_store`` module docstring, corrected by #176), and it IS read --
+by a human triaging a thumbs-down directly against the trace store, since
+no page renders it (#176 redacted it out of ``app.review_page``'s
+``/review``, the only UI that ever showed it). So the actual blast radius
+is: any valid bearer holding an unguessable correlation id can attach
+attacker-controlled free text -- forged as if it came from that trace's
+real clinician -- to someone else's trace, and have it read as genuine
+during triage. That is worse than "spam of a no-PHI signal with no read
+path," the premise this was previously scored against. Binding feedback to
+the originating identity still belongs with real token introspection
 (``copilot_per_user_token_enabled`` on -- see ``app.chat.get_token_validator``),
 where "the authenticated caller" first becomes a meaningful principal to check
 ownership against; with that flag off (#168, VULN-0001: the fail-closed
 default rejects every token, or -- dev-only -- the
 ``copilot_dev_accept_any_bearer_token`` stub accepts any) neither validator
-carries per-user identity, so such a check would still be theatre.
+carries per-user identity, so such a check would still be theatre today.
+Given the corrected severity, this gap should not simply wait for the flag
+flip without being tracked on its own -- see issue #176's follow-up.
 
-No PHI: the comment is user-authored text about the response, not patient
-record data -- see ``app.trace_store`` module docstring, which already
-documents this as an explicitly permitted verbatim-stored field. Bounded to
-``MAX_COMMENT_LENGTH`` so a request can't persist an unbounded blob.
+PHI note: the comment is user-authored text about the response, not a
+patient RECORD value pulled from a tool -- but it may incidentally contain
+PHI a clinician typed inline (see ``app.trace_store`` module docstring,
+which issue #176 corrected after finding it falsely claimed this field was
+non-PHI). It is bounded to ``MAX_COMMENT_LENGTH`` so a request can't persist
+an unbounded blob, and it is never rendered on any page (#176).
 """
 
 from __future__ import annotations
