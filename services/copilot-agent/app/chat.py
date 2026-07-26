@@ -15,7 +15,11 @@ OpenEMR token introspection is already built and used when
 ``copilot_per_user_token_enabled`` is on -- see
 ``build_introspection_validator``. A missing header or a validator
 rejection both produce a 401 before the planner is ever constructed or
-invoked.
+invoked -- enforced structurally since #177 by ``get_planner_factory``
+depending on ``get_authenticated_token`` (see both docstrings): before #177,
+``get_planner_factory`` read the raw header itself and FastAPI resolved it
+independently of the endpoint body's own check, so the flag-off dev-token
+bridge fetch still ran for every unauthenticated request.
 
 Multi-turn state: an in-memory ``ConversationStore`` keyed by
 ``conversation_id``, binding each conversation to the ``patient_id`` it was
@@ -384,6 +388,64 @@ def get_token_validator() -> TokenValidator:
     return _fail_closed_token_validator
 
 
+async def get_authenticated_token(
+    authorization: str | None = Header(default=None),
+    validator: TokenValidator = Depends(get_token_validator),
+) -> str:
+    """FastAPI dependency: extract + validate the bearer token, raising the
+    401 mapping directly.
+
+    #177: this used to be inline code in ``chat_endpoint``'s body, which runs
+    strictly AFTER every ``Depends(...)`` parameter in the signature resolves
+    -- including ``get_planner_factory``, whose flag-off branch calls
+    ``dev_token_bridge.get_token()`` (an outbound OAuth password-grant against
+    OpenEMR). That let an unauthenticated caller (no header at all) trigger a
+    real, blocking outbound fetch on every request: FLAG-OFF, that meant
+    unauthenticated threadpool starvation, repeated failed password-grants
+    against the demo clinician account, and a timing oracle (~2s with a live
+    bridge attempt vs ~0.1s without) disclosing whether the dev-token bridge
+    is provisioned. (Flag-ON, an unauthenticated flood could already occupy a
+    threadpool worker per request via a cache-miss introspection call -- see
+    ``_validate_token`` -- because an attacker picks a fresh, never-cached
+    token each request, guaranteeing the ``peek_cached`` miss branch and a
+    real, timeout-bounded (``openemr_api_timeout_seconds``) introspection
+    round trip. This fix does not introduce that exposure and is not a
+    regression -- pre-#177, flag-on burned TWO worker slots per unauthenticated
+    request (one for introspection, one for the bridge); this fix removes the
+    SECOND slot and removes the bridge fetch and its timing oracle entirely on
+    both branches. The remaining flag-on introspection-triggered threadpool
+    exposure is a pre-existing, separate concern -- pre-introspection rate
+    limiting or negative caching there is intentionally NOT attempted by this
+    fix and is tracked separately (#188).)
+
+    Pulling the check into its own dependency and making ``get_planner_factory``
+    depend on IT (see that function) fixes the ordering structurally: FastAPI
+    resolves a dependency's own sub-dependencies before calling its body, so
+    ``get_planner_factory``'s body -- and therefore the bridge -- is now
+    reached only once this dependency has already returned a validated token.
+    A request whose token fails validation never touches the bridge at all --
+    EXCEPT under the dev-only ``copilot_dev_accept_any_bearer_token`` flag,
+    where "validation" is the permissive stub (any non-empty bearer passes),
+    so bridge access is effectively unauthenticated in that one configuration
+    too; see ``_dev_permissive_token_validator``.
+
+    Cached per-request by FastAPI's default ``Depends`` behaviour, so
+    ``chat_endpoint`` and ``get_planner_factory`` both depending on this
+    function costs exactly one validation, not two.
+
+    Raises ``HTTPException(401)`` on any ``TokenValidationError`` -- callers
+    cannot distinguish "no per-user auth configured" from "bad token" from
+    "missing header" by response shape, same invariant ``_fail_closed_token_
+    validator`` (#168) documents.
+    """
+    try:
+        token = extract_bearer_token(authorization)
+        await _validate_token(validator, token)
+    except TokenValidationError as exc:
+        raise HTTPException(status_code=401, detail="invalid or missing token") from exc
+    return token
+
+
 LaunchBindingChecker = Callable[[str, int], None]
 
 
@@ -503,84 +565,69 @@ def _default_planner_factory(token: str) -> PlannerFactory:
 
 
 def get_planner_factory(
-    authorization: str | None = Header(default=None),
+    token: str = Depends(get_authenticated_token),
     dev_token_bridge: DevTokenBridge = Depends(get_dev_token_bridge),
 ) -> PlannerFactory:
     """FastAPI dependency: builds a ``PlannerProtocol`` for a patient_id. Override in tests.
 
+    #177: depends on ``get_authenticated_token`` (not the raw ``Authorization``
+    header) precisely so this dependency's body -- and, on the flag-off
+    branch, the ``DevTokenBridge`` fetch below -- is unreachable until the
+    caller's bearer token has already been extracted AND validated. FastAPI
+    resolves a dependency's own sub-dependencies before calling its body, so
+    a request whose token fails ``get_authenticated_token`` never gets here
+    at all; it 401s there instead. (Under the dev-only
+    ``copilot_dev_accept_any_bearer_token`` flag, "fails" means "empty" only
+    -- any non-empty bearer passes as "authenticated" and does reach the
+    bridge; see ``get_authenticated_token``'s docstring.) Before this fix, this dependency read the
+    header directly and FastAPI resolved it independently of (and, in
+    practice, before) the endpoint body's own token check -- so an
+    unauthenticated caller (no header, or a garbage one) still triggered the
+    flag-off branch's outbound OAuth password-grant against OpenEMR on every
+    request: unauthenticated threadpool starvation (the fetch runs in
+    FastAPI's bounded, app-wide sync-dependency threadpool), repeated failed
+    password-grants against the demo clinician account, and a timing oracle
+    disclosing whether the bridge is provisioned (see #177 for measurements).
+
     Flag ON (``copilot_per_user_token_enabled``, #124 Phase 4): the planner is
-    bound to the REQUEST's own forwarded bearer, so OpenEMR maps every tool call
-    to that user -> per-user ACL. This dependency resolves BEFORE the endpoint
-    body validates the token, so a missing/malformed header must NOT raise here
-    (that would surface as a 500); it binds an empty token and the body's
-    validator then rejects with 401 -- the planner is only ever *run* after
-    validation passes, so an unvalidated token never reaches a tool call.
+    bound to the REQUEST's own forwarded bearer -- already extracted and
+    validated by ``get_authenticated_token`` -- so OpenEMR maps every tool
+    call to that user -> per-user ACL.
 
-    Flag OFF: byte-identical to today -- the ``DevTokenBridge``'s demo-clinician
-    token drives tool calls. The bridge's (potentially blocking, on a cache
-    miss) token fetch happens here, in a sync dependency FastAPI runs in its
-    worker-thread pool -- not in the ``async`` ``chat_endpoint`` body, so a
-    token refresh never blocks the event loop.
+    Flag OFF: byte-identical to before -- the ``DevTokenBridge``'s
+    demo-clinician token drives tool calls, fetched only now that the caller's
+    OWN token has already passed validation. The bridge's (potentially
+    blocking, on a cache miss) token fetch happens here, in a sync dependency
+    FastAPI runs in its worker-thread pool -- not in the ``async``
+    ``chat_endpoint`` body, so a token refresh never blocks the event loop.
 
-    #168 Gate 3 (Opus) finding: an unprovisioned bridge (missing/invalid dev
-    client creds -- any deployment that isn't the local dev stack, now that
-    the flag-off default is fail-closed) used to let ``dev_token_bridge
-    .get_token()`` raise ``DevTokenError`` straight out of THIS dependency,
-    which FastAPI resolves before the endpoint body's token check ever runs
-    -- surfacing as an uncaught 500, not the 401 the body's
-    ``_fail_closed_token_validator`` promises. Beyond the wrong status code,
-    that 500-vs-401 split is itself a fingerprinting oracle (tells an
-    unauthenticated caller whether the bridge is provisioned). Caught here
-    and bound to an empty token instead, mirroring the flag-ON branch's own
-    ``TokenValidationError`` handling immediately above: the planner factory
-    still gets built (this dependency must never raise for an auth problem,
-    same reasoning as the flag-ON branch's docstring), and the empty token is
-    inert until a tool call would use it in the common case, because the
-    body's validator normally rejects with 401 first and the planner is only
-    ever *run* after validation passes.
+    An unprovisioned bridge (missing/invalid dev client creds -- any
+    deployment that isn't the local dev stack) still raises ``DevTokenError``,
+    caught here and bound to an empty token: the planner factory still gets
+    built (this dependency must never raise for an auth problem the caller's
+    OWN token already cleared), and the empty token is inert until a tool call
+    would use it -- every such call then auth-fails against OpenEMR and is
+    caught as ``OpenEmrApiError`` in the planner loop, so the agent answers
+    with zero patient evidence instead of crashing the conversation. The
+    ``_logger.warning`` below exists so that failure mode is never silent.
 
-    NOT eliminated by this dependency, both flagged in #168 Gate 3 re-review
-    and deliberately left for a dedicated follow-up (moving the token check
-    ahead of this dependency needs its own red-first test and gates, not a
-    same-PR structural change):
-
-    * The ``dev_token_bridge.get_token()`` fetch attempt above still runs,
-      unauthenticated, pre-auth-check, on every flag-off request regardless
-      of whether the caller's token will pass or fail the body's validator
-      -- catching ``DevTokenError`` here stops it crashing the request, it
-      does NOT stop the attempt itself. With valid creds and OpenEMR
-      unreachable, each such request still costs a full outbound OAuth
-      password-grant attempt (bounded by ``openemr_api_timeout_seconds``,
-      currently 10.0s default, with no backoff or negative caching),
-      occupying a bounded, app-wide Starlette threadpool worker --
-      unauthenticated threadpool-starvation exposure against ``/chat``, and
-      repeated failed password-grants against the demo clinician account.
-    * On the ONE configuration where ``copilot_dev_accept_any_bearer_token``
-      is also true (the local dev stack's own setting) and the bridge is
-      ALSO unprovisioned, the caller's token is not rejected by the body's
-      validator -- the request proceeds with the empty token bound above,
-      every tool call auth-fails, and each failure is swallowed as an
-      ``OpenEmrApiError`` inside the planner loop, so the agent answers with
-      zero patient evidence instead of failing loudly. The ``_logger.warning``
-      immediately below exists so that failure mode is never silent.
+    Because the fetch now only ever runs for an ALREADY-authenticated caller,
+    an unprovisioned or unreachable bridge can still be amplified by a
+    legitimate authenticated caller's request volume (no negative caching or
+    backoff on the bridge itself) -- judged out of scope for this fix; see
+    #177's PR discussion for the reasoning.
     """
     if get_settings().copilot_per_user_token_enabled:
-        try:
-            token = extract_bearer_token(authorization)
-        except TokenValidationError:
-            token = ""
         return _default_planner_factory(token)
     try:
-        token = dev_token_bridge.get_token()
+        bridge_token = dev_token_bridge.get_token()
     except DevTokenError:
-        token = ""
+        bridge_token = ""
         _logger.warning(
             "dev token bridge unavailable; tool calls for this request will "
-            "auth-fail against OpenEMR (answers will cite zero evidence) "
-            "unless the caller's own token is rejected first by the "
-            "flag-off token validator"
+            "auth-fail against OpenEMR (answers will cite zero evidence)"
         )
-    return _default_planner_factory(token)
+    return _default_planner_factory(bridge_token)
 
 
 def _default_clock() -> datetime:
@@ -1902,10 +1949,27 @@ def extract_bearer_token(authorization: str | None) -> str:
     return authorization[len(prefix) :]
 
 
+# #177: the pre-auth guard below is STRUCTURAL, not positional. It works
+# because ``get_planner_factory`` (imported above) itself takes
+# ``token: str = Depends(get_authenticated_token)`` as a SUB-dependency --
+# FastAPI resolves a dependency's own sub-dependencies before calling its
+# body, so ``get_planner_factory``'s body (and the dev-token bridge fetch
+# inside it) is unreachable until validation succeeds, regardless of where
+# ``planner_factory`` is listed in THIS signature. The other dependencies
+# below are auth-safe only in the sense that none of them do outbound I/O at
+# resolution time -- they are NOT protected by signature order the way
+# ``planner_factory`` is by the sub-dependency link. If ``get_planner_factory``
+# is ever "simplified" back to reading the ``Authorization`` header directly
+# (undoing the sub-dependency), or a future dependency added here does
+# outbound I/O without depending on ``get_authenticated_token`` itself, #177
+# reopens silently -- FastAPI will not complain, and only an endpoint-level
+# test that resolves the real dependency graph (like
+# ``test_chat_endpoint.py::test_unauthenticated_chat_never_touches_dev_token_bridge_transport``)
+# will catch it. Do not "fix" this by reordering parameters here -- signature
+# order on ``chat_endpoint`` itself has never been what makes this safe.
 async def chat_endpoint(
     request: ChatRequest,
-    authorization: str | None = Header(default=None),
-    validator: TokenValidator = Depends(get_token_validator),
+    token: str = Depends(get_authenticated_token),
     launch_binding_checker: LaunchBindingChecker = Depends(get_launch_binding_checker),
     planner_factory: PlannerFactory = Depends(get_planner_factory),
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
@@ -1919,11 +1983,12 @@ async def chat_endpoint(
     require_answer_grounding: bool = Depends(get_require_answer_grounding),
     require_tool_call_scoping: bool = Depends(get_require_tool_call_scoping),
 ) -> StreamingResponse:
-    try:
-        token = extract_bearer_token(authorization)
-        await _validate_token(validator, token)
-    except TokenValidationError as exc:
-        raise HTTPException(status_code=401, detail="invalid or missing token") from exc
+    # #177: token extraction + validation now happens in the
+    # ``get_authenticated_token`` dependency itself (see its docstring), so
+    # ``planner_factory`` above -- which depends on it -- is only ever
+    # resolved for a caller whose token already passed. No try/except here
+    # any more: a validation failure raises HTTPException(401) inside the
+    # dependency and this body never runs.
 
     # #124 Phase 5: the token's SMART launch patient (when present) is the
     # authoritative binding -- reject a mismatch here, BEFORE the planner (and

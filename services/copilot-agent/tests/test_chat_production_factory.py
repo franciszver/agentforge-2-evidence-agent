@@ -34,6 +34,10 @@ class _StubBridge:
 def test_get_planner_factory_uses_the_bridge_token_for_tool_calls():
     bridge = _StubBridge("real-openemr-token")
 
+    # #177: ``get_planner_factory`` now takes ``token`` (the already-validated
+    # caller bearer) instead of the raw header, but the flag-off branch this
+    # test exercises never reads it -- so it is left at its default here,
+    # exactly as ``authorization`` was left unset before #177.
     factory = get_planner_factory(dev_token_bridge=bridge)
     planner = factory(1)
 
