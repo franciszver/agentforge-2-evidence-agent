@@ -13,6 +13,17 @@ import secrets
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+# Issue #167 (VULN-0004): default caps for app.chat.ConversationStore's two
+# eviction dimensions (conversation count, turns retained per conversation).
+# Single-sourced here -- not duplicated as a literal in app/chat.py -- so the
+# Settings field default below and ConversationStore's own constructor
+# default (used by every bare ``ConversationStore()`` call outside the
+# FastAPI dependency, e.g. every hermetic test in this repo) can't drift
+# apart. See the two ``copilot_max_*`` fields below for the value
+# justifications.
+DEFAULT_MAX_STORED_CONVERSATIONS = 2000
+DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
+
 
 class Settings(BaseSettings):
     """Runtime configuration for the copilot-agent service."""
@@ -198,6 +209,40 @@ class Settings(BaseSettings):
     # logging (P3.8, non-PHI counts/timings only) is always-on regardless of
     # this flag -- see app/chat.py's _log_encounter_record.
     copilot_evidence_retrieval_enabled: bool = False
+
+    # Issue #167 (VULN-0004): caps how many conversations
+    # app.chat.ConversationStore retains at once -- an unbounded in-memory
+    # dict growing for the process lifetime is unbounded attacker-influenced
+    # memory growth (any caller can start a new conversation). The store
+    # evicts least-recently-used conversations once this cap is exceeded.
+    # 2000 is generous headroom for a single-appliance deployment (this
+    # service is not internet-facing -- port 8000 is internal-network only,
+    # see the issue's "Reachability" section). Operator-tunable so a larger
+    # or smaller deployment can adjust it.
+    copilot_max_stored_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS
+
+    # Issue #167 (VULN-0004), Gate 2 finding: the conversation-count cap
+    # above does NOT bound a single conversation's own growth -- an attacker
+    # who reuses ONE conversation_id and calls /chat repeatedly could grow
+    # that one conversation's turn history forever, staying permanently
+    # most-recently-used and so never becoming an eviction candidate. This
+    # caps turns retained PER conversation; app.chat.ConversationStore.
+    # append_turn drops the oldest turn once the cap is exceeded. Verified
+    # safe to drop silently (not just truncate-with-warning): ``.history`` is
+    # read in exactly one place in the whole service
+    # (``app.chat._stream_chat``'s ``bool(conversation.history)`` -- a
+    # "does this conversation have any prior turns at all" signal for
+    # ``app.extraction.clarify_unresolvable_referent``) and is NEVER fed to
+    # the planner as conversation context; dropping old turns cannot change
+    # any answer, only shrink the retained (audit-record-shaped, P2.17) turn
+    # list. 50 is generous for any realistic single clinical Q&A session (a
+    # session with 50+ distinct chat turns would be unusual). NOTE: this
+    # bounds the TURN LIST specifically -- it does NOT, by itself, bound a
+    # Conversation's total memory to a small fixed multiple of one turn's
+    # size; ``Conversation.patient_roster`` is a separate, still-unbounded
+    # field on the same object (tracked separately as issue #174 -- see that
+    # issue for the analysis, not restated here).
+    copilot_max_turns_per_conversation: int = DEFAULT_MAX_TURNS_PER_CONVERSATION
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose

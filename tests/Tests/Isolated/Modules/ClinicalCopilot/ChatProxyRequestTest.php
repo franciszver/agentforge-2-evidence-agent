@@ -111,6 +111,40 @@ class ChatProxyRequestTest extends TestCase
         $fromArray(['message' => str_repeat('a', 4001), 'token' => 'dev-token']);
     }
 
+    /**
+     * Issue #167 Gate 3 re-review finding: the ASCII-only overlong-message
+     * test above passes identically whether the length check is byte-based
+     * (strlen) or character-based (mb_strlen) -- it gives zero coverage for
+     * the strlen -> mb_strlen fix (ChatProxyRequest::parseMessage), so
+     * reverting that fix would leave this suite green. A multi-byte
+     * (3-byte-per-character UTF-8) message pins the actual unit: exactly
+     * 4000 CHARACTERS (12,000 BYTES) must be ACCEPTED -- a byte-based
+     * strlen() check would wrongly reject this at 4000 bytes (barely 1333
+     * characters in), well under the documented 4000-character limit.
+     */
+    #[Test]
+    public function testMultiByteMessageAtExactly4000CharactersIsAccepted(): void
+    {
+        $fromArray = [self::CLASS_NAME, 'fromArray'];
+        $message = str_repeat('病', 4000);
+        $this->assertSame(12000, strlen($message), 'sanity: each 病 char is 3 UTF-8 bytes');
+        $this->assertSame(4000, mb_strlen($message, 'UTF-8'));
+
+        $request = $fromArray(['message' => $message, 'token' => 'dev-token']);
+
+        $this->assertSame($message, $request->message);
+    }
+
+    /** Mirrors the boundary shape of the Python ChatRequest tests: one
+     * character over the limit is rejected, multi-byte or not. */
+    #[Test]
+    public function testMultiByteMessageAt4001CharactersIsRejected(): void
+    {
+        $this->expectException(self::EXCEPTION_CLASS_NAME);
+        $fromArray = [self::CLASS_NAME, 'fromArray'];
+        $fromArray(['message' => str_repeat('病', 4001), 'token' => 'dev-token']);
+    }
+
     #[Test]
     public function testMissingTokenIsRejected(): void
     {

@@ -71,8 +71,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -82,9 +84,14 @@ from typing import Protocol
 from fastapi import Depends, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.config import Settings, get_settings
+from app.config import (
+    DEFAULT_MAX_STORED_CONVERSATIONS,
+    DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    Settings,
+    get_settings,
+)
 from app.correlation import get_correlation_id, get_span_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import (
@@ -131,12 +138,46 @@ class ChatEvent(StrEnum):
     DONE = "done"
 
 
+# DoS guard (issue #167, VULN-0004): the largest ``message`` POST /chat will
+# accept before rejecting the request with a 422, mirroring the precedent
+# app.feedback.MAX_COMMENT_LENGTH already sets for FeedbackRequest.comment.
+# 4000 characters (~1,000 tokens at ~4 chars/token) comfortably covers any
+# legitimate clinical question -- including a long, detailed one -- while
+# leaving the bulk of the target model's 16k-token context window for the
+# planner/system prompt, retrieved evidence chunks, prior conversation
+# turns, and the answer itself. This bound applies unconditionally to the
+# WHOLE request message. It is a SEPARATE, WIDER bound than
+# app.retrieval.MAX_QUERY_CHARS (2000): that one only applies to the derived
+# retrieval query, and only when copilot_evidence_retrieval_enabled is true;
+# this one applies to every /chat request regardless of that flag.
+# Rejecting outright (422) is deliberate, not truncating: a silently
+# truncated question could change clinical meaning without the caller
+# knowing.
+MAX_CHAT_MESSAGE_LENGTH = 4000
+
+# Issue #167 Gate 3 MINOR finding: ``conversation_id`` round-trips a value
+# THIS service itself minted (``str(uuid.uuid4())`` in
+# ``ConversationStore.create``, always exactly 36 chars), so a well-behaved
+# caller never sends anything longer -- but nothing stopped an attacker from
+# sending an arbitrarily long string here either, ahead of the dict lookup
+# it's used for. 64 is generous headroom over the 36-char UUID form (room
+# for a future id scheme change without another bump) while still rejecting
+# unbounded input outright.
+MAX_CONVERSATION_ID_LENGTH = 64
+
+
 class ChatRequest(BaseModel):
     """``POST /chat`` request body."""
 
-    message: str
+    # min_length=1 (Gate 3 MINOR finding): an empty message still reached
+    # the planner and burned a full LLM call/tool-dispatch cycle for
+    # nothing -- the PHP chat-panel proxy (ChatProxyRequest::parseMessage)
+    # already rejects a blank message before it ever reaches this service,
+    # so accepting one here was only reachable by a caller bypassing that
+    # proxy, and had no legitimate use either way.
+    message: str = Field(min_length=1, max_length=MAX_CHAT_MESSAGE_LENGTH)
     patient_id: int
-    conversation_id: str | None = None
+    conversation_id: str | None = Field(default=None, max_length=MAX_CONVERSATION_ID_LENGTH)
 
 
 class TokenValidationError(Exception):
@@ -568,34 +609,144 @@ class Conversation:
 
 
 class ConversationStore:
-    """In-memory conversation store keyed by ``conversation_id``.
+    """In-memory, LRU-bounded conversation store keyed by ``conversation_id``.
+
+    Issue #167 (VULN-0004): an earlier version of this store had no
+    eviction, so it retained every conversation for the process lifetime --
+    unbounded, attacker-influenced memory growth (any caller can start a new
+    conversation). ``max_conversations`` bounds THAT axis: once the cap is
+    exceeded, the least-recently-used conversation is evicted. "Used" means
+    read via ``get`` or re-registered via ``append_turn`` -- see
+    ``append_turn``'s docstring for why a conversation CAN still be evicted
+    out from under a caller mid-request, and how that is recovered rather
+    than crashing or silently losing the turn.
+
+    A SEPARATE axis (Gate 2 finding on #167): the conversation-count cap
+    alone does not stop a single conversation from growing forever -- an
+    attacker who reuses ONE ``conversation_id`` and keeps calling ``/chat``
+    stays permanently most-recently-used and so is never an eviction
+    candidate under the axis above. ``max_turns_per_conversation`` bounds
+    THIS axis: ``append_turn`` drops the oldest turn once a conversation's
+    own history exceeds the cap. Safe to drop silently (see
+    ``Settings.copilot_max_turns_per_conversation``'s docstring for how this
+    was verified): ``.history`` is read in exactly one place in the service,
+    as a boolean "any prior turns?" signal, never as planner context.
+
+    A caller resuming with an evicted ``conversation_id`` gets ``get() ->
+    None`` -- the endpoint already maps that to a clean 404 (unknown
+    conversation_id), not a crash; see ``chat_endpoint``.
+
+    Thread safety: this is a shared, mutable, process-wide singleton
+    (``_default_store``) served from FastAPI's worker threadpool (``/chat``'s
+    ``_stream_chat`` body runs synchronously off the event loop), so every
+    mutating operation below holds ``self._lock``. Critical sections are
+    kept minimal (dict/list operations only, no I/O) -- this closes the
+    whole class of interleaved-mutation races (e.g. two concurrent
+    ``append_turn`` calls on the same conversation both reading
+    ``len(history)`` before either trims, transiently exceeding the cap),
+    not just the specific ones identified during review.
 
     TODO(P4.2): replace with the durable trace store; this is a placeholder
     with the same shape (get / create / append) a DB-backed store would have.
     """
 
-    def __init__(self) -> None:
-        self._conversations: dict[str, Conversation] = {}
+    def __init__(
+        self,
+        max_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS,
+        max_turns_per_conversation: int = DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    ) -> None:
+        if max_conversations <= 0:
+            raise ValueError("max_conversations must be positive")
+        if max_turns_per_conversation <= 0:
+            raise ValueError("max_turns_per_conversation must be positive")
+        self._max_conversations = max_conversations
+        self._max_turns_per_conversation = max_turns_per_conversation
+        self._conversations: OrderedDict[str, Conversation] = OrderedDict()
+        self._lock = threading.Lock()
 
     def get(self, conversation_id: str) -> Conversation | None:
-        return self._conversations.get(conversation_id)
+        with self._lock:
+            conversation = self._conversations.get(conversation_id)
+            if conversation is not None:
+                self._conversations.move_to_end(conversation_id)
+            return conversation
 
     def create(self, patient_id: int, patient_name: str | None = None) -> Conversation:
         conversation = Conversation(
             conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
         )
-        self._conversations[conversation.conversation_id] = conversation
+        with self._lock:
+            # No move_to_end here: OrderedDict already inserts a NEW key at
+            # the most-recently-used (right/end) position -- calling
+            # move_to_end immediately after would be a verified no-op.
+            self._conversations[conversation.conversation_id] = conversation
+            while len(self._conversations) > self._max_conversations:
+                self._conversations.popitem(last=False)
         return conversation
 
-    def append_turn(self, conversation_id: str, turn: Turn) -> None:
-        self._conversations[conversation_id].history.append(turn)
+    def append_turn(self, conversation: Conversation, turn: Turn) -> None:
+        """Append ``turn`` to ``conversation.history`` and re-register the
+        conversation as most-recently-used.
+
+        Takes the live ``Conversation`` object (not a ``conversation_id``
+        lookup) deliberately: ``chat_endpoint`` calls ``create``/``get`` on
+        the event loop, then does several seconds of planner + verification
+        work in a worker thread before ever calling this -- during which
+        every OTHER concurrent request's cheap ``create()`` call is a
+        chance to evict this conversation as the LRU tail (nothing touches
+        it in between). An earlier version of this method looked the
+        conversation up by id and either raised ``KeyError`` (if evicted) or
+        silently dropped the turn -- either way losing the Turn, which its
+        own docstring calls the P2.17 chart-access audit record for a chart
+        access that DID happen. Re-inserting the caller's own object instead
+        recovers from that eviction: the turn (and the whole conversation)
+        is retained, at the cost of counting again against the
+        conversation-count cap on the way back in.
+        """
+        with self._lock:
+            conversation.history.append(turn)
+            if len(conversation.history) > self._max_turns_per_conversation:
+                del conversation.history[: len(conversation.history) - self._max_turns_per_conversation]
+            self._conversations[conversation.conversation_id] = conversation
+            self._conversations.move_to_end(conversation.conversation_id)
+            while len(self._conversations) > self._max_conversations:
+                self._conversations.popitem(last=False)
 
 
-_default_store = ConversationStore()
+_default_store: ConversationStore | None = None
 
 
-def get_conversation_store() -> ConversationStore:
-    """FastAPI dependency: the active ``ConversationStore``. Override in tests."""
+def get_conversation_store(settings: Settings = Depends(get_settings)) -> ConversationStore:
+    """FastAPI dependency: the active ``ConversationStore``. Override in tests.
+
+    Built lazily against ``Settings.copilot_max_stored_conversations`` /
+    ``Settings.copilot_max_turns_per_conversation``. Deliberately a
+    DIFFERENT shape than ``get_trace_store`` below, which calls
+    ``get_settings()`` in its own body rather than taking ``settings`` as an
+    injected ``Depends`` parameter: that was the simpler option available
+    when this function was written, but injecting ``Settings`` via
+    ``Depends`` here is the better pattern -- it makes the settings
+    dependency visible in this function's signature (FastAPI's dependency
+    graph, not a hidden in-body call), and lets a test override
+    ``get_settings`` without needing to know this function reads it. Kept as
+    a lazily-built singleton (not rebuilt every request) so the store's
+    state persists across requests, matching ``get_trace_store``'s caching.
+
+    CAPS ARE FROZEN AT FIRST USE: ``get_settings()`` returns a fresh
+    ``Settings`` on every call (env vars are re-read each time), but this
+    function only reads it ONCE -- the first request to ever resolve this
+    dependency -- and bakes the two caps into ``_default_store`` for the
+    rest of the process's life. Changing
+    ``COPILOT_MAX_STORED_CONVERSATIONS``/``COPILOT_MAX_TURNS_PER_CONVERSATION``
+    in the environment after the process has started (and served at least
+    one ``/chat`` request) has no effect until restart.
+    """
+    global _default_store
+    if _default_store is None:
+        _default_store = ConversationStore(
+            max_conversations=settings.copilot_max_stored_conversations,
+            max_turns_per_conversation=settings.copilot_max_turns_per_conversation,
+        )
     return _default_store
 
 
@@ -1386,7 +1537,7 @@ def _stream_chat(
         )
 
         store.append_turn(
-            conversation.conversation_id,
+            conversation,
             Turn(
                 correlation_id=correlation_id,
                 user=user,

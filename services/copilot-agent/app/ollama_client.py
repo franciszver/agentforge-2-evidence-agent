@@ -55,6 +55,73 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 _CHAT_PATH = "/api/chat"
 _EMBEDDINGS_PATH = "/api/embeddings"
 
+# Hard generation cap for chat()/chat_stream() -- engine parity (issue #167
+# Gate 3 MAJOR finding). app.llama_server_client hard-caps max_tokens on
+# EVERY request it sends (its module docstring's "max_tokens is capped on
+# EVERY request" note); this class had no equivalent, so on the
+# ``ollama`` engine (``settings.copilot_llm_engine == "ollama"``) chat
+# generation ran until the model's own context window filled, and
+# app.chat.Turn.answer (the P2.17 audit record, and part of #167's
+# ConversationStore memory-bound fix) had no application-level bound on
+# that engine. The production default engine is llama_server (see
+# app.chat.get_text_llm_client), where this constant already applies via
+# LlamaServerClient's own ``_CHAT_MAX_TOKENS`` (now sourced from here, so
+# the two engines can't drift on the value) -- so setting this here is a
+# NO-OP for the shipped default; it only changes behavior for the
+# ``ollama`` engine option.
+#
+# Deliberately NOT applied as a default to extract(): unlike chat/
+# chat_stream, its constrained-JSON output can legitimately need more
+# tokens when it echoes retrieved guideline/fact text verbatim (see
+# app.llama_server_client's ``_EXTRACT_MAX_TOKENS`` docstring for the same
+# reasoning on that engine) -- capping it at the same 1536 here could turn
+# real corpus retrieval results into truncated-JSON extraction failures
+# that do not exist today. A caller may still pass ``options={"num_predict":
+# ...}`` to extract() explicitly if a bound is wanted there.
+#
+# CEILING, not a default (Gate 3 follow-up): unlike ``temperature`` (a
+# behavioural knob a caller is free to override in either direction), this
+# is a retention bound protecting process memory -- see the module-level
+# rationale above. A caller MAY still ask for FEWER tokens (a smaller, but
+# still valid, ``options["num_predict"]`` is honoured as-is), but may never
+# ask for more. ``_clamped_chat_options`` accepts a caller value ONLY if it
+# is a plain ``int`` in ``[1, CHAT_MAX_TOKENS]``; anything else -- too big,
+# non-int, or missing -- falls back to ``CHAT_MAX_TOKENS`` outright (NOT a
+# plain ``min(caller_value, CHAT_MAX_TOKENS)``, and NOT clamped to the
+# nearest boundary). This matters because Ollama's ``num_predict`` API
+# treats certain values as "unlimited" sentinels rather than literal token
+# counts: ``-1`` means generate until the model stops on its own (no cap at
+# all), ``-2`` means fill the remaining context window. Both are
+# numerically SMALLER than ``CHAT_MAX_TOKENS``, so a plain ``min()`` would
+# pass them straight through -- the two idiomatic ways to ask for "as many
+# as possible" would silently defeat the exact guard this exists to
+# enforce. ``0`` (no generation) and any non-int value are equally
+# out-of-range and also fall back to the cap rather than erroring or being
+# clamped to ``1``.
+CHAT_MAX_TOKENS = 1536
+
+
+def _clamped_chat_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge ``options`` with a ``num_predict`` ceiling of ``CHAT_MAX_TOKENS``.
+
+    Used by ``chat``/``chat_stream`` only -- see ``CHAT_MAX_TOKENS``'s
+    docstring for why an out-of-range caller value (including Ollama's
+    negative "unlimited" sentinels, ``0``, or a non-int) falls all the way
+    back to ``CHAT_MAX_TOKENS`` rather than being merely defaulted (the way
+    ``temperature`` is merged in ``_build_body``) or clamped to the nearest
+    boundary via a plain ``min()``/``max()``.
+    """
+    merged_options: dict[str, Any] = dict(options) if options else {}
+    caller_num_predict = merged_options.get("num_predict")
+    valid = (
+        isinstance(caller_num_predict, int)
+        and not isinstance(caller_num_predict, bool)
+        and 1 <= caller_num_predict <= CHAT_MAX_TOKENS
+    )
+    merged_options["num_predict"] = caller_num_predict if valid else CHAT_MAX_TOKENS
+    return merged_options
+
+
 # Matches everything up to and including the first "</think>" marker (and any
 # whitespace right after it), whether or not a matching "<think>" opening tag
 # is present. See the module docstring's "Live-verified quirk" note.
@@ -168,7 +235,8 @@ class OllamaClient:
         ``LlmCallStats`` entry to ``call_stats`` regardless of outcome.
         """
         _logger.info("ollama chat call", extra={"model": self._model})
-        body = self._build_body(messages, stream=True, options=options)
+        merged_options = _clamped_chat_options(options)
+        body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:
             response = self._post(_CHAT_PATH, body)
@@ -230,7 +298,8 @@ class OllamaClient:
         (additive only).
         """
         _logger.info("ollama chat stream call", extra={"model": self._model})
-        body = self._build_body(messages, stream=True, options=options)
+        merged_options = _clamped_chat_options(options)
+        body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:
             response = self._post(_CHAT_PATH, body)
