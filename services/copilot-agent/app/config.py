@@ -33,6 +33,34 @@ DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
 # justification.
 DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 
+# Issue #173: default cap for app.body_size_limit.BodySizeLimitMiddleware --
+# the OUTERMOST-registered ASGI middleware (see app/main.py's
+# create_app -- Starlette applies add_middleware in REVERSE order of
+# registration, so this one is added LAST), rejecting a request body before
+# it is ever buffered/JSON-parsed. This is a DIFFERENT bound than
+# app.chat.MAX_CHAT_MESSAGE_LENGTH (#167, 4000 chars) and
+# app.feedback.MAX_COMMENT_LENGTH (2000 chars): those are pydantic field
+# bounds that only fire AFTER the whole body has already been read off the
+# wire and JSON-parsed -- this one fires BEFORE any of that, both from the
+# pre-parse ``Content-Length`` header (when present and truthful) and from a
+# running count of actual bytes received (when the header lies or is
+# absent), so it also covers app.feedback's request body, and any future
+# POST route, not just /chat.
+#
+# Value: every real request body in this service is small -- the widest
+# legitimate ``/chat`` payload is a 4000-char ``message`` (up to ~16KB as
+# worst-case 4-byte-per-char UTF-8, roughly doubled again by JSON string
+# escaping in the pathological case) plus a 64-char conversation_id and an
+# int patient_id; ``/feedback``'s 2000-char comment is smaller still. 64KB
+# (65536 bytes) is comfortably over double that pathological worst case
+# while staying at the low end of the reasonable range for a service that
+# never legitimately needs to accept more than a few KB -- the measured
+# threat model (issue #173 design comment) is a process with a foothold on
+# the internal-only ``copilot_internal`` network posting directly to this
+# service's unpublished port, so there is no legitimate caller this could
+# ever be too tight for.
+DEFAULT_MAX_REQUEST_BODY_BYTES = 65536
+
 
 class Settings(BaseSettings):
     """Runtime configuration for the copilot-agent service."""
@@ -380,6 +408,13 @@ class Settings(BaseSettings):
     # suite with `COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED=true` exercises
     # this gate against the existing recordings.
     copilot_extraction_tool_call_scoping_enabled: bool = False
+
+    # Issue #173: request-body-size cap enforced by
+    # app.body_size_limit.BodySizeLimitMiddleware, the outermost ASGI
+    # middleware in app.main.create_app. See DEFAULT_MAX_REQUEST_BODY_BYTES
+    # above for the value justification. Operator-tunable for a deployment
+    # with a legitimately larger (or, for defense in depth, smaller) need.
+    copilot_max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES
 
 
 def get_settings() -> Settings:

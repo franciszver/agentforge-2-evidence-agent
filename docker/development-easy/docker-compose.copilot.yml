@@ -268,6 +268,22 @@ services:
   agent:
     build:
       context: ../../services/copilot-agent
+    # Issue #173: hard memory ceiling on the agent container. Catches every
+    # unbounded-growth failure mode -- not just a body-size bug in
+    # app.body_size_limit.BodySizeLimitMiddleware (see that module and
+    # app/config.py's DEFAULT_MAX_REQUEST_BODY_BYTES), but also any future
+    # regression in #167's ConversationStore retention caps or anything else
+    # this lightweight FastAPI process wasn't meant to need much memory for.
+    # 512m is generous headroom over this service's normal footprint (a
+    # single uvicorn worker running FastAPI/httpx/pypdfium2, no ML weights
+    # in-process -- both LLM roles are served out-of-process by ollama/
+    # llama-server, already resource-scoped via their own `deploy.resources`
+    # GPU reservations above) while still bounding the process well short of
+    # host-wide memory pressure if something does misbehave. Zero app risk:
+    # a container OOM-killed at this ceiling restarts (no `restart` policy
+    # set here matches the rest of this file's non-`restart: always`
+    # services -- deliberately unchanged by this addition).
+    mem_limit: 512m
     # #180 review finding: traces.db (app/config.py's trace_db_path) backs
     # the P4.5 dashboard and P4.9 review queue -- both meant to aggregate
     # across many chat sessions over time, not just the sessions since the

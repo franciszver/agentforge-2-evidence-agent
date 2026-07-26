@@ -3,7 +3,9 @@
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.body_size_limit import BodySizeLimitMiddleware
 from app.chat import chat_endpoint
+from app.config import get_settings
 from app.correlation import CorrelationIdMiddleware, configure_logging
 from app.dashboard import dashboard_endpoint
 from app.documents import source_document_endpoint
@@ -95,6 +97,15 @@ def create_app() -> FastAPI:
     """Build and return the FastAPI application."""
     app = FastAPI(title="copilot-agent")
     app.add_middleware(CorrelationIdMiddleware)
+    # Issue #173: registered AFTER CorrelationIdMiddleware above -- Starlette
+    # applies add_middleware in REVERSE order of registration (last added =
+    # outermost), so this ends up OUTSIDE it. A request rejected for size
+    # must never first mint and log a correlation id. See
+    # app/body_size_limit.py's module docstring for the full rationale and
+    # app/config.py's DEFAULT_MAX_REQUEST_BODY_BYTES for the cap value.
+    app.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=get_settings().copilot_max_request_body_bytes
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
