@@ -20,9 +20,13 @@
  * mounted into THIS container and no docker socket reachable from inside
  * the `openemr` container this test runs in). The correlation id is
  * written to STDERR below so a live run can join it against the trace
- * store directly (e.g.
- * `docker exec development-easy-agent-1 sqlite3 /data/traces/traces.db
- * "SELECT * FROM spans WHERE correlation_id='<id>' AND span_type='feedback'"`)
+ * store directly. The `agent` image (python:3.11-slim) has no `sqlite3`
+ * CLI installed, so the query has to go through the stdlib module instead
+ * (e.g.
+ * `docker exec development-easy-agent-1 python3 -c "import sqlite3;
+ * [print(r) for r in sqlite3.connect('/data/traces/traces.db').execute(
+ * 'SELECT * FROM spans WHERE correlation_id=? AND span_type=?',
+ * ('<id>', 'feedback'))]"`)
  * -- the P4.4 task's required live verification, done once outside this
  * automated suite against the rebuilt agent.
  *

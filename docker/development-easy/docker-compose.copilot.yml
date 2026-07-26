@@ -14,7 +14,15 @@
 # (b) setting DEMO_MODE: standard to load the OpenEMR demo dataset.
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up --build
+# --build is required (#180), not just `up`: the `agent` image's
+# /data/traces mountpoint (this file's persistent trace-store volume, see
+# the `agent` service below) only exists, correctly owned, in an image
+# built from the current Dockerfile. `docker compose up` alone rebuilds
+# only when no image exists at all, so a machine with a previously built
+# `agent` image would start it unrebuilt against the new mount instead --
+# every request to the agent then fails with a 500 (see the `agent`
+# service's volumes comment below).
 services:
   openemr:
     environment:

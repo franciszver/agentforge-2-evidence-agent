@@ -187,8 +187,13 @@ docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
 recreates it fresh, and only an `agent` image rebuilt from the current
 Dockerfile has `/data/traces` correctly owned for `appuser` to write to --
 a machine with a previously built image would otherwise reuse it
-unrebuilt (`docker compose up` only rebuilds when no image exists at all)
-and every trace write would fail with a permission error.
+unrebuilt (`docker compose up` only rebuilds when no image exists at all).
+Measured, not just traced writes fail: `TraceStore.__init__` raises
+`sqlite3.OperationalError: unable to open database file`, and
+`get_trace_store` is a FastAPI dependency of `/chat`, `/feedback`,
+`/review`, AND `/dashboard` -- dependency resolution fails, so every
+request to the agent fails with a 500. The agent is fully down, not
+merely untraced.
 
 The stack comes back up on clean volumes, `DEMO_MODE=standard` reseeds demo data against the current schema, and the model and derived build-artifact volumes survive; re-run `evals/fixtures/seed.py` afterward to reapply the canonical fixture layer. **Never** import the OpenEMR-image-bundled `/root/demo_5_0_0_5.sql` directly into a running stack — it is a full OpenEMR 5.0.0.5-era database dump, and loading it downgrades the live schema and version metadata to 5.0.0.5 and disables the `rest_api`/`rest_fhir_api`/`oauth_password_grant` globals, breaking the API.
 

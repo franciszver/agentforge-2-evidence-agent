@@ -181,7 +181,12 @@ three beats were measured against.
    -- `docker compose up` alone rebuilds only when no image exists at all,
    so any machine that already has an older `agent` image would otherwise
    start it unrebuilt against the new mount and get a root-owned directory
-   the container's `appuser` cannot write to (every trace write fails).
+   the container's `appuser` cannot write to. Measured, not just traced
+   writes fail: `TraceStore.__init__` raises `sqlite3.OperationalError:
+   unable to open database file`, and `get_trace_store` is a FastAPI
+   dependency of `/chat`, `/feedback`, `/review`, AND `/dashboard` --
+   dependency resolution fails, so every request to the agent fails with
+   a 500. The agent is fully down, not merely untraced.
    Wait for `openemr`, `ollama`, and the `llama-server*` services healthy
    (`docker compose ps`). `DEMO_MODE=standard` loads the pinned OpenEMR
    demo dataset automatically (`docs/TEST_PLAN.md` §7).
