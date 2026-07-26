@@ -23,8 +23,10 @@ assertion, when a verification span exists). The clinician's feedback comment
 is deliberately NOT re-emitted (#157): promoted cases land in the PUBLIC
 ``evals/`` repo, and the free-text comment may contain PHI, so ``failure_mode``
 carries only a neutral TODO placeholder referencing the correlation id. The
-raw comment stays in the trusted-local review queue (``app.review_page``),
-where a human reads it to hand-write the real ``failure_mode``.
+raw comment is not shown on any rendered page (#176: ``app.review_page``'s
+``/review`` redacts it too, for the same reason) -- it remains only in the
+P4.2 trace store's ``spans.feedback_comment`` column, which a human must
+query directly to read it and hand-write the real ``failure_mode``.
 
 **No reverse dependency on ``evals/``.** This module does not import
 ``runner.schema``/``runner.loader`` to self-validate its own output --
@@ -64,10 +66,12 @@ _TODO_PHRASE = "TODO: replace with the phrase this response should (not) contain
 
 @dataclass(frozen=True)
 class ReviewQueueEntry:
-    """One worklist row: everything the P4.9 review queue can show about a
-    correlation id without touching PHI -- ids, an enum, a count, and the
-    feedback comment (user-authored text about the response, not patient
-    record data -- see ``app.trace_store``'s module docstring)."""
+    """One worklist row over the P4.2 trace store: ids, an enum, a count, and
+    the feedback comment. The comment is user-authored free text about the
+    response, and -- unlike this DTO's other fields -- it may incidentally
+    contain PHI (see ``app.trace_store``'s module docstring); callers of
+    this DTO must not render it (``app.review_page``'s ``/review`` redacts
+    it, #176, and ``generate_regression_case`` never re-emits it, #157)."""
 
     correlation_id: str
     feedback_thumb: FeedbackThumb | None
@@ -189,12 +193,16 @@ def _failure_mode(feedback: Span | None, verification: Span | None, correlation_
             # evals/ repo. The clinician's free-text comment may contain
             # patient details, so it is NEVER re-emitted here -- only a neutral
             # TODO placeholder pointing back at the correlation id. The raw
-            # comment stays in the trusted-local review queue (review_page.py),
-            # which is where a human writes the real failure_mode from.
+            # comment is not shown on any rendered surface (#176 redacted it
+            # out of app.review_page's /review too) -- it remains only in the
+            # P4.2 trace store (app.trace_store's ``spans.feedback_comment``
+            # column), which a human must query directly to read it and write
+            # the real failure_mode.
             return (
                 f"TODO: describe the failure mode. Thumbs-down on correlation id "
-                f"{correlation_id}; the clinician's comment is in the local review "
-                f"queue (omitted here -- may contain free text)."
+                f"{correlation_id}; the clinician's comment is omitted here (may "
+                f"contain PHI) -- read it from the trace store's "
+                f"spans.feedback_comment column for this correlation id."
             )
         return f"Promoted from a thumbs-down (no comment left) on correlation id {correlation_id}."
     if verification is not None:

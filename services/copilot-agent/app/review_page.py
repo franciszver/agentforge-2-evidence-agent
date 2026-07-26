@@ -6,34 +6,56 @@ promote-to-eval action, over the P4.2 trace store / ``app.review_queue``.
 ``tests/test_review_page.py::test_review_queue_no_external_network_reference``),
 served directly by this FastAPI app rather than routed through the OpenEMR
 module. Where this page differs from the dashboard: the dashboard is
-STRICTLY aggregate (never renders a correlation id or the feedback comment,
-see ``app.dashboard``'s module docstring) -- this page's entire purpose is
-the opposite, showing individual reviewable traces with their comment, so it
-deliberately renders per-record fields the dashboard withholds. That is
-still not PHI: correlation id, verdict, feedback thumb/comment, and counts
-are exactly the non-PHI column set ``app.trace_store`` documents as safe to
-persist (see its module docstring).
+STRICTLY aggregate (never renders a correlation id, see ``app.dashboard``'s
+module docstring) -- this page's entire purpose is the opposite, showing
+individual reviewable traces, so it deliberately renders per-record fields
+the dashboard withholds: correlation id, verdict, feedback thumb, and
+counts. The one per-record field it does NOT render is the feedback
+comment -- see the auth-posture note below on why (#176).
 
-**HTML-escaping is load-bearing here, not decorative.** Both the
-correlation id (attacker-influenceable: an inbound ``X-Correlation-ID``
-header is honored verbatim by ``app.correlation.CorrelationIdMiddleware``
-and becomes a trace's stored id) and the feedback comment (clinician free
-text) are rendered as page content for the first time in this project --
-every prior agent-served page only rendered hardcoded strings or numeric
-aggregates. Every dynamic string is passed through :func:`_esc` (``html.escape``)
-before being embedded in a template; see
-``tests/test_review_page.py::test_review_queue_escapes_html_in_correlation_id_and_comment``.
+**HTML-escaping is load-bearing here, not decorative.** The correlation id
+is attacker-influenceable (an inbound ``X-Correlation-ID`` header is
+honored verbatim by ``app.correlation.CorrelationIdMiddleware`` and becomes
+a trace's stored id) and is rendered as page content for the first time in
+this project -- every prior agent-served page only rendered hardcoded
+strings or numeric aggregates. Every dynamic string (including the
+redaction placeholder, for defense in depth even though it is a fixed
+constant) is passed through :func:`_esc` (``html.escape``) before being
+embedded in a template; see
+``tests/test_review_page.py::test_review_queue_escapes_html_in_correlation_id`` and
+``tests/test_review_page.py::test_review_queue_lists_a_thumbs_down_entry`` (which
+pins the redaction placeholder in place of the raw comment -- #176).
 
-**Auth posture: open, matching ``GET /dashboard`` (P0.6).** Both routes here
-are reads: ``GET /review`` renders non-PHI aggregate-per-trace telemetry
-(see above), and ``GET /review/promote`` is a pure, side-effect-free
-transform of an already-stored, already non-PHI trace into YAML text -- it
-writes nothing (see ``app.review_queue``'s module docstring on why the
-result is returned, not written to the host repo). Unlike ``POST /feedback``
-(gated: a real clinician action that writes a new signal, and open auth
-would let anyone spam it), there is no write here to protect and no PHI to
-disclose that a GET of the trace itself wouldn't already disclose on this
-same open page.
+**Auth posture: open, matching ``GET /dashboard`` (P0.6) -- and why the
+comment is redacted, not gated (#176).** Both routes here are reads with no
+write to protect, so neither carries a bearer-token dependency, unlike
+``POST /feedback`` (gated: a real clinician action that writes a new
+signal, and open auth would let anyone spam it) and ``GET
+/documents/{source_id}`` (gated: serves stored bytes over a header-only
+bearer seam reached via the OpenEMR module's authenticated proxy). ``GET
+/review`` has no such proxy counterpart -- nothing in the OpenEMR module,
+docs, or scripts opens it; the only way anyone reaches this page today is a
+direct browser navigation to the agent's own port
+(``tests/test_review_queue_browser.py``'s ``page.goto(f"{app_base_url}
+/review")``, the Bruno collection's ``review.bru`` marking ``auth: none``).
+A plain top-level navigation cannot attach an ``Authorization`` header, so
+gating this route behind ``get_token_validator`` (the seam ``/feedback``
+and ``/documents`` use) would not add a check -- it would simply break the
+only working way to view the page, with no proxy to fall back on. **This
+was previously documented as "no PHI to disclose" -- that was false.**
+``entry.feedback_comment`` is clinician free text, and
+``app.review_queue``'s module docstring says outright it "may contain PHI"
+(the same reasoning #157 already applied to the promote-to-eval YAML,
+which never re-emits the raw comment). So instead of gating the route, this
+page never renders the raw comment: :func:`_entry_card` substitutes a fixed
+redaction placeholder (:data:`_REDACTED_COMMENT_PLACEHOLDER`) whenever
+``entry.feedback_comment`` is truthy, and the field itself flows no further
+than that truthiness check here and ``app.review_queue._latest_feedback``'s
+``is not None`` dedup rule (a deliberately different check -- see that
+function's docstring). Everything else
+this page shows -- correlation id, verdict, feedback thumb, counts -- is
+exactly the non-PHI column set ``app.trace_store`` documents as safe to
+persist (see its module docstring), so it is still rendered as before.
 
 ``correlation_id`` is deliberately never interpolated into a raw HTTP
 header (e.g. ``Content-Disposition``): as noted above it is
@@ -68,6 +90,14 @@ def get_queue_provider(trace_store: TraceStore = Depends(get_trace_store)) -> Qu
 
 def _esc(value: str | None) -> str:
     return "" if value is None else html.escape(value)
+
+
+# #176: feedback_comment is clinician free text that app.review_queue's
+# module docstring says "may contain PHI" -- never rendered verbatim here.
+# A fixed, non-attacker-influenceable string stands in for it whenever a
+# comment is on file (see the module docstring's auth-posture note for why
+# this route is redacted instead of gated).
+_REDACTED_COMMENT_PLACEHOLDER = "Comment on file (redacted -- may contain PHI, not shown here)."
 
 
 _STYLE = """\
@@ -157,7 +187,7 @@ def _entry_card(entry: ReviewQueueEntry) -> str:
         badges += f'<span class="badge badge-verdict">verdict: {_esc(entry.verdict)}</span>'
 
     comment_html = (
-        f'<div class="comment">{_esc(entry.feedback_comment)}</div>'
+        f'<div class="comment">{_esc(_REDACTED_COMMENT_PLACEHOLDER)}</div>'
         if entry.feedback_comment
         else ""
     )

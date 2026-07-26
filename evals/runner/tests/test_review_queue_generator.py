@@ -113,7 +113,8 @@ def test_thumbs_down_comment_is_scrubbed_from_promoted_export(tmp_path: Path) ->
     exported YAML -- a clinician who typed patient details into a thumbs-down
     comment would otherwise leak PHI into public git. ``failure_mode`` instead
     carries a neutral, non-empty TODO placeholder referencing the correlation
-    id; the real comment stays only in the trusted-local review queue."""
+    id; the real comment stays only in the P4.2 trace store (#176: it is not
+    rendered on any page, including the review queue)."""
     sentinel = "SENTINEL_COMMENT_TEXT patient details that could be PHI"
     spans = [
         _span(id=1, correlation_id="corr-scrub", span_type=SpanType.REQUEST),

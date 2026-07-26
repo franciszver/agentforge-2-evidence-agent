@@ -23,8 +23,16 @@ Only non-PHI data is ever stored:
   * model name, token counts, tool name, worker name, sub-task TYPE name
     (all closed-set / non-identifying)
   * verdict + claim/stripped COUNTS -- never claim text or citation values
-  * feedback thumb + a user-authored comment ABOUT THE RESPONSE (explicitly
-    permitted -- it is not patient record data)
+  * feedback thumb + a user-authored comment ABOUT THE RESPONSE -- persisting
+    it here is permitted (it is not a patient RECORD value pulled from a
+    tool), but the comment itself is free text a clinician typed and MAY
+    CONTAIN PHI incidentally (e.g. a patient name typed inline while
+    describing a failure). ``app.review_queue``'s module docstring states
+    this explicitly, and issue #176 corrected a previously-false claim that
+    this field carries no PHI: it is not rendered on any page for that
+    reason (``app.review_page``'s ``/review`` redacts it; the P4.5 dashboard
+    never rendered it; ``/review/promote`` never re-emits it into the public
+    ``evals/`` repo, #157). It stays on disk here only.
 
 Raw tool args, raw tool results, the question/answer text, and any patient
 record value (drug names, allergy substances, lab values, free text) are
@@ -475,10 +483,13 @@ class TraceStore:
     ) -> int:
         """Record clinician feedback on a response (P4.3's ``/feedback``
         endpoint seam -- not wired here). ``feedback_comment`` is
-        user-authored text ABOUT THE RESPONSE, not patient record data, so
-        it is stored verbatim (see module docstring). Always ``ok`` --
-        writing a feedback span IS the success event; there is no
-        underlying operation for it to have failed."""
+        user-authored text ABOUT THE RESPONSE, not a patient record value
+        pulled from a tool, but it may incidentally contain PHI (a clinician
+        typed a patient detail inline) -- see the module docstring, #176. It
+        is still stored verbatim: persisting it here is permitted, only
+        rendering it is not. Always ``ok`` -- writing a feedback span IS the
+        success event; there is no underlying operation for it to have
+        failed."""
         return self._insert(
             span_type=SpanType.FEEDBACK,
             correlation_id=correlation_id,

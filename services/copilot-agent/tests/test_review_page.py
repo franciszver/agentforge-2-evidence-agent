@@ -60,7 +60,10 @@ def test_review_queue_lists_a_thumbs_down_entry(tmp_path: Path) -> None:
     response = client.get("/review")
 
     assert "corr-1" in response.text
-    assert "wrong dose entirely" in response.text
+    # #176: the raw comment is never rendered (may contain PHI, this route
+    # is unauthenticated) -- only the fixed redaction placeholder is shown.
+    assert "wrong dose entirely" not in response.text
+    assert "redacted" in response.text
     assert 'data-testid="promote-button"' in response.text
     assert 'data-correlation-id="corr-1"' in response.text
 
@@ -77,13 +80,15 @@ def test_review_queue_does_not_list_a_clean_thumbs_up_entry(tmp_path: Path) -> N
     assert "corr-2" not in response.text
 
 
-def test_review_queue_escapes_html_in_correlation_id_and_comment(tmp_path: Path) -> None:
+def test_review_queue_escapes_html_in_correlation_id(tmp_path: Path) -> None:
     # correlation_id can be attacker-influenced (inbound X-Correlation-ID
-    # header, app.correlation.CorrelationIdMiddleware) and feedback_comment
-    # is user-authored free text -- both are rendered on this page for the
-    # first time (the P4.5 dashboard deliberately never renders per-record
-    # detail). Must be HTML-escaped, not interpolated raw, or this page is a
-    # stored-XSS vector.
+    # header, app.correlation.CorrelationIdMiddleware) and is rendered on
+    # this page for the first time (the P4.5 dashboard deliberately never
+    # renders per-record detail). Must be HTML-escaped, not interpolated
+    # raw, or this page is a stored-XSS vector. feedback_comment is
+    # deliberately NOT covered here -- #176 redacts it entirely (see
+    # test_review_queue_lists_a_thumbs_down_entry), so it is never
+    # interpolated at all, raw or escaped.
     store = _override(tmp_path)
     hostile_id = "<script>window.pwned=1</script>"
     store.record_request_span(correlation_id=hostile_id, start_ts=0.0, end_ts=0.1, ok=True)
@@ -92,14 +97,44 @@ def test_review_queue_escapes_html_in_correlation_id_and_comment(tmp_path: Path)
         start_ts=0.0,
         end_ts=0.0,
         feedback_thumb=FeedbackThumb.DOWN,
-        feedback_comment="<img src=x onerror=alert(1)>",
+        feedback_comment="not asserted on -- redacted regardless (#176)",
     )
 
     response = client.get("/review")
 
     assert "<script>window.pwned=1</script>" not in response.text
-    assert "<img src=x onerror=alert(1)>" not in response.text
     assert "&lt;script&gt;" in response.text
+
+
+def test_review_queue_unauthenticated_does_not_expose_feedback_comment(tmp_path: Path) -> None:
+    # #176: GET /review carries no token dependency at all (matches
+    # GET /dashboard's open posture -- see the module docstring), so this
+    # request is deliberately sent with NO Authorization header, same as a
+    # real unauthenticated caller. The clinician's free-text feedback
+    # comment (app.review_queue's module docstring: "may contain PHI") must
+    # never appear verbatim in the response body regardless of auth state.
+    store = _override(tmp_path)
+    store.record_request_span(correlation_id="corr-phi-1", start_ts=0.0, end_ts=0.1, ok=True)
+    store.record_feedback_span(
+        correlation_id="corr-phi-1",
+        start_ts=0.0,
+        end_ts=0.0,
+        feedback_thumb=FeedbackThumb.DOWN,
+        feedback_comment="Patient Jane Doe MRN 44821 DOB 1962-03-04 was given the wrong dose",
+    )
+
+    response = client.get("/review", headers={})
+
+    assert response.status_code == 200
+    # Non-vacuous: prove the entry actually rendered (and its redaction
+    # placeholder took the comment's place) before trusting the negative
+    # assertions below -- otherwise an empty page or a dropped entry would
+    # make all three PHI checks pass for the wrong reason.
+    assert "corr-phi-1" in response.text
+    assert "redacted" in response.text
+    assert "Jane Doe" not in response.text
+    assert "44821" not in response.text
+    assert "1962-03-04" not in response.text
 
 
 def test_review_queue_no_external_network_reference(tmp_path: Path) -> None:
@@ -132,7 +167,8 @@ def test_promote_returns_a_yaml_body_for_a_known_correlation_id(tmp_path: Path) 
     assert "corr-3" in response.text
     # #157: the raw clinician comment is scrubbed from the promoted export
     # (public evals/ repo) -- only a neutral TODO placeholder referencing the
-    # correlation id is emitted. The comment stays in the local /review view.
+    # correlation id is emitted. The comment is not shown on /review either
+    # (#176 redacts it there too) -- it remains only in the trace store.
     assert "missed an interaction" not in response.text
     assert "TODO" in response.text
 
