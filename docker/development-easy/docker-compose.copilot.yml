@@ -294,9 +294,8 @@ services:
       # and every real tool call is already driven by the DevTokenBridge's
       # own demo-clinician token (copilot_dev_clinician_username/password,
       # app/config.py), not by whatever bearer the caller sends here, so
-      # accepting
-      # any non-empty bearer on this ONE dev stack is an explicit, contained
-      # opt-in -- not a silent default. See app/config.py's
+      # accepting any non-empty bearer on this ONE dev stack is an explicit,
+      # contained opt-in -- not a silent default. See app/config.py's
       # copilot_dev_accept_any_bearer_token docstring: MUST NEVER be set
       # true outside local development.
       COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN: "true"

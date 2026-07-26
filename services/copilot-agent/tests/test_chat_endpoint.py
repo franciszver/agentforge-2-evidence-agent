@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -668,11 +669,11 @@ def test_rejected_token_returns_401_and_never_invokes_planner():
 
 
 # --------------------------------------------------------------------------
-# Red-team findings #167/#168 (issue #171) -- current-behaviour xfails
+# Red-team findings #167/#168 (issue #171) -- regression coverage
 # --------------------------------------------------------------------------
 
 
-def test_default_token_validator_rejects_garbage_bearer_token(monkeypatch):
+def test_fail_closed_default_rejects_garbage_bearer_token(monkeypatch):
     # #168 (VULN-0001, evals/recordings/identity-authz-garbage-bearer-token/):
     # previously get_token_validator (app/chat.py) handed back a permissive
     # stub (accepts ANY non-empty token -- its own docstring said so) whenever
@@ -690,6 +691,58 @@ def test_default_token_validator_rejects_garbage_bearer_token(monkeypatch):
     # not just that some validator function in isolation does.
     monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
     monkeypatch.delenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", raising=False)
+
+    validator = get_token_validator()
+
+    with pytest.raises(TokenValidationError):
+        validator("this-is-not-a-real-token-just-garbage-xyz123")
+
+
+def test_dev_accept_any_bearer_token_flag_restores_permissive_validator(monkeypatch):
+    # Gate coverage gap: the dev opt-in (copilot_dev_accept_any_bearer_token)
+    # had no test proving it actually works -- if it silently broke, the
+    # local dev stack (docker-compose.copilot.yml sets it) and the #160 live
+    # harness would break with it, invisibly. With per-user tokens OFF and
+    # the dev flag explicitly ON, get_token_validator() must hand back a
+    # validator that ACCEPTS a garbage (but non-empty) token.
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    monkeypatch.setenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", "true")
+
+    validator = get_token_validator()
+
+    validator("this-is-not-a-real-token-just-garbage-xyz123")  # must not raise
+
+
+def test_dev_accept_any_bearer_token_flag_logs_a_warning(monkeypatch, caplog):
+    # "Never silently active" (app.chat._dev_permissive_token_validator's
+    # docstring) is only true if the warning actually fires -- enforce it
+    # rather than merely asserting the intent in a comment.
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    monkeypatch.setenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", "true")
+
+    validator = get_token_validator()
+
+    with caplog.at_level(logging.WARNING):
+        validator("this-is-not-a-real-token-just-garbage-xyz123")
+
+    assert any(
+        "dev-only permissive bearer-token stub" in record.message for record in caplog.records
+    )
+
+
+def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatch):
+    # Precedence, pinned: with BOTH copilot_per_user_token_enabled AND
+    # copilot_dev_accept_any_bearer_token true, the real introspection
+    # validator must win -- the permissive stub must NOT be returned. This is
+    # correct today by inspection (get_token_validator checks
+    # copilot_per_user_token_enabled first), but was unpinned by any test, so
+    # a future refactor could silently invert the check order and reopen
+    # VULN-0001 behind a flag combination nobody thinks to check by hand.
+    # Proven behaviourally (garbage token REJECTED, not just "not identical
+    # to the dev stub function") so the assertion survives the introspection
+    # validator's own internal implementation changing shape.
+    monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
+    monkeypatch.setenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", "true")
 
     validator = get_token_validator()
 
