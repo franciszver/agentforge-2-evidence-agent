@@ -274,16 +274,33 @@ services:
     # app/config.py's DEFAULT_MAX_REQUEST_BODY_BYTES), but also any future
     # regression in #167's ConversationStore retention caps or anything else
     # this lightweight FastAPI process wasn't meant to need much memory for.
-    # 512m is generous headroom over this service's normal footprint (a
-    # single uvicorn worker running FastAPI/httpx/pypdfium2, no ML weights
-    # in-process -- both LLM roles are served out-of-process by ollama/
-    # llama-server, already resource-scoped via their own `deploy.resources`
-    # GPU reservations above) while still bounding the process well short of
-    # host-wide memory pressure if something does misbehave. Zero app risk:
-    # a container OOM-killed at this ceiling restarts (no `restart` policy
-    # set here matches the rest of this file's non-`restart: always`
-    # services -- deliberately unchanged by this addition).
-    mem_limit: 512m
+    #
+    # Value: #167's own merged PR (Closes #167, "bound chat input and
+    # conversation retention") states its worst-case retained-bytes
+    # arithmetic explicitly -- 2000 conversations x 50 turns, each turn
+    # holding a 1-4000-char question and a <=1536-token
+    # (CHAT_MAX_TOKENS, clamp-down-only on BOTH llama_server and ollama)
+    # answer plus ~300B of ids -- "~1 GB realistic, ~4 GB pathological".
+    # 512m sat BELOW the realistic figure, meaning legitimate load (not an
+    # attacker) could OOM-kill the agent -- a worse outage than the DoS
+    # this middleware defends against. 2g sits above the ~1GB realistic
+    # bound with real headroom, while staying below the ~4GB pathological
+    # ceiling so a genuine runaway (a regression in the #167 caps, or a
+    # future unbounded term like #174's roster cache before that issue's
+    # fix landed) still gets caught rather than silently consuming
+    # unbounded host memory.
+    mem_limit: 2g
+    # `restart: unless-stopped` (previously absent -- Docker's default is
+    # `no`): without this, an OOM-kill at the ceiling above leaves the
+    # agent DOWN until an operator manually intervenes, unlike every other
+    # service in this overlay (ollama/llama-server/llama-server-embed/
+    # openemr all set `restart: always`). This is what makes the mem_limit
+    # self-healing rather than a second, silent outage on top of whatever
+    # triggered the memory growth. `unless-stopped` (not `always`) so an
+    # operator's deliberate `docker compose stop agent` is still honored
+    # across a host reboot -- there's no other operational reason to prefer
+    # one over the other here.
+    restart: unless-stopped
     # #180 review finding: traces.db (app/config.py's trace_db_path) backs
     # the P4.5 dashboard and P4.9 review queue -- both meant to aggregate
     # across many chat sessions over time, not just the sessions since the

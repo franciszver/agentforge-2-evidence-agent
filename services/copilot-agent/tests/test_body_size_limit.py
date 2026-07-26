@@ -30,12 +30,33 @@ Two tests, both hermetic (no live stack):
 Each test also pairs its rejection assertion with a presence assertion
 (a body under the cap succeeds) so the test could actually fail if the
 middleware were wired backwards or unconditionally rejecting/accepting.
+
+A THIRD test, ``test_streaming_body_over_cap_through_real_chat_route_via_asgi_transport``,
+closes a gap the two above leave open: everything above either drives the
+middleware directly (no FastAPI request-body-parsing machinery in front of
+it) or only exercises the ``Content-Length`` pre-check against the real
+app. The streaming-counter path is the genuinely load-bearing one (the
+header check is the fast path; the counter is what actually stops a lying
+caller), and it had never been proven against the real ``/chat`` route with
+real FastAPI body parsing in front of it -- which matters because FastAPI's
+own ``fastapi.routing`` body-parsing code wraps ``request.json()`` in a
+broad ``except Exception`` that converts anything except a
+``starlette.exceptions.HTTPException`` into a generic, wrong-status 400
+(see ``app/body_size_limit.py``'s module docstring for the real bug this
+full-stack test caught and how it was fixed). This one uses
+``httpx.ASGITransport`` directly (bypassing ``starlette.testclient.
+TestClient``, which does not support a streamed request body) with an
+async-generator body -- httpx sends a generator body chunked, with no
+``Content-Length`` header at all, which is exactly the case the streaming
+counter (not the header pre-check) has to catch.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
+import httpx
 import pytest
 
 from app.body_size_limit import BodySizeLimitMiddleware
@@ -281,3 +302,93 @@ def test_body_size_limit_middleware_is_outermost():
 
     classes = [m.cls for m in real_app.user_middleware]
     assert classes.index(BodySizeLimitMiddleware) < classes.index(CorrelationIdMiddleware)
+
+
+def test_streaming_body_over_cap_through_real_chat_route_via_asgi_transport():
+    """Full-stack proof of the streaming counter (not just the header
+    pre-check) against the REAL ``/chat`` route, with real FastAPI request-
+    body parsing in front of the middleware -- see this module's docstring
+    for why the two tests above don't already cover this, and
+    ``app/body_size_limit.py``'s module docstring for the real 400-instead-
+    of-413 bug this test caught the first time it was written."""
+    from app.chat import get_planner_factory, get_token_validator
+    from app.config import DEFAULT_MAX_REQUEST_BODY_BYTES
+    from app.main import app as real_app
+
+    validator_called = False
+    planner_called = False
+
+    def _tracking_validator(token: str) -> None:
+        nonlocal validator_called
+        validator_called = True
+
+    def _tracking_planner_factory(patient_id: int):
+        nonlocal planner_called
+        planner_called = True
+        raise AssertionError("planner factory must never run for an oversized streamed body")
+
+    async def oversized_chunks() -> AsyncIterator[bytes]:
+        # Two chunks whose sum crosses the cap; well-formed JSON isn't
+        # required to prove the point -- the counter must reject before
+        # JSON parsing (or auth) is ever attempted.
+        half = DEFAULT_MAX_REQUEST_BODY_BYTES // 2 + 1000
+        yield b"0" * half
+        yield b"0" * half
+
+    real_app.dependency_overrides[get_token_validator] = lambda: _tracking_validator
+    real_app.dependency_overrides[get_planner_factory] = lambda: _tracking_planner_factory
+    try:
+
+        async def _send_oversized() -> httpx.Response:
+            transport = httpx.ASGITransport(app=real_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                request = client.build_request(
+                    "POST",
+                    "/chat",
+                    content=oversized_chunks(),
+                    headers={
+                        "authorization": "Bearer irrelevant-token",
+                        "content-type": "application/json",
+                    },
+                )
+                # httpx sends a generator body chunked, with NO
+                # content-length header -- exactly the case the streaming
+                # counter (not the header pre-check) has to catch.
+                assert "content-length" not in request.headers
+                return await client.send(request)
+
+        response = asyncio.run(_send_oversized())
+    finally:
+        real_app.dependency_overrides.clear()
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body too large"}
+    assert not validator_called
+    assert not planner_called
+
+    # Presence pairing: the identical streamed-chunk mechanism, but under
+    # the cap, reaches auth (a bad token still gets a normal 401, proving
+    # the 413 above is size-specific, not the streamed-transport mechanism
+    # itself being rejected).
+    async def under_cap_chunks() -> AsyncIterator[bytes]:
+        import json as _json
+
+        yield _json.dumps({"message": "hi", "patient_id": 1}).encode()
+
+    async def _send_under_cap() -> httpx.Response:
+        transport = httpx.ASGITransport(app=real_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            request = client.build_request(
+                "POST",
+                "/chat",
+                content=under_cap_chunks(),
+                headers={
+                    "authorization": "Bearer bad-token",
+                    "content-type": "application/json",
+                },
+            )
+            assert "content-length" not in request.headers
+            return await client.send(request)
+
+    under_cap_response = asyncio.run(_send_under_cap())
+    assert under_cap_response.status_code != 413

@@ -45,6 +45,47 @@ construction interfere with a streamed SSE response body
 (``app.chat._stream_chat``'s ``StreamingResponse``), which is exactly the
 lifetime ``CorrelationIdMiddleware``'s ``send`` wrapper (header injection)
 already has to be careful around.
+
+**Traceability tradeoff, deliberate:** because this middleware sits OUTSIDE
+``CorrelationIdMiddleware``, a request rejected here gets NO correlation id
+at all -- it never reaches the code that would mint one. For genuinely
+adversarial traffic (the threat model this exists for) that's the right
+call: no reason to spend a mint/log cycle on a request that's being thrown
+away anyway. The cost lands on a legitimate but misconfigured caller
+instead -- its 413 shows up in ops logs with no correlation id to trace it
+by. Accepted; not something this middleware attempts to fix.
+
+The 413 body is built via a real ``starlette.responses.JSONResponse`` --
+itself an ASGI callable -- rather than hand-rolled ``send()`` messages, so
+it gets correct ``Content-Length`` framing (and any other response
+bookkeeping Starlette does) for free. This is the only place this
+middleware touches ``send`` at all; it still never *wraps* ``send`` the way
+``CorrelationIdMiddleware`` does.
+
+**Why the streaming-counter signal is a real ``starlette.exceptions.
+HTTPException``, not a private exception type (found via a full-stack test,
+not by inspection):** ``fastapi.routing``'s own request-body-reading code
+wraps its ``await request.json()`` call in a broad
+``except Exception as e: raise HTTPException(400, "There was an error
+parsing the body") from e`` -- with one carve-out immediately above it,
+``except HTTPException: raise`` (its own comment: "If a middleware raises
+an HTTPException, it should be raised again"). A private exception type
+raised from the wrapped ``receive`` gets swallowed by that broad
+``except Exception`` and re-surfaces as a generic, wrong-status 400 --
+verified by constructing a real oversized streamed request (no
+``content-length`` header) against the actual ``/chat`` route and observing
+exactly that 400 before this was fixed. Using Starlette's own
+``HTTPException(status_code=413, ...)`` instead hits FastAPI's
+``except HTTPException: raise`` carve-out, so it survives unmangled and is
+then handled correctly by Starlette's ``ExceptionMiddleware`` (which sits
+between this middleware and the router) using its own default handler --
+which happens to produce the exact same ``{"detail": ...}`` JSON shape
+``_reject`` below produces directly. The ``try/except`` in ``__call__``
+below is a deliberate belt-and-braces fallback for anything this
+middleware wraps that ISN'T a full FastAPI app with that machinery in
+front of it (e.g. the toy inner-app fixtures in this module's own unit
+tests) -- in the real app, ``ExceptionMiddleware`` handles it first and
+this ``except`` never fires at all.
 """
 
 from __future__ import annotations
@@ -52,19 +93,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 from starlette.types import Message, Receive, Scope, Send
 
-
-class _BodyTooLarge(Exception):
-    """Internal signal only -- raised by the wrapped ``receive`` once the
-    running byte count crosses the cap, caught by this same middleware's
-    ``__call__`` before it can propagate anywhere else. Never a public
-    exception type and never allowed to reach ``ExceptionMiddleware`` or
-    ``ServerErrorMiddleware``: both of those sit further from ``send`` than
-    this middleware is registered to (see module docstring), so letting it
-    escape would either produce a generic 500 (ServerErrorMiddleware) or --
-    worse -- go unhandled, since this custom type has no registered
-    exception handler for ExceptionMiddleware to match on either."""
+_BODY_TOO_LARGE_DETAIL = "Request body too large"
 
 
 class BodySizeLimitMiddleware:
@@ -94,7 +127,7 @@ class BodySizeLimitMiddleware:
             except ValueError:
                 declared_bytes = None  # malformed header -- fall through to the streaming counter
             if declared_bytes is not None and declared_bytes > self.max_bytes:
-                await self._reject(send)
+                await self._reject(scope, receive, send)
                 return
 
         received = 0
@@ -105,26 +138,27 @@ class BodySizeLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_bytes:
-                    raise _BodyTooLarge()
+                    # A real ``starlette.exceptions.HTTPException``, not a
+                    # private type -- see module docstring for why: FastAPI's
+                    # own body-parsing code re-raises HTTPException unchanged
+                    # but converts anything else into a generic 400.
+                    raise StarletteHTTPException(status_code=413, detail=_BODY_TOO_LARGE_DETAIL)
             return message
 
         try:
             await self.app(scope, counting_receive, send)
-        except _BodyTooLarge:
-            await self._reject(send)
+        except StarletteHTTPException as exc:
+            # Only ever our own signal reaches here in practice (see module
+            # docstring: a real FastAPI app's ExceptionMiddleware handles
+            # this exception -- and any other HTTPException raised deeper in
+            # the app -- before it would ever propagate this far out). The
+            # status-code check is defense in depth so this middleware can
+            # never mistake an unrelated HTTPException for its own signal.
+            if exc.status_code != 413 or exc.detail != _BODY_TOO_LARGE_DETAIL:
+                raise
+            await self._reject(scope, receive, send)
 
     @staticmethod
-    async def _reject(send: Send) -> None:
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [(b"content-type", b"application/json")],
-            }
-        )
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b'{"detail":"Request body too large"}',
-            }
-        )
+    async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
+        response = JSONResponse(status_code=413, content={"detail": _BODY_TOO_LARGE_DETAIL})
+        await response(scope, receive, send)
