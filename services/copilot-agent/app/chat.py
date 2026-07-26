@@ -528,17 +528,39 @@ def get_planner_factory(
     -- surfacing as an uncaught 500, not the 401 the body's
     ``_fail_closed_token_validator`` promises. Beyond the wrong status code,
     that 500-vs-401 split is itself a fingerprinting oracle (tells an
-    unauthenticated caller whether the bridge is provisioned) and every such
-    request drove a fresh, uncached, unauthenticated OAuth password-grant
-    attempt against OpenEMR (the bridge caches only on success) -- bounded
-    only by ``openemr_api_timeout_seconds``, with no backoff. Caught here and
-    bound to an empty token instead, mirroring the flag-ON branch's own
+    unauthenticated caller whether the bridge is provisioned). Caught here
+    and bound to an empty token instead, mirroring the flag-ON branch's own
     ``TokenValidationError`` handling immediately above: the planner factory
     still gets built (this dependency must never raise for an auth problem,
     same reasoning as the flag-ON branch's docstring), and the empty token is
-    inert until a tool call would use it -- which never happens, because the
-    body's validator rejects with 401 first and the planner is only ever
-    *run* after validation passes.
+    inert until a tool call would use it in the common case, because the
+    body's validator normally rejects with 401 first and the planner is only
+    ever *run* after validation passes.
+
+    NOT eliminated by this dependency, both flagged in #168 Gate 3 re-review
+    and deliberately left for a dedicated follow-up (moving the token check
+    ahead of this dependency needs its own red-first test and gates, not a
+    same-PR structural change):
+
+    * The ``dev_token_bridge.get_token()`` fetch attempt above still runs,
+      unauthenticated, pre-auth-check, on every flag-off request regardless
+      of whether the caller's token will pass or fail the body's validator
+      -- catching ``DevTokenError`` here stops it crashing the request, it
+      does NOT stop the attempt itself. With valid creds and OpenEMR
+      unreachable, each such request still costs a full outbound OAuth
+      password-grant attempt (bounded by ``openemr_api_timeout_seconds``,
+      currently 10.0s default, with no backoff or negative caching),
+      occupying a bounded, app-wide Starlette threadpool worker --
+      unauthenticated threadpool-starvation exposure against ``/chat``, and
+      repeated failed password-grants against the demo clinician account.
+    * On the ONE configuration where ``copilot_dev_accept_any_bearer_token``
+      is also true (the local dev stack's own setting) and the bridge is
+      ALSO unprovisioned, the caller's token is not rejected by the body's
+      validator -- the request proceeds with the empty token bound above,
+      every tool call auth-fails, and each failure is swallowed as an
+      ``OpenEmrApiError`` inside the planner loop, so the agent answers with
+      zero patient evidence instead of failing loudly. The ``_logger.warning``
+      immediately below exists so that failure mode is never silent.
     """
     if get_settings().copilot_per_user_token_enabled:
         try:
@@ -550,6 +572,12 @@ def get_planner_factory(
         token = dev_token_bridge.get_token()
     except DevTokenError:
         token = ""
+        _logger.warning(
+            "dev token bridge unavailable; tool calls for this request will "
+            "auth-fail against OpenEMR (answers will cite zero evidence) "
+            "unless the caller's own token is rejected first by the "
+            "flag-off token validator"
+        )
     return _default_planner_factory(token)
 
 
