@@ -1558,6 +1558,19 @@ def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: lis
 
 
 def _stream_chat(
+    # Keyword-only (#180 review finding): ``message``/``user``/``owner_token``
+    # are three adjacent ``str`` parameters, and the sole production call
+    # site (``chat_endpoint``) previously passed all fifteen arguments
+    # positionally. A ``user``/``owner_token`` transposition there would be
+    # invisible to mypy (both are plain ``str``) and to the existing tests
+    # (``test_planner_streaming`` already calls by keyword; no ``/feedback``
+    # test drives a real ``/chat`` call to catch it) -- the silent result
+    # would be ``owner_token_hash`` computed over the DISPLAY username
+    # instead of the bearer token (every caller sharing a username would
+    # then own each other's traces), plus the raw token landing in
+    # ``Turn.user``. Keyword-only turns that transposition into a
+    # ``TypeError`` at the one call site instead.
+    *,
     planner: PlannerProtocol,
     extractor: ClaimExtractorLike,
     conversation: Conversation,
@@ -1565,6 +1578,7 @@ def _stream_chat(
     trace_store: TraceStore,
     message: str,
     user: str,
+    owner_token: str,
     clock: Clock,
     roster_cache: RosterCache,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
@@ -1847,6 +1861,7 @@ def _stream_chat(
                 start_ts=request_start_ts,
                 end_ts=time.time(),
                 ok=request_ok,
+                owner_token=owner_token,
             ),
         )
 
@@ -1945,20 +1960,21 @@ async def chat_endpoint(
 
     return StreamingResponse(
         _stream_chat(
-            planner,
-            extractor,
-            conversation,
-            store,
-            trace_store,
-            request.message,
-            user,
-            clock,
-            roster_cache,
-            evidence_retriever,
-            patient_fact_provider,
-            support_judge_provider,
-            require_answer_grounding,
-            require_tool_call_scoping,
+            planner=planner,
+            extractor=extractor,
+            conversation=conversation,
+            store=store,
+            trace_store=trace_store,
+            message=request.message,
+            user=user,
+            owner_token=token,
+            clock=clock,
+            roster_cache=roster_cache,
+            evidence_retriever=evidence_retriever,
+            patient_fact_provider=patient_fact_provider,
+            support_judge_provider=support_judge_provider,
+            require_answer_grounding=require_answer_grounding,
+            require_tool_call_scoping=require_tool_call_scoping,
         ),
         media_type="text/event-stream",
     )

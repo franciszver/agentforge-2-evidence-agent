@@ -341,6 +341,7 @@ def test_client_disconnect_mid_stream_closes_inner_generator_and_records_failed_
         trace_store=trace_store,  # type: ignore[arg-type]
         message="What is he taking?",
         user="unknown",
+        owner_token="test-token",
         clock=_default_clock,
         roster_cache=RosterCache(ttl_seconds=300.0, clock=_default_clock),
     )

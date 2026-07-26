@@ -175,14 +175,25 @@ Every suite runs against the pinned demo dataset (`DEMO_MODE=standard`; image pi
 
 A fresh clone gets the demo dataset automatically the first time the stack comes up on a clean volume — `DEMO_MODE=standard` (set by the copilot overlay, `docker-compose.copilot.yml`) drives OpenEMR's own install-time demo load against the current schema. `evals/fixtures/seed.py`'s job is only the canonical-state layering on top of that (§ below), not the base demo load. The fresh-clone quickstart (P5.6) exercises this same path.
 
-If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), or the demo data otherwise needs to be reset, recover by rebuilding the state that holds it, not by importing data into it. Remove exactly the database volume **and** the sites volume — the sites volume holds OpenEMR's install flag (`sites/default/sqlconf.php`), so leaving it behind gives a configured-but-empty stack where the demo load never re-runs; removing anything more (a blanket `down -v`) destroys `ollamamodels`, and the no-egress ollama service cannot re-pull the model without repeating the one-time provisioning step:
+If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), or the demo data otherwise needs to be reset, recover by rebuilding the state that holds it, not by importing data into it. Remove the database volume, the sites volume, **and** the agent's trace-store volume (`agenttracedata`, #180) — the sites volume holds OpenEMR's install flag (`sites/default/sqlconf.php`), so leaving it behind gives a configured-but-empty stack where the demo load never re-runs; leaving `agenttracedata` behind carries forward `/feedback`/dashboard rows keyed to patient/encounter ids the reset is about to replace, so the P4.5 dashboard and P4.9 review queue would show stale data pointing at records that no longer exist; removing anything more (a blanket `down -v`) destroys `ollamamodels`, and the no-egress ollama service cannot re-pull the model without repeating the one-time provisioning step. First time only, copy `docker/development-easy/.env.example` to `.env` and fill in `TRACE_ARGS_HASH_SECRET` (generation command in that file) -- the `agent` service's compose definition requires it:
 
 ```bash
 cd docker/development-easy
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
-docker volume rm development-easy_databasevolume development-easy_sitesvolume
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+docker volume rm development-easy_databasevolume development-easy_sitesvolume development-easy_agenttracedata
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
 ```
+`--build` is required (#180), not just `up -d`: removing `agenttracedata`
+recreates it fresh, and only an `agent` image rebuilt from the current
+Dockerfile has `/data/traces` correctly owned for `appuser` to write to --
+a machine with a previously built image would otherwise reuse it
+unrebuilt (`docker compose up` only rebuilds when no image exists at all).
+Measured, not just traced writes fail: `TraceStore.__init__` raises
+`sqlite3.OperationalError: unable to open database file`, and
+`get_trace_store` is a FastAPI dependency of `/chat`, `/feedback`,
+`/review`, AND `/dashboard` -- dependency resolution fails, so every
+request to the agent fails with a 500. The agent is fully down, not
+merely untraced.
 
 The stack comes back up on clean volumes, `DEMO_MODE=standard` reseeds demo data against the current schema, and the model and derived build-artifact volumes survive; re-run `evals/fixtures/seed.py` afterward to reapply the canonical fixture layer. **Never** import the OpenEMR-image-bundled `/root/demo_5_0_0_5.sql` directly into a running stack — it is a full OpenEMR 5.0.0.5-era database dump, and loading it downgrades the live schema and version metadata to 5.0.0.5 and disables the `rest_api`/`rest_fhir_api`/`oauth_password_grant` globals, breaking the API.
 

@@ -168,10 +168,25 @@ setup steps 2 and 4 below did not work as written against this dev stack
 Steps below are what was actually run, in order, to reach the state the
 three beats were measured against.
 
-1. **Stack up.** From `docker/development-easy/`:
+1. **Stack up.** From `docker/development-easy/`, first time only: copy
+   `.env.example` to `.env` and fill in `TRACE_ARGS_HASH_SECRET`
+   (generation command in that file) -- the overlay's `agent` service
+   requires it (#180). Then:
    ```
-   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
    ```
+   `--build` is required here (#180): the `agent` image's `/data/traces`
+   mountpoint (this compose file's persistent trace-store volume) only
+   exists, correctly owned, in an image built from the current Dockerfile
+   -- `docker compose up` alone rebuilds only when no image exists at all,
+   so any machine that already has an older `agent` image would otherwise
+   start it unrebuilt against the new mount and get a root-owned directory
+   the container's `appuser` cannot write to. Measured, not just traced
+   writes fail: `TraceStore.__init__` raises `sqlite3.OperationalError:
+   unable to open database file`, and `get_trace_store` is a FastAPI
+   dependency of `/chat`, `/feedback`, `/review`, AND `/dashboard` --
+   dependency resolution fails, so every request to the agent fails with
+   a 500. The agent is fully down, not merely untraced.
    Wait for `openemr`, `ollama`, and the `llama-server*` services healthy
    (`docker compose ps`). `DEMO_MODE=standard` loads the pinned OpenEMR
    demo dataset automatically (`docs/TEST_PLAN.md` §7).
@@ -521,19 +536,31 @@ cleanup required between dry runs or between live demos:
   recreation loses both and setup steps 3 and 5 need re-running (this was
   hit live during this dry run, after an unrelated host reboot recreated
   the container; both steps re-ran cleanly and reproduced the same
-  result).
+  result). Unchanged by #180: that issue added a persistent volume for
+  the trace store (`traces.db`, a SIBLING path under `/data`, not these
+  two) so `/feedback` ownership survives a restart — see the reset recipe
+  below for the volume that now needs including in a full reset.
 
 A full environment reset (fresh volumes) is documented in
-`docs/RELEASE_PROCESS.md`'s dev-stack section:
+`docs/TEST_PLAN.md` §7 (this doc's own cross-reference to
+`docs/RELEASE_PROCESS.md`'s "dev-stack section" was stale -- no such
+section exists there; corrected here to point at the recipe that
+actually exists):
 ```
 cd docker/development-easy
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
-docker volume rm development-easy_databasevolume development-easy_sitesvolume
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+docker volume rm development-easy_databasevolume development-easy_sitesvolume development-easy_agenttracedata
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
 ```
-Re-run both seed scripts (chart fixtures, then documents) after any such
-reset — `DEMO_MODE=standard` only reseeds the base OpenEMR demo dataset,
-not this project's fixture layer on top of it.
+`--build` (#180): removing `agenttracedata` above recreates it fresh, and
+only a rebuilt `agent` image has `/data/traces` correctly pre-owned for a
+fresh volume to copy up from -- see the "Stack up" step's note.
+Removing `agenttracedata` (#180) is part of a FULL reset, not optional --
+without it the dashboard/review queue would show stale trace/feedback
+rows from before the reset, correlated with patients/encounters the reset
+just replaced. Re-run both seed scripts (chart fixtures, then documents)
+after any such reset — `DEMO_MODE=standard` only reseeds the base OpenEMR
+demo dataset, not this project's fixture layer on top of it.
 
 ## Dry-run findings (P5.1, this PR)
 

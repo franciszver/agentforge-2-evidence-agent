@@ -14,7 +14,15 @@
 # (b) setting DEMO_MODE: standard to load the OpenEMR demo dataset.
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up --build
+# --build is required (#180), not just `up`: the `agent` image's
+# /data/traces mountpoint (this file's persistent trace-store volume, see
+# the `agent` service below) only exists, correctly owned, in an image
+# built from the current Dockerfile. `docker compose up` alone rebuilds
+# only when no image exists at all, so a machine with a previously built
+# `agent` image would start it unrebuilt against the new mount instead --
+# every request to the agent then fails with a 500 (see the `agent`
+# service's volumes comment below).
 services:
   openemr:
     environment:
@@ -260,9 +268,57 @@ services:
   agent:
     build:
       context: ../../services/copilot-agent
+    # #180 review finding: traces.db (app/config.py's trace_db_path) backs
+    # the P4.5 dashboard and P4.9 review queue -- both meant to aggregate
+    # across many chat sessions over time, not just the sessions since the
+    # container last started. Without a named volume it lived on the
+    # container's writable layer with no declared mount here, so it (and
+    # every trace/feedback row in it) was already silently wiped on every
+    # container recreation, restart, or OOM-kill -- true before #180 too,
+    # just newly consequential now that a missing REQUEST span means a
+    # permanent 403 on /feedback instead of a merely-empty dashboard.
+    #
+    # Mounted at /data/traces, NOT the whole /data (a second review-gate
+    # finding): /data also holds copilot_dev_client_creds_path /
+    # copilot_prod_client_creds_path (OAuth client secrets) and
+    # copilot_ingestion_base_dir (LocalIngestionStore's raw ingested source
+    # PDFs/intake forms and extracted patient facts, app/config.py).
+    # DEMO_SCRIPT.md's "dies with the container" note about that data is a
+    # DELIBERATE property this mount must not change -- a full demo/env
+    # reset (docs/TEST_PLAN.md Sec 7, docs/DEMO_SCRIPT.md's reset section)
+    # is supposed to wipe the previous run's patient documents and OAuth
+    # creds; only the trace store below is meant to survive a plain
+    # restart. TRACE_DB_PATH below repoints app/config.py's trace_db_path
+    # (default /data/traces.db) inside this scoped mount. See both reset
+    # recipes for the matching `docker volume rm agenttracedata` addition.
+    volumes:
+      - agenttracedata:/data/traces
     environment:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
+      TRACE_DB_PATH: /data/traces/traces.db
+      # #180 review finding: TraceStore.hash_owner_token (services/copilot-agent
+      # /app/trace_store.py) keys the /feedback ownership hash with this
+      # secret. app/config.py's trace_args_hash_secret deliberately ships NO
+      # hardcoded default (this repo is public; a committed literal would be
+      # a published key) -- unset, a random 32 bytes is generated PER
+      # PROCESS. That was harmless while traces.db never outlived a
+      # container (see the volume note above): args_hash is written once
+      # and never compared across a process lifetime, so a restart's key
+      # rotation was unobservable. owner_token_hash IS compared on a LATER
+      # request (a /feedback call after the /chat call that created the
+      # trace), so pairing an unset secret with the persistent volume above
+      # would recreate exactly the failure #180's review caught: every
+      # trace recorded before a restart becomes permanently unownable, and
+      # the clinician who legitimately owns it gets a 403 on their own
+      # feedback. Required (no default) rather than silently falling back
+      # to an empty-string secret, which would be weaker than no pinning at
+      # all. Copy docker/development-easy/.env.example to .env in that same
+      # directory and fill in a generated value -- see that file for the
+      # generation command. scripts/smoke.sh exports a throwaway value of
+      # its own before validating this compose file, since it starts no
+      # containers and never touches real trace data.
+      TRACE_ARGS_HASH_SECRET: "${TRACE_ARGS_HASH_SECRET:?Set TRACE_ARGS_HASH_SECRET -- copy docker/development-easy/.env.example to .env and fill in a generated value; see app/config.py's trace_args_hash_secret docstring}"
       # P3.10e (issue #73): default "llama_server" -- flip to "ollama" for
       # instant rollback of the answer/extract/reranker roles.
       COPILOT_LLM_ENGINE: llama_server
@@ -320,3 +376,4 @@ volumes:
   ollamamodels: {}
   llamacppmodels: {}
   llamacppembedmodels: {}
+  agenttracedata: {}
