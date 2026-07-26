@@ -156,13 +156,17 @@ comparison (rule out warm-state suppression entirely) is a further,
 NOT-yet-run step -- see the report's own written interpretation for
 whether it's warranted.
 
-**Auth.** ``app.chat._default_token_validator`` (the flag-OFF default,
+**Auth.** #168 (VULN-0001) made the flag-OFF default (
 ``copilot_per_user_token_enabled=False`` -- this dev stack's setting)
-accepts any non-empty bearer token; no real OAuth dance is needed to POST
-``/chat`` itself (a SEPARATE, already-bootstrapped dev-token bridge --
-``scripts/bootstrap-copilot-dev-client.sh`` -- supplies the REAL OpenEMR
-token the AGENT's own tool calls use server-side; that is a prerequisite
-this harness assumes is already run, not something it does itself).
+fail-closed: every bearer token is now rejected UNLESS
+``copilot_dev_accept_any_bearer_token`` is also set. This dev stack's
+compose file sets it, so ``app.chat._dev_permissive_token_validator`` is
+active and any non-empty bearer token still works; no real OAuth dance is
+needed to POST ``/chat`` itself (a SEPARATE, already-bootstrapped dev-token
+bridge -- ``scripts/bootstrap-copilot-dev-client.sh`` -- supplies the REAL
+OpenEMR token the AGENT's own tool calls use server-side; that is a
+prerequisite this harness assumes is already run, not something it does
+itself).
 
 **Usage -- MUST run inside ``development-easy-agent-1`` (same trap #154
 documents: ``copilot_internal`` is ``internal: true``, no host ports).**
@@ -1122,7 +1126,7 @@ def main() -> None:
     parser.add_argument("--draws", type=int, default=_DEFAULT_DRAWS, help="draws per question (default 8)")
     parser.add_argument("--start-index", type=int, default=0, help="starting draw_index for this session (default 0; bump for a second batch so indices don't collide)")
     parser.add_argument("--base-url", default=_DEFAULT_BASE_URL, help="agent base URL (default in-container localhost:8000)")
-    parser.add_argument("--token", default=_DEFAULT_TOKEN, help="bearer token (flag-OFF stub validator accepts any non-empty value)")
+    parser.add_argument("--token", default=_DEFAULT_TOKEN, help="bearer token (any non-empty value works with copilot_dev_accept_any_bearer_token=true, this dev stack's setting)")
     parser.add_argument("--session-id", default=None, help="label for this run's draws (default: a fresh random id) -- distinguishes this batch from any prior batch appended to the same *.jsonl, so report.json's by_session never silently mixes them")
     parser.add_argument(
         "--no-interleave",

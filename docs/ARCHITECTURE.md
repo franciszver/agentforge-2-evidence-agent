@@ -301,11 +301,19 @@ flowchart LR
    by OpenEMR after session + CSRF authentication, carrying
    `{sub, username, pid, iat, exp}`. It is **not** an OpenEMR OAuth token —
    it identifies the user and binds the conversation's patient id, but it
-   cannot itself authorize an OpenEMR API call. In the **default** dev
-   configuration the agent's `TokenValidator` (`chat.py`) is a stub that only
-   checks the header is non-empty; the production validator — RFC 7662
+   cannot itself authorize an OpenEMR API call. As of #168 (VULN-0001,
+   critical, Phase 3 red-team) the shipped **default** — `TokenValidator`
+   (`chat.py`) with `copilot_per_user_token_enabled` off — is **fail-closed**:
+   every bearer token is rejected (a garbage token now gets a clean 401, not
+   a 200 with patient data). A dev-only stub that accepts any non-empty
+   token still exists, but it now requires explicitly setting
+   `copilot_dev_accept_any_bearer_token` (logged loudly on every use) — the
+   local dev stack's compose file sets it, since that stack's port is
+   internal-network-only and every real tool call is already driven by the
+   dev token bridge's own demo-clinician token regardless of what this
+   validator does (see boundary 3). The production validator — RFC 7662
    introspection of a real OpenEMR token against OpenEMR's own token state — is
-   now **built and proven live** (#124) and is selected when the per-user flow
+   **built and proven live** (#124) and is selected when the per-user flow
    (boundary 3) is enabled.
 3. **Agent ↔ OpenEMR API** — this is the boundary that most diverges from
    the original design, and the divergence is load-bearing to disclose. The

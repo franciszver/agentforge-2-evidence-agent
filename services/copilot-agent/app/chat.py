@@ -6,10 +6,16 @@ FastAPI dispatches independently, so both work without a clash. The shell's
 ``<form>`` posts back to ``/chat``.
 
 Auth: the bearer token is validated through an injectable ``TokenValidator``
-seam (``get_token_validator``). The default implementation is a stub that
-only checks the token is non-empty -- TODO: replace with real OpenEMR token
-introspection. A missing header or a validator rejection both produce a 401
-before the planner is ever constructed or invoked.
+seam (``get_token_validator``). With ``copilot_per_user_token_enabled`` off
+(the shipped default), validation is FAIL-CLOSED (#168, VULN-0001): every
+token is rejected. A dev-only stub that accepts any non-empty token exists
+behind an explicit, loudly-logged opt-in
+(``copilot_dev_accept_any_bearer_token``) for local development. Real
+OpenEMR token introspection is already built and used when
+``copilot_per_user_token_enabled`` is on -- see
+``build_introspection_validator``. A missing header or a validator
+rejection both produce a 401 before the planner is ever constructed or
+invoked.
 
 Multi-turn state: an in-memory ``ConversationStore`` keyed by
 ``conversation_id``, binding each conversation to the ``patient_id`` it was
@@ -232,14 +238,36 @@ PlannerFactory = Callable[[int], PlannerProtocol]
 Clock = Callable[[], datetime]
 
 
-def _default_token_validator(token: str) -> None:
-    """Stub token validator: accepts any non-empty token.
+def _fail_closed_token_validator(token: str) -> None:
+    """#168 (VULN-0001) fix: the flag-off, dev-flag-off default. Rejects EVERY
+    token, valid-looking or not -- with ``copilot_per_user_token_enabled`` off
+    and no real introspection wired up, there is no way to actually verify a
+    token, so the safe default is to accept none, not to accept all.
 
-    The flag-OFF default (``copilot_per_user_token_enabled=False``). Replaced by
-    the introspection validator when the #124 Phase 4 flag is on.
+    Raises the same ``TokenValidationError`` every other validator raises, so
+    ``chat_endpoint``'s except clause maps this to a clean 401 exactly as
+    before -- callers cannot distinguish "no per-user auth configured" from
+    "bad token" by response shape.
+    """
+    raise TokenValidationError("token validation is not configured for this deployment")
+
+
+def _dev_permissive_token_validator(token: str) -> None:
+    """DEV-ONLY stub token validator: accepts any non-empty token.
+
+    Only reachable when ``copilot_dev_accept_any_bearer_token`` is explicitly
+    set (see ``app.config.Settings`` for why this must never be true outside
+    local development) -- restores the pre-#168 behaviour for that opt-in
+    case. Logs a loud warning on every use (no PHI, no token value) so the
+    permissive path is never silently active.
     """
     if not token:
         raise TokenValidationError("missing bearer token")
+    _logger.warning(
+        "chat request authenticated via dev-only permissive bearer-token stub "
+        "(copilot_dev_accept_any_bearer_token=true) -- any non-empty token is "
+        "accepted; this MUST NOT be enabled outside local development",
+    )
 
 
 class Introspector(Protocol):
@@ -339,12 +367,19 @@ def get_token_validator() -> TokenValidator:
     """FastAPI dependency: the active ``TokenValidator``. Override in tests.
 
     Flag ON (``copilot_per_user_token_enabled``): validates the forwarded
-    per-user bearer via OpenEMR introspection. Flag OFF: the non-empty stub,
-    byte-identical to today.
+    per-user bearer via OpenEMR introspection.
+
+    Flag OFF (the shipped default): fail-closed as of #168 (VULN-0001) --
+    every token is rejected UNLESS ``copilot_dev_accept_any_bearer_token`` is
+    also explicitly set, in which case the pre-#168 any-non-empty-token stub
+    is used instead (dev-only; see that setting's docstring).
     """
-    if get_settings().copilot_per_user_token_enabled:
+    settings = get_settings()
+    if settings.copilot_per_user_token_enabled:
         return build_introspection_validator(get_token_introspector())
-    return _default_token_validator
+    if settings.copilot_dev_accept_any_bearer_token:
+        return _dev_permissive_token_validator
+    return _fail_closed_token_validator
 
 
 LaunchBindingChecker = Callable[[str, int], None]

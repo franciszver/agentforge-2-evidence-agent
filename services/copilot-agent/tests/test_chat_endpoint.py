@@ -672,27 +672,24 @@ def test_rejected_token_returns_401_and_never_invokes_planner():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "#168 (VULN-0001, evals/recordings/identity-authz-garbage-bearer-token/): "
-        "get_token_validator (app/chat.py:297-306) hands back the permissive "
-        "_default_token_validator (app/chat.py:194-201, accepts ANY non-empty token -- its "
-        "own docstring says so) whenever copilot_per_user_token_enabled is False, the "
-        "shipped default. Fixed (fail-closed) behaviour: a garbage bearer token should be "
-        "REJECTED."
-    ),
-    strict=True,
-)
 def test_default_token_validator_rejects_garbage_bearer_token(monkeypatch):
+    # #168 (VULN-0001, evals/recordings/identity-authz-garbage-bearer-token/):
+    # previously get_token_validator (app/chat.py) handed back a permissive
+    # stub (accepts ANY non-empty token -- its own docstring said so) whenever
+    # copilot_per_user_token_enabled is False, the shipped default. Fixed
+    # (fail-closed): with both copilot_per_user_token_enabled AND
+    # copilot_dev_accept_any_bearer_token unset/False (the shipped default for
+    # each), a garbage bearer token is REJECTED.
+    #
     # Exercises the PUBLIC seam (get_token_validator(), the FastAPI dependency
-    # itself) rather than importing the private _default_token_validator directly --
-    # this both survives the likely fix (deleting the permissive stub, which would
-    # turn a direct import into an ImportError failing every test in this module at
-    # collection) AND actually proves the reason string's second clause: that the
-    # shipped default (copilot_per_user_token_enabled unset/False) really does hand
-    # back a validator that accepts garbage, not just that _default_token_validator
-    # in isolation does.
+    # itself) rather than importing a private validator function directly --
+    # this both survives further internal refactors (which would turn a
+    # direct import into an ImportError failing every test in this module at
+    # collection) AND actually proves the shipped default (both flags
+    # unset/False) really does hand back a validator that rejects garbage,
+    # not just that some validator function in isolation does.
     monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    monkeypatch.delenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", raising=False)
 
     validator = get_token_validator()
 
