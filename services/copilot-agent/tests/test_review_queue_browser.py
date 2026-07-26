@@ -97,7 +97,10 @@ def test_promote_click_produces_a_valid_regression_case_yaml(app_base_url: str) 
             page.goto(f"{app_base_url}/review")
 
             assert page.get_by_text(_SEEDED_CORRELATION_ID, exact=False).first.is_visible()
-            assert page.get_by_text(_SEEDED_COMMENT, exact=False).first.is_visible()
+            # #176: the raw comment is never rendered on this unauthenticated
+            # page (may contain PHI) -- only the fixed redaction placeholder.
+            assert "redacted" in (page.content() or "").lower()
+            assert _SEEDED_COMMENT not in (page.content() or "")
 
             promote_button = page.locator(
                 f'[data-testid="promote-button"][data-correlation-id="{_SEEDED_CORRELATION_ID}"]'
@@ -117,10 +120,11 @@ def test_promote_click_produces_a_valid_regression_case_yaml(app_base_url: str) 
             yaml_text = output.text_content() or ""
             assert "category: regression" in yaml_text
             assert _SEEDED_CORRELATION_ID in yaml_text
-            # #157: the raw comment is shown on the /review page (asserted
-            # above) but scrubbed from the promoted export -- a clinician who
-            # typed PHI into the comment must not leak it into the public
-            # evals/ repo. Only a neutral TODO placeholder is emitted.
+            # #157: the raw comment is never in the promoted export either --
+            # a clinician who typed PHI into the comment must not leak it
+            # into the public evals/ repo. Only a neutral TODO placeholder is
+            # emitted. (#176: the /review page itself also redacts it now,
+            # asserted above.)
             assert _SEEDED_COMMENT not in yaml_text
             assert "TODO" in yaml_text
             assert elapsed_seconds < 60

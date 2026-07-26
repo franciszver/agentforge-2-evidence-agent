@@ -60,7 +60,10 @@ def test_review_queue_lists_a_thumbs_down_entry(tmp_path: Path) -> None:
     response = client.get("/review")
 
     assert "corr-1" in response.text
-    assert "wrong dose entirely" in response.text
+    # #176: the raw comment is never rendered (may contain PHI, this route
+    # is unauthenticated) -- only the fixed redaction placeholder is shown.
+    assert "wrong dose entirely" not in response.text
+    assert "redacted" in response.text
     assert 'data-testid="promote-button"' in response.text
     assert 'data-correlation-id="corr-1"' in response.text
 
@@ -77,13 +80,15 @@ def test_review_queue_does_not_list_a_clean_thumbs_up_entry(tmp_path: Path) -> N
     assert "corr-2" not in response.text
 
 
-def test_review_queue_escapes_html_in_correlation_id_and_comment(tmp_path: Path) -> None:
+def test_review_queue_escapes_html_in_correlation_id(tmp_path: Path) -> None:
     # correlation_id can be attacker-influenced (inbound X-Correlation-ID
-    # header, app.correlation.CorrelationIdMiddleware) and feedback_comment
-    # is user-authored free text -- both are rendered on this page for the
-    # first time (the P4.5 dashboard deliberately never renders per-record
-    # detail). Must be HTML-escaped, not interpolated raw, or this page is a
-    # stored-XSS vector.
+    # header, app.correlation.CorrelationIdMiddleware) and is rendered on
+    # this page for the first time (the P4.5 dashboard deliberately never
+    # renders per-record detail). Must be HTML-escaped, not interpolated
+    # raw, or this page is a stored-XSS vector. feedback_comment is
+    # deliberately NOT covered here -- #176 redacts it entirely (see
+    # test_review_queue_lists_a_thumbs_down_entry), so it is never
+    # interpolated at all, raw or escaped.
     store = _override(tmp_path)
     hostile_id = "<script>window.pwned=1</script>"
     store.record_request_span(correlation_id=hostile_id, start_ts=0.0, end_ts=0.1, ok=True)
@@ -92,13 +97,12 @@ def test_review_queue_escapes_html_in_correlation_id_and_comment(tmp_path: Path)
         start_ts=0.0,
         end_ts=0.0,
         feedback_thumb=FeedbackThumb.DOWN,
-        feedback_comment="<img src=x onerror=alert(1)>",
+        feedback_comment="not asserted on -- redacted regardless (#176)",
     )
 
     response = client.get("/review")
 
     assert "<script>window.pwned=1</script>" not in response.text
-    assert "<img src=x onerror=alert(1)>" not in response.text
     assert "&lt;script&gt;" in response.text
 
 
