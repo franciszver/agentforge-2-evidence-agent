@@ -1390,7 +1390,7 @@ def test_discontinued_medication_should_not_verify_currently_taking_claim():
         pytest.param(True, True, id="both_gates_on"),
     ],
 )
-def test_gates_matrix_topical_irrelevance_shape_170(
+def test_gates_matrix_topical_irrelevance_shape_170_known_vulnerable_all_configs(
     require_tool_call_scoping: bool, require_answer_grounding: bool
 ) -> None:
     """Issue #171's centrepiece for the #170 shape, EXECUTED against the
@@ -1449,7 +1449,7 @@ def test_gates_matrix_topical_irrelevance_shape_170(
         pytest.param(True, True, id="both_gates_on"),
     ],
 )
-def test_gates_matrix_discontinued_medication_shape_169(
+def test_gates_matrix_discontinued_medication_shape_169_known_vulnerable_all_configs(
     require_tool_call_scoping: bool, require_answer_grounding: bool
 ) -> None:
     """Issue #171's centrepiece for the #169 shape, EXECUTED against the

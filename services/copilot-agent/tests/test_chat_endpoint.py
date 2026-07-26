@@ -586,20 +586,29 @@ def test_default_token_validator_rejects_garbage_bearer_token():
         "#167 (VULN-0004, deductive from source -- no recording; see the issue body's "
         "'What was and was not demonstrated'): ChatRequest.message (app/chat.py:137) has no "
         "max_length -- contrast app.feedback.MAX_COMMENT_LENGTH (app/feedback.py:67), which "
-        "DOES bound FeedbackRequest.comment (app/feedback.py:75) the same way. "
-        "ConversationStore (app/chat.py:570-594) exposes exactly get/create/append_turn and "
-        "nothing else -- no eviction, TTL, or cap; its own docstring carries a TODO(P4.2) "
-        "placeholder for exactly this. Fixed behaviour asserted here: ChatRequest should "
-        "reject a message over a documented MAX_CHAT_MESSAGE_LENGTH bound (mirroring "
-        "MAX_COMMENT_LENGTH's precedent), and ConversationStore should expose SOME "
-        "eviction/cap surface."
+        "DOES bound FeedbackRequest.comment (app/feedback.py:75) the same way. Fixed "
+        "behaviour asserted here: ChatRequest should reject a message over a documented "
+        "MAX_CHAT_MESSAGE_LENGTH bound (mirroring MAX_COMMENT_LENGTH's precedent)."
     ),
     strict=True,
 )
-def test_chat_request_rejects_overlong_message_and_conversation_store_has_eviction_surface():
+def test_chat_request_rejects_overlong_message():
     with pytest.raises(pydantic.ValidationError):
         ChatRequest(message="x" * 1_000_000, patient_id=1)
 
+
+@pytest.mark.xfail(
+    reason=(
+        "#167 (VULN-0004, deductive from source -- no recording; see the issue body's "
+        "'What was and was not demonstrated'): ConversationStore (app/chat.py:570-594) "
+        "exposes exactly get/create/append_turn and nothing else -- no eviction, TTL, or "
+        "cap; its own docstring carries a TODO(P4.2) placeholder for exactly this. Fixed "
+        "behaviour asserted here: ConversationStore should expose SOME eviction/cap "
+        "surface."
+    ),
+    strict=True,
+)
+def test_conversation_store_has_eviction_surface():
     # No such bound exists today (P4.2's own TODO) -- any of these names
     # would satisfy "some eviction/cap surface"; none is present yet.
     eviction_surface_names = {
