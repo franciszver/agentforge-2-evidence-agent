@@ -99,10 +99,13 @@ def create_app() -> FastAPI:
     app.add_middleware(CorrelationIdMiddleware)
     # Issue #173: registered AFTER CorrelationIdMiddleware above -- Starlette
     # applies add_middleware in REVERSE order of registration (last added =
-    # outermost), so this ends up OUTSIDE it. A request rejected for size
-    # must never first mint and log a correlation id. See
-    # app/body_size_limit.py's module docstring for the full rationale and
-    # app/config.py's DEFAULT_MAX_REQUEST_BODY_BYTES for the cap value.
+    # outermost), so this ends up OUTSIDE it. This makes the CONTENT-LENGTH
+    # pre-check reject before a correlation id is ever minted/logged --
+    # but NOT the streaming-byte-counter check, which runs inside
+    # CorrelationIdMiddleware and so DOES carry a correlation id (measured;
+    # see app/body_size_limit.py's module docstring for both paths' actual
+    # behaviour, not just the ordering rationale). See app/config.py's
+    # DEFAULT_MAX_REQUEST_BODY_BYTES for the cap value.
     app.add_middleware(
         BodySizeLimitMiddleware, max_bytes=get_settings().copilot_max_request_body_bytes
     )

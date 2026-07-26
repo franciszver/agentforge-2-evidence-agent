@@ -44,21 +44,37 @@ DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 # wire and JSON-parsed -- this one fires BEFORE any of that, both from the
 # pre-parse ``Content-Length`` header (when present and truthful) and from a
 # running count of actual bytes received (when the header lies or is
-# absent), so it also covers app.feedback's request body, and any future
-# POST route, not just /chat.
+# absent). The two checks have different reach: the ``Content-Length``
+# pre-check runs for EVERY request regardless of method or route (it never
+# calls ``receive()`` itself), but the streaming counter only accumulates
+# bytes a route actually reads via ``receive()`` -- a route that ignores its
+# body (a plain GET handler, e.g. ``/health``) never triggers it even for an
+# oversized streamed body with no ``Content-Length``, since nothing ever
+# calls the wrapped ``receive`` to count. In practice this cap fully covers
+# app.feedback's request body and any future body-reading POST route, not
+# just /chat, since those routes DO read their body.
 #
-# Value: every real request body in this service is small -- the widest
-# legitimate ``/chat`` payload is a 4000-char ``message`` (up to ~16KB as
-# worst-case 4-byte-per-char UTF-8, roughly doubled again by JSON string
-# escaping in the pathological case) plus a 64-char conversation_id and an
-# int patient_id; ``/feedback``'s 2000-char comment is smaller still. 64KB
-# (65536 bytes) is comfortably over double that pathological worst case
-# while staying at the low end of the reasonable range for a service that
-# never legitimately needs to accept more than a few KB -- the measured
-# threat model (issue #173 design comment) is a process with a foothold on
-# the internal-only ``copilot_internal`` network posting directly to this
-# service's unpublished port, so there is no legitimate caller this could
-# ever be too tight for.
+# Value, MEASURED against the real ``ChatRequest`` constants, not estimated:
+# pydantic's ``max_length=4000`` on ``message`` counts Unicode CODE POINTS,
+# so 4000 code points from the astral plane (e.g. U+1F600, each 1 char to
+# pydantic) is the true worst case, not 4000 ASCII bytes. The sanctioned
+# PHP/Guzzle caller JSON-encodes with ``ensure_ascii``-equivalent escaping
+# by default, so that IS the real wire encoding: each astral code point
+# becomes a ``\uXXXX\uXXXX`` surrogate-pair escape, 12 bytes. 4000 such
+# code points plus a 64-char ``conversation_id`` and JSON structural
+# overhead (keys, quotes, the int ``patient_id``) measures to 48,127 bytes
+# -- the actual worst-case legitimate ``/chat`` body, not a ~16-32KB
+# estimate. ``/feedback``'s 2000-char comment is smaller still. 64KB
+# (65536 bytes) gives ~1.36x headroom over that measured 48,127-byte worst
+# case (NOT "comfortably over double" -- a future editor tightening this
+# cap on the assumption of 2x+ headroom would start rejecting legitimate
+# 4000-char non-ASCII messages) while staying at the low end of the
+# reasonable range for a service that never legitimately needs to accept
+# more than a few KB -- the measured threat model (issue #173 design
+# comment) is a process with a foothold on the internal-only
+# ``copilot_internal`` network posting directly to this service's
+# unpublished port, so there is no legitimate caller this could ever be too
+# tight for.
 DEFAULT_MAX_REQUEST_BODY_BYTES = 65536
 
 

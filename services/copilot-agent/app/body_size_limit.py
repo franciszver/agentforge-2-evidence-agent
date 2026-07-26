@@ -27,9 +27,24 @@ historically hands ``call_next`` off to a separate task, which would disturb
 the correlation-id contextvar timing the SSE generator in ``app.chat``
 depends on. This middleware sits OUTSIDE (registered after, hence outermost
 -- see ``app.main.create_app``, which relies on Starlette applying
-``add_middleware`` in reverse-registration order) ``CorrelationIdMiddleware``
-specifically so that a request rejected for size never gets a correlation id
-minted or logged in the first place.
+``add_middleware`` in reverse-registration order) ``CorrelationIdMiddleware``.
+
+**This ordering claim holds for only ONE of the two rejection paths --
+measured, not assumed.** For the ``Content-Length`` pre-check (below), the
+request is rejected before ``self.app(...)`` is ever called at all, so
+``CorrelationIdMiddleware`` never runs and no id is minted or logged --
+confirmed by an actual request: the 413 response carries no
+``X-Correlation-ID`` header. For the streaming-counter path, the rejection
+exception is raised INSIDE ``self.app(scope, counting_receive, send)`` --
+i.e. inside ``CorrelationIdMiddleware``, which by then has already minted
+and bound the id before handing off to routing -- so a streaming-counter
+413 DOES carry a correlation id and WILL have been logged under it if
+anything logged before the cap was crossed; confirmed the same way (a real
+streamed-over-cap request came back with
+``X-Correlation-ID: 51cb57d6-...``). The outermost-registration choice is
+still correct (it is what makes the ``Content-Length`` case cheap), but do
+not read it as a blanket "no correlation id for any size rejection" -- that
+was true of only one of the two paths.
 
 Checks BOTH:
 
@@ -46,14 +61,16 @@ construction interfere with a streamed SSE response body
 lifetime ``CorrelationIdMiddleware``'s ``send`` wrapper (header injection)
 already has to be careful around.
 
-**Traceability tradeoff, deliberate:** because this middleware sits OUTSIDE
-``CorrelationIdMiddleware``, a request rejected here gets NO correlation id
-at all -- it never reaches the code that would mint one. For genuinely
-adversarial traffic (the threat model this exists for) that's the right
-call: no reason to spend a mint/log cycle on a request that's being thrown
-away anyway. The cost lands on a legitimate but misconfigured caller
-instead -- its 413 shows up in ops logs with no correlation id to trace it
-by. Accepted; not something this middleware attempts to fix.
+**Traceability tradeoff, deliberate -- Content-Length path only (see above):**
+because a ``Content-Length`` pre-check rejection never calls ``self.app(...)``
+at all, it never reaches ``CorrelationIdMiddleware`` and gets NO correlation
+id. For genuinely adversarial traffic (the threat model this exists for)
+that's the right call: no reason to spend a mint/log cycle on a request
+that's being thrown away anyway. The cost lands on a legitimate but
+misconfigured caller instead -- its 413 shows up in ops logs with no
+correlation id to trace it by. Accepted; not something this middleware
+attempts to fix. The streaming-counter path is unaffected by this tradeoff
+-- it already has a correlation id by the time it can reject (see above).
 
 The 413 body is built via a real ``starlette.responses.JSONResponse`` --
 itself an ASGI callable -- rather than hand-rolled ``send()`` messages, so
@@ -160,5 +177,16 @@ class BodySizeLimitMiddleware:
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
+        # Unreachable today, noted for a future editor: this assumes the
+        # wrapped app has not already started its own response (called
+        # ``send({"type": "http.response.start", ...})``) before the cap
+        # was crossed. Every current body-consuming route in this service
+        # fully reads and JSON-parses its request body before producing any
+        # response, so that can't happen yet -- but a future ROUTE that
+        # streams its response while still consuming a streamed REQUEST body
+        # (neither exists in this app today) could trip the cap after
+        # already emitting ``http.response.start``, and this second
+        # ``http.response.start`` from ``JSONResponse.__call__`` below would
+        # violate the ASGI protocol (uvicorn raises ``RuntimeError``).
         response = JSONResponse(status_code=413, content={"detail": _BODY_TOO_LARGE_DETAIL})
         await response(scope, receive, send)

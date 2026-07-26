@@ -238,6 +238,76 @@ def test_streaming_body_over_cap_without_content_length_is_rejected():
     assert sent_ok[0]["status"] == 200
 
 
+def test_body_exactly_at_cap_is_not_rejected_either_check():
+    """Boundary pin, both checks: a body of EXACTLY ``max_bytes`` must pass.
+    Without this, changing ``> self.max_bytes`` to ``>=`` in either the
+    ``Content-Length`` pre-check or the streaming counter would still leave
+    every other test in this module green while incorrectly rejecting a
+    request at the cap itself."""
+    # Content-Length pre-check: declared size == cap.
+    cl_inner_called = False
+
+    async def cl_inner_app(scope, receive, send) -> None:
+        nonlocal cl_inner_called
+        cl_inner_called = True
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    cl_middleware = BodySizeLimitMiddleware(cl_inner_app, max_bytes=100)
+    cl_scope = _make_scope([(b"content-length", b"100")])
+
+    async def cl_receive():
+        return {"type": "http.request", "body": b"0" * 100, "more_body": False}
+
+    cl_sent: list[dict] = []
+
+    async def cl_send(message):
+        cl_sent.append(message)
+
+    asyncio.run(cl_middleware(cl_scope, cl_receive, cl_send))
+
+    assert cl_inner_called
+    assert cl_sent[0]["status"] == 200
+
+    # Streaming counter: cumulative received bytes == cap, delivered as
+    # chunks (so the running total, not just a single message, hits exactly
+    # max_bytes).
+    stream_inner_reached_send = False
+
+    async def stream_inner_app(scope, receive, send) -> None:
+        nonlocal stream_inner_reached_send
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        stream_inner_reached_send = True
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    stream_middleware = BodySizeLimitMiddleware(stream_inner_app, max_bytes=20)
+    stream_scope = _make_scope([])  # no content-length -- forces the streaming counter
+
+    stream_chunks = [b"0" * 10, b"1" * 10]  # cumulative exactly 20 bytes == cap
+    stream_chunk_iter = iter(stream_chunks)
+
+    async def stream_receive():
+        try:
+            chunk = next(stream_chunk_iter)
+        except StopIteration:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.request", "body": chunk, "more_body": True}
+
+    stream_sent: list[dict] = []
+
+    async def stream_send(message):
+        stream_sent.append(message)
+
+    asyncio.run(stream_middleware(stream_scope, stream_receive, stream_send))
+
+    assert stream_inner_reached_send
+    assert stream_sent[0]["status"] == 200
+
+
 # ---------------------------------------------------------------------------
 # App-level: the real /chat route, wired through app.main.create_app(), with
 # the real (config-sourced) cap -- proves this is actually registered and
@@ -288,14 +358,18 @@ def test_oversized_content_length_rejected_before_endpoint_reached():
         json={"message": "hi", "patient_id": 1},
         headers={"Authorization": "Bearer bad-token"},
     )
-    assert normal_response.status_code != 413
+    assert normal_response.status_code == 401  # the real auth-rejection status, not just "not 413"
 
 
 def test_body_size_limit_middleware_is_outermost():
     """Ordering proof: BodySizeLimitMiddleware must run BEFORE
-    CorrelationIdMiddleware, so a rejected-for-size request never gets a
-    correlation id minted/logged. Inspect Starlette's resolved middleware
-    stack order directly rather than relying on behavioural side effects."""
+    CorrelationIdMiddleware. This ordering only guarantees "no correlation
+    id minted/logged" for the Content-Length pre-check rejection path -- the
+    streaming-counter rejection path runs INSIDE CorrelationIdMiddleware (it
+    has already minted/bound an id by then), so it DOES carry one; see
+    app/body_size_limit.py's module docstring for both paths measured.
+    Inspect Starlette's resolved middleware stack order directly rather than
+    relying on behavioural side effects."""
     from app.body_size_limit import BodySizeLimitMiddleware
     from app.correlation import CorrelationIdMiddleware
     from app.main import app as real_app
@@ -391,4 +465,4 @@ def test_streaming_body_over_cap_through_real_chat_route_via_asgi_transport():
             return await client.send(request)
 
     under_cap_response = asyncio.run(_send_under_cap())
-    assert under_cap_response.status_code != 413
+    assert under_cap_response.status_code == 401  # the real auth-rejection status, not just "not 413"

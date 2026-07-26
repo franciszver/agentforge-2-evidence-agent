@@ -289,7 +289,16 @@ services:
     # future unbounded term like #174's roster cache before that issue's
     # fix landed) still gets caught rather than silently consuming
     # unbounded host memory.
+    #
+    # `memswap_limit` is pinned to the SAME value deliberately: Docker's
+    # semantics grant swap equal to `mem_limit` when `memswap_limit` is left
+    # unset, which would have put the actual kill point at ~4g -- the
+    # pathological figure above, not the intended ceiling. Setting both to
+    # 2g means 2g total memory+swap, so this is genuinely the ~1GB-realistic
+    # / ~4GB-pathological-avoiding ceiling described above, not merely a
+    # `mem_limit` number that looks like one.
     mem_limit: 2g
+    memswap_limit: 2g
     # `restart: unless-stopped` (previously absent -- Docker's default is
     # `no`): without this, an OOM-kill at the ceiling above leaves the
     # agent DOWN until an operator manually intervenes, unlike every other
