@@ -173,8 +173,15 @@ three beats were measured against.
    (generation command in that file) -- the overlay's `agent` service
    requires it (#180). Then:
    ```
-   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
    ```
+   `--build` is required here (#180): the `agent` image's `/data/traces`
+   mountpoint (this compose file's persistent trace-store volume) only
+   exists, correctly owned, in an image built from the current Dockerfile
+   -- `docker compose up` alone rebuilds only when no image exists at all,
+   so any machine that already has an older `agent` image would otherwise
+   start it unrebuilt against the new mount and get a root-owned directory
+   the container's `appuser` cannot write to (every trace write fails).
    Wait for `openemr`, `ollama`, and the `llama-server*` services healthy
    (`docker compose ps`). `DEMO_MODE=standard` loads the pinned OpenEMR
    demo dataset automatically (`docs/TEST_PLAN.md` §7).
@@ -538,8 +545,11 @@ actually exists):
 cd docker/development-easy
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
 docker volume rm development-easy_databasevolume development-easy_sitesvolume development-easy_agenttracedata
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
 ```
+`--build` (#180): removing `agenttracedata` above recreates it fresh, and
+only a rebuilt `agent` image has `/data/traces` correctly pre-owned for a
+fresh volume to copy up from -- see the "Stack up" step's note.
 Removing `agenttracedata` (#180) is part of a FULL reset, not optional --
 without it the dashboard/review queue would show stale trace/feedback
 rows from before the reset, correlated with patients/encounters the reset

@@ -41,7 +41,7 @@ Found a bug or a missing piece mid-task? Don't fix it on your branch as a stowaw
 
 ## Running the project
 
-- **Stack up:** see `CONTRIBUTING.md` quick start plus the Co-Pilot overlay, from `docker/development-easy/`. First time only: copy `.env.example` to `.env` and fill in `TRACE_ARGS_HASH_SECRET` (generation command in that file) -- the overlay's `agent` service requires it (#180). Then: `docker compose -f docker-compose.yml -f docker-compose.copilot.yml up`.
+- **Stack up:** see `CONTRIBUTING.md` quick start plus the Co-Pilot overlay, from `docker/development-easy/`. First time only: copy `.env.example` to `.env` and fill in `TRACE_ARGS_HASH_SECRET` (generation command in that file) -- the overlay's `agent` service requires it (#180). Then: `docker compose -f docker-compose.yml -f docker-compose.copilot.yml up --build` -- `--build` is required (not just `up`): any machine with a previously built `agent` image won't rebuild it on plain `up`, and only a rebuilt image has `/data/traces` (the persistent trace-store mount, #180) correctly owned for `appuser` to write to.
 - **Tests:** commands and cadence in `docs/TEST_PLAN.md` §8.
 - **App:** OpenEMR at the usual dev ports (`admin`/`pass` on demo data); Co-Pilot panel on the patient dashboard; standalone PWA at `/copilot`.
 - **Phone access over Tailscale:** `scripts/tailscale-serve-copilot.sh up` maps the stack to tailnet HTTPS (`status`/`down` also available); see the script header for what it exposes and the one known limitation (OAuth consent redirect flow, off by default in dev).

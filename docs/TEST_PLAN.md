@@ -181,8 +181,14 @@ If a stack was ever started before the demo-mode overlay applied (an empty `pati
 cd docker/development-easy
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
 docker volume rm development-easy_databasevolume development-easy_sitesvolume development-easy_agenttracedata
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d --build
 ```
+`--build` is required (#180), not just `up -d`: removing `agenttracedata`
+recreates it fresh, and only an `agent` image rebuilt from the current
+Dockerfile has `/data/traces` correctly owned for `appuser` to write to --
+a machine with a previously built image would otherwise reuse it
+unrebuilt (`docker compose up` only rebuilds when no image exists at all)
+and every trace write would fail with a permission error.
 
 The stack comes back up on clean volumes, `DEMO_MODE=standard` reseeds demo data against the current schema, and the model and derived build-artifact volumes survive; re-run `evals/fixtures/seed.py` afterward to reapply the canonical fixture layer. **Never** import the OpenEMR-image-bundled `/root/demo_5_0_0_5.sql` directly into a running stack — it is a full OpenEMR 5.0.0.5-era database dump, and loading it downgrades the live schema and version metadata to 5.0.0.5 and disables the `rest_api`/`rest_fhir_api`/`oauth_password_grant` globals, breaking the API.
 

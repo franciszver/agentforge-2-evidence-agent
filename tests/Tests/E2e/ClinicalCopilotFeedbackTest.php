@@ -14,12 +14,14 @@
  * real dev stack: browser -> public/feedback-proxy.php (P4.4, session +
  * CSRF gated) -> agent POST /feedback (P4.3) -> TraceStore.record_feedback_span
  * (P4.2). It cannot itself query the agent's SQLite trace store
- * (/data/traces.db lives in the `agent` container, on the `copilot_internal`
- * network only, with no shared volume and no docker socket reachable from
- * inside the `openemr` container this test runs in -- see
- * docker-compose.copilot.yml). The correlation id is written to STDERR
- * below so a live run can join it against the trace store directly (e.g.
- * `docker exec development-easy-agent-1 sqlite3 /data/traces.db
+ * (/data/traces/traces.db, #180's persistent-volume path -- see
+ * docker-compose.copilot.yml's TRACE_DB_PATH -- lives in the `agent`
+ * container, on the `copilot_internal` network only, with no shared volume
+ * mounted into THIS container and no docker socket reachable from inside
+ * the `openemr` container this test runs in). The correlation id is
+ * written to STDERR below so a live run can join it against the trace
+ * store directly (e.g.
+ * `docker exec development-easy-agent-1 sqlite3 /data/traces/traces.db
  * "SELECT * FROM spans WHERE correlation_id='<id>' AND span_type='feedback'"`)
  * -- the P4.4 task's required live verification, done once outside this
  * automated suite against the rebuilt agent.
