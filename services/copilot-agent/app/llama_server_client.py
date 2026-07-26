@@ -71,7 +71,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
-from app.ollama_client import LLMEngineError, LlmCallStats, OllamaClient
+from app.ollama_client import CHAT_MAX_TOKENS, LLMEngineError, LlmCallStats, OllamaClient
 
 _logger = logging.getLogger(__name__)
 
@@ -81,7 +81,10 @@ _CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
 # Hard cap applied to chat()/chat_stream() -- see module docstring. Left
 # unchanged from the original 305s-runaway-generation measurement.
-_CHAT_MAX_TOKENS = 1536
+# Single-sourced from app.ollama_client.CHAT_MAX_TOKENS (issue #167 Gate 3
+# MAJOR finding: OllamaClient mirrors this same cap for engine parity) so
+# the two engines' chat-generation bounds cannot drift apart.
+_CHAT_MAX_TOKENS = CHAT_MAX_TOKENS
 
 # Hard cap applied to extract() ONLY (P5.3, issue #85) -- larger than
 # _CHAT_MAX_TOKENS because the claim-extraction JSON output must echo

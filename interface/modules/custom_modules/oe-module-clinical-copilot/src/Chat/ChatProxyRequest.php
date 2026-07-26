@@ -26,7 +26,14 @@ namespace OpenEMR\Modules\ClinicalCopilot\Chat;
  */
 final readonly class ChatProxyRequest
 {
-    /** Matches the agent's ChatRequest.message practical limit for a chat turn. */
+    /**
+     * Matches the agent's ChatRequest.message limit (app/chat.py
+     * MAX_CHAT_MESSAGE_LENGTH) for a chat turn -- in CHARACTERS, not bytes
+     * (see parseMessage(), which measures with mb_strlen()). Pydantic's
+     * max_length counts characters, so a byte-based strlen() check here
+     * would silently reject legitimate multi-byte (e.g. CJK, accented)
+     * clinical questions well under the documented 4000-character limit.
+     */
     private const MAX_MESSAGE_LENGTH = 4000;
 
     private function __construct(
@@ -59,7 +66,11 @@ final readonly class ChatProxyRequest
         if ($trimmed === '') {
             throw new ChatProxyRequestException('message must not be blank');
         }
-        if (strlen($trimmed) > self::MAX_MESSAGE_LENGTH) {
+        // mb_strlen (characters), not strlen (bytes): the agent's
+        // ChatRequest.message bound is a pydantic max_length, which counts
+        // characters -- a byte-based check here would reject a multi-byte
+        // (e.g. CJK, accented) question well under that limit.
+        if (mb_strlen($trimmed, 'UTF-8') > self::MAX_MESSAGE_LENGTH) {
             throw new ChatProxyRequestException('message exceeds the maximum length');
         }
         return $trimmed;

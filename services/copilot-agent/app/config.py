@@ -218,9 +218,7 @@ class Settings(BaseSettings):
     # 2000 is generous headroom for a single-appliance deployment (this
     # service is not internet-facing -- port 8000 is internal-network only,
     # see the issue's "Reachability" section). Operator-tunable so a larger
-    # or smaller deployment can adjust it. See
-    # ``copilot_max_turns_per_conversation`` below for the per-conversation
-    # half of the worst-case memory bound this multiplies against.
+    # or smaller deployment can adjust it.
     copilot_max_stored_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS
 
     # Issue #167 (VULN-0004), Gate 2 finding: the conversation-count cap
@@ -237,10 +235,13 @@ class Settings(BaseSettings):
     # ``app.extraction.clarify_unresolvable_referent``) and is NEVER fed to
     # the planner as conversation context; dropping old turns cannot change
     # any answer, only shrink the retained (audit-record-shaped, P2.17) turn
-    # list. 50 is generous for any realistic single clinical Q&A session
-    # (a session with 50+ distinct chat turns would be unusual) while
-    # bounding worst-case per-conversation memory to a small, fixed multiple
-    # of one turn's size.
+    # list. 50 is generous for any realistic single clinical Q&A session (a
+    # session with 50+ distinct chat turns would be unusual). NOTE: this
+    # bounds the TURN LIST specifically -- it does NOT, by itself, bound a
+    # Conversation's total memory to a small fixed multiple of one turn's
+    # size; ``Conversation.patient_roster`` is a separate, still-unbounded
+    # field on the same object (tracked separately as issue #174 -- see that
+    # issue for the analysis, not restated here).
     copilot_max_turns_per_conversation: int = DEFAULT_MAX_TURNS_PER_CONVERSATION
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support

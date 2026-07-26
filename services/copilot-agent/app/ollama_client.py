@@ -55,6 +55,31 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 _CHAT_PATH = "/api/chat"
 _EMBEDDINGS_PATH = "/api/embeddings"
 
+# Hard generation cap for chat()/chat_stream() -- engine parity (issue #167
+# Gate 3 MAJOR finding). app.llama_server_client hard-caps max_tokens on
+# EVERY request it sends (its module docstring's "max_tokens is capped on
+# EVERY request" note); this class had no equivalent, so on the
+# ``ollama`` engine (``settings.copilot_llm_engine == "ollama"``) chat
+# generation ran until the model's own context window filled, and
+# app.chat.Turn.answer (the P2.17 audit record, and part of #167's
+# ConversationStore memory-bound fix) had no application-level bound on
+# that engine. The production default engine is llama_server (see
+# app.chat.get_text_llm_client), where this constant already applies via
+# LlamaServerClient's own ``_CHAT_MAX_TOKENS`` (now sourced from here, so
+# the two engines can't drift on the value) -- so setting this here is a
+# NO-OP for the shipped default; it only changes behavior for the
+# ``ollama`` engine option.
+#
+# Deliberately NOT applied as a default to extract(): unlike chat/
+# chat_stream, its constrained-JSON output can legitimately need more
+# tokens when it echoes retrieved guideline/fact text verbatim (see
+# app.llama_server_client's ``_EXTRACT_MAX_TOKENS`` docstring for the same
+# reasoning on that engine) -- capping it at the same 1536 here could turn
+# real corpus retrieval results into truncated-JSON extraction failures
+# that do not exist today. A caller may still pass ``options={"num_predict":
+# ...}`` to extract() explicitly if a bound is wanted there.
+CHAT_MAX_TOKENS = 1536
+
 # Matches everything up to and including the first "</think>" marker (and any
 # whitespace right after it), whether or not a matching "<think>" opening tag
 # is present. See the module docstring's "Live-verified quirk" note.
@@ -168,7 +193,10 @@ class OllamaClient:
         ``LlmCallStats`` entry to ``call_stats`` regardless of outcome.
         """
         _logger.info("ollama chat call", extra={"model": self._model})
-        body = self._build_body(messages, stream=True, options=options)
+        merged_options: dict[str, Any] = {"num_predict": CHAT_MAX_TOKENS}
+        if options:
+            merged_options.update(options)
+        body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:
             response = self._post(_CHAT_PATH, body)
@@ -230,7 +258,10 @@ class OllamaClient:
         (additive only).
         """
         _logger.info("ollama chat stream call", extra={"model": self._model})
-        body = self._build_body(messages, stream=True, options=options)
+        merged_options: dict[str, Any] = {"num_predict": CHAT_MAX_TOKENS}
+        if options:
+            merged_options.update(options)
+        body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:
             response = self._post(_CHAT_PATH, body)

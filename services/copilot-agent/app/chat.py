@@ -71,6 +71,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -154,13 +155,29 @@ class ChatEvent(StrEnum):
 # knowing.
 MAX_CHAT_MESSAGE_LENGTH = 4000
 
+# Issue #167 Gate 3 MINOR finding: ``conversation_id`` round-trips a value
+# THIS service itself minted (``str(uuid.uuid4())`` in
+# ``ConversationStore.create``, always exactly 36 chars), so a well-behaved
+# caller never sends anything longer -- but nothing stopped an attacker from
+# sending an arbitrarily long string here either, ahead of the dict lookup
+# it's used for. 64 is generous headroom over the 36-char UUID form (room
+# for a future id scheme change without another bump) while still rejecting
+# unbounded input outright.
+MAX_CONVERSATION_ID_LENGTH = 64
+
 
 class ChatRequest(BaseModel):
     """``POST /chat`` request body."""
 
-    message: str = Field(max_length=MAX_CHAT_MESSAGE_LENGTH)
+    # min_length=1 (Gate 3 MINOR finding): an empty message still reached
+    # the planner and burned a full LLM call/tool-dispatch cycle for
+    # nothing -- the PHP chat-panel proxy (ChatProxyRequest::parseMessage)
+    # already rejects a blank message before it ever reaches this service,
+    # so accepting one here was only reachable by a caller bypassing that
+    # proxy, and had no legitimate use either way.
+    message: str = Field(min_length=1, max_length=MAX_CHAT_MESSAGE_LENGTH)
     patient_id: int
-    conversation_id: str | None = None
+    conversation_id: str | None = Field(default=None, max_length=MAX_CONVERSATION_ID_LENGTH)
 
 
 class TokenValidationError(Exception):
@@ -599,11 +616,10 @@ class ConversationStore:
     unbounded, attacker-influenced memory growth (any caller can start a new
     conversation). ``max_conversations`` bounds THAT axis: once the cap is
     exceeded, the least-recently-used conversation is evicted. "Used" means
-    read via ``get`` or appended to via ``append_turn`` -- both move a
-    conversation to the most-recently-used end, so an active multi-turn
-    conversation is never evicted out from under its own caller as long as
-    it stays under the cap; only conversations nobody has touched recently
-    are reclaimed.
+    read via ``get`` or re-registered via ``append_turn`` -- see
+    ``append_turn``'s docstring for why a conversation CAN still be evicted
+    out from under a caller mid-request, and how that is recovered rather
+    than crashing or silently losing the turn.
 
     A SEPARATE axis (Gate 2 finding on #167): the conversation-count cap
     alone does not stop a single conversation from growing forever -- an
@@ -619,6 +635,16 @@ class ConversationStore:
     A caller resuming with an evicted ``conversation_id`` gets ``get() ->
     None`` -- the endpoint already maps that to a clean 404 (unknown
     conversation_id), not a crash; see ``chat_endpoint``.
+
+    Thread safety: this is a shared, mutable, process-wide singleton
+    (``_default_store``) served from FastAPI's worker threadpool (``/chat``'s
+    ``_stream_chat`` body runs synchronously off the event loop), so every
+    mutating operation below holds ``self._lock``. Critical sections are
+    kept minimal (dict/list operations only, no I/O) -- this closes the
+    whole class of interleaved-mutation races (e.g. two concurrent
+    ``append_turn`` calls on the same conversation both reading
+    ``len(history)`` before either trims, transiently exceeding the cap),
+    not just the specific ones identified during review.
 
     TODO(P4.2): replace with the durable trace store; this is a placeholder
     with the same shape (get / create / append) a DB-backed store would have.
@@ -636,31 +662,55 @@ class ConversationStore:
         self._max_conversations = max_conversations
         self._max_turns_per_conversation = max_turns_per_conversation
         self._conversations: OrderedDict[str, Conversation] = OrderedDict()
+        self._lock = threading.Lock()
 
     def get(self, conversation_id: str) -> Conversation | None:
-        conversation = self._conversations.get(conversation_id)
-        if conversation is not None:
-            self._conversations.move_to_end(conversation_id)
-        return conversation
+        with self._lock:
+            conversation = self._conversations.get(conversation_id)
+            if conversation is not None:
+                self._conversations.move_to_end(conversation_id)
+            return conversation
 
     def create(self, patient_id: int, patient_name: str | None = None) -> Conversation:
         conversation = Conversation(
             conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
         )
-        # No move_to_end here: OrderedDict already inserts a NEW key at the
-        # most-recently-used (right/end) position -- calling move_to_end
-        # immediately after would be a verified no-op.
-        self._conversations[conversation.conversation_id] = conversation
-        while len(self._conversations) > self._max_conversations:
-            self._conversations.popitem(last=False)
+        with self._lock:
+            # No move_to_end here: OrderedDict already inserts a NEW key at
+            # the most-recently-used (right/end) position -- calling
+            # move_to_end immediately after would be a verified no-op.
+            self._conversations[conversation.conversation_id] = conversation
+            while len(self._conversations) > self._max_conversations:
+                self._conversations.popitem(last=False)
         return conversation
 
-    def append_turn(self, conversation_id: str, turn: Turn) -> None:
-        history = self._conversations[conversation_id].history
-        history.append(turn)
-        if len(history) > self._max_turns_per_conversation:
-            del history[: len(history) - self._max_turns_per_conversation]
-        self._conversations.move_to_end(conversation_id)
+    def append_turn(self, conversation: Conversation, turn: Turn) -> None:
+        """Append ``turn`` to ``conversation.history`` and re-register the
+        conversation as most-recently-used.
+
+        Takes the live ``Conversation`` object (not a ``conversation_id``
+        lookup) deliberately: ``chat_endpoint`` calls ``create``/``get`` on
+        the event loop, then does several seconds of planner + verification
+        work in a worker thread before ever calling this -- during which
+        every OTHER concurrent request's cheap ``create()`` call is a
+        chance to evict this conversation as the LRU tail (nothing touches
+        it in between). An earlier version of this method looked the
+        conversation up by id and either raised ``KeyError`` (if evicted) or
+        silently dropped the turn -- either way losing the Turn, which its
+        own docstring calls the P2.17 chart-access audit record for a chart
+        access that DID happen. Re-inserting the caller's own object instead
+        recovers from that eviction: the turn (and the whole conversation)
+        is retained, at the cost of counting again against the
+        conversation-count cap on the way back in.
+        """
+        with self._lock:
+            conversation.history.append(turn)
+            if len(conversation.history) > self._max_turns_per_conversation:
+                del conversation.history[: len(conversation.history) - self._max_turns_per_conversation]
+            self._conversations[conversation.conversation_id] = conversation
+            self._conversations.move_to_end(conversation.conversation_id)
+            while len(self._conversations) > self._max_conversations:
+                self._conversations.popitem(last=False)
 
 
 _default_store: ConversationStore | None = None
@@ -681,6 +731,15 @@ def get_conversation_store(settings: Settings = Depends(get_settings)) -> Conver
     ``get_settings`` without needing to know this function reads it. Kept as
     a lazily-built singleton (not rebuilt every request) so the store's
     state persists across requests, matching ``get_trace_store``'s caching.
+
+    CAPS ARE FROZEN AT FIRST USE: ``get_settings()`` returns a fresh
+    ``Settings`` on every call (env vars are re-read each time), but this
+    function only reads it ONCE -- the first request to ever resolve this
+    dependency -- and bakes the two caps into ``_default_store`` for the
+    rest of the process's life. Changing
+    ``COPILOT_MAX_STORED_CONVERSATIONS``/``COPILOT_MAX_TURNS_PER_CONVERSATION``
+    in the environment after the process has started (and served at least
+    one ``/chat`` request) has no effect until restart.
     """
     global _default_store
     if _default_store is None:
@@ -1478,7 +1537,7 @@ def _stream_chat(
         )
 
         store.append_turn(
-            conversation.conversation_id,
+            conversation,
             Turn(
                 correlation_id=correlation_id,
                 user=user,

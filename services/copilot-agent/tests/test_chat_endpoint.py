@@ -30,6 +30,7 @@ from app.chat import (
     get_require_tool_call_scoping,
     get_token_validator,
 )
+from app.config import Settings
 from app.extraction import ClaimExtractor
 from app.main import app
 from app.planner import PlannerResult, ToolCallTrace
@@ -305,6 +306,65 @@ def test_resume_with_evicted_conversation_id_is_clean_404_not_500():
     )
 
     assert resume.status_code == 404
+
+
+class _EvictingPlanner(FakePlanner):
+    """FakePlanner double that evicts the CURRENT conversation from the
+    store mid-``run()`` by creating other conversations, reproducing Gate
+    3's exact timeline without needing real concurrent threads: chat_endpoint
+    creates THIS request's conversation on the event loop, then does its
+    slow planner/verification work (here: just this ``run()`` call) before
+    ``append_turn`` is ever reached -- during that window, cheap concurrent
+    ``/chat`` requests' own ``create()`` calls are free to push this
+    conversation out as the LRU tail.
+    """
+
+    def __init__(self, store: ConversationStore, trace: list[Any], answer: str) -> None:
+        super().__init__(trace=trace, answer=answer)
+        self._store = store
+
+    def run(self, question: str, guideline_excerpts: object = None) -> PlannerResult:
+        for _ in range(5):
+            self._store.create(patient_id=999)
+        return super().run(question, guideline_excerpts)
+
+
+def test_append_turn_survives_mid_request_eviction():
+    """Gate 3 BLOCKER reproduction (#167): the pre-fix ``append_turn(
+    conversation_id, turn)`` looked the conversation up by id and either
+    raised ``KeyError`` (if evicted -- an unguarded ``self._conversations
+    [conversation_id]``) or, in an even earlier version, silently dropped
+    the turn. Either way, the P2.17 chart-access audit record for a chart
+    access that DID happen was lost, and the stream never reached its
+    ``done`` frame. This reproduces that exact timeline (see
+    ``_EvictingPlanner``) and asserts the fix: the stream still completes
+    normally and the turn is retained (via re-registration), not crashed or
+    silently dropped.
+    """
+    store = ConversationStore(max_conversations=1, max_turns_per_conversation=10)
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    fake_planner = _EvictingPlanner(store, trace=[], answer="first answer")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    response = client.post(
+        "/chat",
+        json={"message": "first question", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    assert response.status_code == 200
+    events = _iter_sse_events(response.text)
+    assert events[-1][0] == "done"  # stream reached the terminal frame, not a KeyError crash
+
+    conversation_id = _conversation_id(response.text)
+    # Evicted mid-run (by the other create() calls in _EvictingPlanner.run),
+    # then re-registered by append_turn: retrievable again, turn retained.
+    conversation = store.get(conversation_id)
+    assert conversation is not None
+    assert len(conversation.history) == 1
+    assert conversation.history[0].question == "first question"
 
 
 # --------------------------------------------------------------------------
@@ -645,6 +705,31 @@ def test_chat_request_rejects_overlong_message():
         ChatRequest(message="x" * 1_000_000, patient_id=1)
 
 
+def test_chat_request_message_length_boundary_is_exact():
+    """Gate 3 MINOR finding: the original overlong-message test used
+    1,000,000 chars, which would still pass even if MAX_CHAT_MESSAGE_LENGTH
+    drifted down to 999,999 -- it never pinned the actual boundary. This
+    proves the boundary is exactly 4000: 4000 chars is accepted, 4001 is
+    rejected (hand-verified: no off-by-one either direction).
+    """
+    ChatRequest(message="x" * 4000, patient_id=1)  # exactly at the limit: accepted
+
+    with pytest.raises(pydantic.ValidationError):
+        ChatRequest(message="x" * 4001, patient_id=1)  # one over: rejected
+
+
+def test_chat_request_rejects_empty_message():
+    with pytest.raises(pydantic.ValidationError):
+        ChatRequest(message="", patient_id=1)
+
+
+def test_chat_request_rejects_overlong_conversation_id():
+    ChatRequest(message="hi", patient_id=1, conversation_id="x" * 64)  # exactly at the limit: accepted
+
+    with pytest.raises(pydantic.ValidationError):
+        ChatRequest(message="hi", patient_id=1, conversation_id="x" * 65)
+
+
 def test_conversation_store_bounds_retained_conversations():
     # BEHAVIOUR, not vocabulary (issue-#86 failure class avoided): a class-level
     # dir()/vocabulary check would never see an instance-level cap (e.g.
@@ -680,6 +765,11 @@ def test_conversation_store_bounds_turns_per_conversation():
     this test against a stash of the code before the turn-cap was added --
     it failed with ``AssertionError`` (history length was 5000, equal to
     the turn count, not bounded); reran unstashed and it passes.
+
+    ``append_turn`` takes the live ``Conversation`` object, not a
+    ``conversation_id`` lookup (Gate 3 BLOCKER fix -- see
+    ``ConversationStore.append_turn``'s docstring for why); this test
+    passes ``conversation`` itself accordingly.
     """
     store = ConversationStore(max_turns_per_conversation=10)
     conversation = store.create(patient_id=1)
@@ -687,7 +777,7 @@ def test_conversation_store_bounds_turns_per_conversation():
     turn_count = 5_000
     for i in range(turn_count):
         store.append_turn(
-            conversation.conversation_id,
+            conversation,
             Turn(
                 correlation_id=f"corr-{i}",
                 user="clinician",
@@ -706,6 +796,40 @@ def test_conversation_store_bounds_turns_per_conversation():
     # entries).
     assert retained.history[-1].question == f"question {turn_count - 1}"
     assert retained.history[0].question == f"question {turn_count - 10}"
+
+
+def test_get_conversation_store_builds_singleton_from_settings():
+    """Gate 3 MINOR finding: every endpoint test in this module overrides
+    ``get_conversation_store`` directly (``app.dependency_overrides``), so
+    NOTHING in the suite ever actually executes the real function's
+    ``_default_store is None`` branch -- a wrong Settings field name inside
+    it would keep the whole suite green. This calls the real dependency
+    function directly and asserts the two caps land on the store it builds.
+
+    Also documents (see the function's own docstring for the fuller
+    explanation) that the caps are frozen at first use: ``get_settings()``
+    would return fresh values on a later call, but ``get_conversation_store``
+    only reads them once and caches the result -- a second call with
+    DIFFERENT settings must return the SAME object with the ORIGINAL caps,
+    not rebuild.
+    """
+    import app.chat as chat_module
+
+    original_default_store = chat_module._default_store
+    chat_module._default_store = None
+    try:
+        settings_a = Settings(copilot_max_stored_conversations=7, copilot_max_turns_per_conversation=3)
+        store = chat_module.get_conversation_store(settings_a)
+        assert store._max_conversations == 7
+        assert store._max_turns_per_conversation == 3
+
+        settings_b = Settings(copilot_max_stored_conversations=999, copilot_max_turns_per_conversation=999)
+        store_again = chat_module.get_conversation_store(settings_b)
+        assert store_again is store  # singleton: not rebuilt
+        assert store_again._max_conversations == 7  # frozen at first use, NOT 999
+        assert store_again._max_turns_per_conversation == 3
+    finally:
+        chat_module._default_store = original_default_store
 
 
 def _dev_bearer(username: str, sub: int, pid: int) -> str:
