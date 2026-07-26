@@ -19,7 +19,7 @@ from app.config import Settings
 from app.openemr_auth import fetch_token_password_grant, register_client
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
-from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
+from app.tools.patient_summary import RosterEntry, get_patient_name, get_patient_roster, get_patient_summary
 
 PHIL_UUID = "a243a1bb-178f-4092-8c67-52dfaf67fca6"
 
@@ -234,33 +234,53 @@ def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
 
 # --------------------------------------------------------------------------
 # get_patient_roster (#237 roster-based cross-patient detection) -- the same
-# roster fetch/select pattern as get_patient_name, but keeping every OTHER
-# patient's display name instead of the bound one's -- feeds
+# roster fetch/select pattern as get_patient_name, but returning (pid, name)
+# pairs for EVERY patient -- feeds
 # app.extraction.detect_foreign_patient_reference's "switch to <Name>" signal
 # (a referenced name is foreign only if it matches a real DIFFERENT patient).
+#
+# Issue #174 made this fetch patient-agnostic: it no longer takes a
+# ``patient_id`` to exclude, because the shared, process-wide
+# ``app.chat.RosterCache`` in front of it is used by every conversation
+# regardless of which patient is bound -- a fetch-time exclusion keyed to
+# ONE caller's bound patient would be wrong for every other conversation
+# reusing the cached result. Exclusion of the CALLER's own bound patient now
+# happens at comparison time in app.extraction._matches_roster, keyed by
+# pid (see tests/test_extraction.py's roster section for that behavior).
 # --------------------------------------------------------------------------
 
 
-def test_get_patient_roster_returns_every_other_patients_name(make_openemr_client):
+def test_get_patient_roster_returns_every_patients_pid_and_name(make_openemr_client):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/apis/default/api/patient":
             return httpx.Response(200, json=PATIENT_LIST_BODY)
         raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
-    assert roster == ["Susan Underwood"]
+    assert roster == [RosterEntry(pid=1, name="Phil Belford"), RosterEntry(pid=2, name="Susan Underwood")]
 
 
-def test_get_patient_roster_excludes_the_bound_patient_itself(make_openemr_client):
+def test_get_patient_roster_no_longer_excludes_the_bound_patient_at_fetch_time(make_openemr_client):
+    # Breaks-by-design (#174): this is the FORMER
+    # `test_get_patient_roster_excludes_the_bound_patient_itself`, whose
+    # assertion inverted -- the fetch is patient-agnostic now, so patient 1
+    # (Phil Belford, previously the "bound" patient excluded here) IS
+    # present. The exclusion assertion this test used to make MOVED to
+    # tests/test_extraction.py's comparison-time roster tests (see
+    # `_matches_roster`'s pid-based exclusion there), which is where
+    # exclusion actually happens post-#174.
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/apis/default/api/patient":
             return httpx.Response(200, json=PATIENT_LIST_BODY)
         raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
-    assert "Phil Belford" not in roster
+    assert RosterEntry(pid=1, name="Phil Belford") in roster
+    # Presence pair: also still returns the OTHER patient, so this isn't
+    # trivially true of a degenerate single-entry roster.
+    assert RosterEntry(pid=2, name="Susan Underwood") in roster
 
 
 def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client):
@@ -272,7 +292,7 @@ def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client)
             return httpx.Response(403, json={"error": "insufficient_scope"})
         raise AssertionError(f"unexpected request: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
     assert roster == []
 

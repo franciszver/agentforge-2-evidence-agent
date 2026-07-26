@@ -71,6 +71,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.tool_call_scoping import engaged_call_ids
+from app.tools.patient_summary import RosterEntry
 from app.verdict import Verdict
 from app.verification import CacheIndex, CitationStatus, check_claims
 
@@ -1972,8 +1973,26 @@ def test_detect_foreign_patient_reference_false_when_question_only_names_the_bou
 # --------------------------------------------------------------------------
 
 
+# Issue #174: the live roster is now (pid, name) pairs, patient-agnostic,
+# with the bound patient's own entry excluded at COMPARISON time (by pid),
+# not at fetch time. These two helpers build plain "every other patient"
+# rosters for tests that aren't specifically exercising that pid-based
+# exclusion -- 999 is a sentinel pid guaranteed not to collide with any
+# `bound_patient_id` used in this section (1 or 3 throughout), so it is
+# never itself excluded from a match.
+_ROSTER_TEST_SENTINEL_PID = 999
+
+
 def _roster(names: list[str]):
-    return lambda: names
+    return lambda: [RosterEntry(pid=_ROSTER_TEST_SENTINEL_PID, name=name) for name in names]
+
+
+def _roster_with_pids(entries: list[tuple[int, str]]):
+    """Like ``_roster``, but with an explicit pid per entry -- for tests
+    that specifically exercise `_matches_roster`'s pid-based exclusion of
+    the bound patient (#174), where the sentinel pid `_roster` uses would
+    hide the behavior being tested."""
+    return lambda: [RosterEntry(pid=pid, name=name) for pid, name in entries]
 
 
 def _counting_roster(names: list[str]):
@@ -1981,9 +2000,9 @@ def _counting_roster(names: list[str]):
     assert the roster is resolved LAZILY -- only when actually needed."""
     calls: list[int] = []
 
-    def provider() -> list[str]:
+    def provider() -> list[RosterEntry]:
         calls.append(1)
-        return names
+        return [RosterEntry(pid=_ROSTER_TEST_SENTINEL_PID, name=name) for name in names]
 
     provider.calls = calls  # type: ignore[attr-defined]
     return provider
@@ -2089,6 +2108,51 @@ def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_posse
         roster_provider=provider,
     )
     assert provider.calls == []  # type: ignore[attr-defined]
+
+
+# --- #174: bound-patient exclusion moved to COMPARISON time, keyed by pid --
+#
+# Pre-#174, `app.tools.patient_summary.get_patient_roster` excluded the
+# bound patient's own record at FETCH time (filtered by `patient_id` before
+# returning). Post-#174, the fetch is patient-agnostic (shared,
+# process-wide cache -- see `app.chat.RosterCache`), so the SAME roster is
+# handed to every conversation regardless of which patient is bound, and it
+# may well contain the bound patient's own (pid, name) entry.
+# `_matches_roster` now excludes it itself, by pid -- see the two tests
+# below, which formerly lived in tests/test_tool_patient_summary.py
+# (`test_get_patient_roster_excludes_the_bound_patient_itself`) and
+# tests/test_planner.py (`test_resolve_patient_roster_returns_every_other_
+# patients_name`), both of which asserted exclusion at the layer that no
+# longer performs it.
+
+
+def test_detect_foreign_patient_reference_excludes_bound_patient_by_pid_even_with_no_bound_name():
+    # The harder bar than the possessive test above: bound_patient_name is
+    # NOT supplied at all (name-binding unavailable -- an OpenEMR API error,
+    # e.g.), so the earlier `_same_named_patient` shortcut can't exclude
+    # anything by name. If pid-based exclusion in `_matches_roster` were
+    # missing, this would wrongly refuse -- the shared roster's entry for
+    # pid 1 (the bound patient here) happens to be named "Bob Smith".
+    roster_provider = _roster_with_pids([(1, "Bob Smith"), (2, "Maria Lopez")])
+    assert not detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.",
+        1,
+        roster_provider=roster_provider,
+    )
+
+
+def test_detect_foreign_patient_reference_true_when_a_different_patient_shares_the_bound_patients_name():
+    # Presence pair for the test above: exclusion is by PID, not by name --
+    # a genuinely different patient (pid 2) who happens to share the exact
+    # same name as a roster entry that is NOT the bound patient must still
+    # be flagged as foreign. Proves the fix didn't overreach into excluding
+    # by name.
+    roster_provider = _roster_with_pids([(1, "Wanda Moore"), (2, "Bob Smith")])
+    assert detect_foreign_patient_reference(
+        "Switch over to Bob Smith and tell me his drug allergies.",
+        1,
+        roster_provider=roster_provider,
+    )
 
 
 def test_detect_foreign_patient_reference_false_for_a_possessive_drug_brand_switch():

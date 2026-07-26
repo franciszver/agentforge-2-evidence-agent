@@ -24,6 +24,15 @@ from pydantic_settings import BaseSettings
 DEFAULT_MAX_STORED_CONVERSATIONS = 2000
 DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
 
+# Issue #174: default TTL for app.chat.RosterCache, the process-wide,
+# shared cache that replaced the per-``Conversation`` ``patient_roster``
+# field (see that field's former docstring, now on ``Conversation`` itself,
+# for the full memory/privacy analysis). Single-sourced here for the same
+# reason as the two constants above. See
+# ``Settings.copilot_roster_cache_ttl_seconds``'s docstring for the value
+# justification.
+DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
+
 
 class Settings(BaseSettings):
     """Runtime configuration for the copilot-agent service."""
@@ -259,13 +268,35 @@ class Settings(BaseSettings):
     # the planner as conversation context; dropping old turns cannot change
     # any answer, only shrink the retained (audit-record-shaped, P2.17) turn
     # list. 50 is generous for any realistic single clinical Q&A session (a
-    # session with 50+ distinct chat turns would be unusual). NOTE: this
-    # bounds the TURN LIST specifically -- it does NOT, by itself, bound a
-    # Conversation's total memory to a small fixed multiple of one turn's
-    # size; ``Conversation.patient_roster`` is a separate, still-unbounded
-    # field on the same object (tracked separately as issue #174 -- see that
-    # issue for the analysis, not restated here).
+    # session with 50+ distinct chat turns would be unusual). This DOES now
+    # bound a Conversation's total memory to a small fixed multiple of one
+    # turn's size: issue #174 found and removed the one other unbounded term
+    # on the same object, ``Conversation.patient_roster`` (every OTHER
+    # patient's name, scaling with total patient count, cached per
+    # conversation for its whole lifetime) -- see ``Conversation``'s
+    # docstring in app/chat.py for the removal's full memory/privacy
+    # analysis, and ``copilot_roster_cache_ttl_seconds`` below for its
+    # process-wide-shared-cache replacement.
     copilot_max_turns_per_conversation: int = DEFAULT_MAX_TURNS_PER_CONVERSATION
+
+    # Issue #174 (dominant memory term + privacy): app.chat.RosterCache is a
+    # single, process-wide, TTL'd cache of OpenEMR's full patient roster,
+    # replacing a per-``Conversation`` copy that scaled with total patient
+    # count and was retained for the conversation's whole lifetime (see
+    # ``Conversation``'s docstring). The roster feeds a *soft* heuristic
+    # (app.extraction.detect_foreign_patient_reference's roster-based
+    # "switch to <Name>" signal, routing to a refusal) -- the unconditional
+    # numeric-id cross-patient signal is unaffected by any staleness here.
+    # 300 seconds (5 minutes) trades a bounded, brief staleness window (a
+    # patient added to OpenEMR within the last 5 minutes briefly misses the
+    # name-match signal) against collapsing what used to be one full-roster
+    # fetch per matching turn -- a ~2000x amplification against OpenEMR's
+    # patient API at this service's target patient-panel scale -- down to
+    # roughly one fetch per 5 minutes process-wide, regardless of how many
+    # conversations or matching turns occur in that window. Operator-tunable
+    # so a deployment with a rapidly-changing patient panel can shorten it,
+    # or one prioritizing fewer OpenEMR round trips can lengthen it.
+    copilot_roster_cache_ttl_seconds: float = DEFAULT_ROSTER_CACHE_TTL_SECONDS
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose

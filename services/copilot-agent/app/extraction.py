@@ -98,6 +98,7 @@ from app.schemas.tools import (
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.semantic_support import SemanticSupportJudgeLike, apply_semantic_support
 from app.tool_call_scoping import apply_tool_call_scoping, engaged_call_ids
+from app.tools.patient_summary import RosterEntry
 from app.verdict import VerdictResult, compute_verdict
 from app.verification import (
     CacheIndex,
@@ -1223,10 +1224,25 @@ _SWITCH_TO_NAME_RE = re.compile(
 _POSSESSIVE_SUFFIX_RE = re.compile(r"['’]s$")
 
 
-def _matches_roster(candidate: str, roster: Sequence[str]) -> bool:
+def _matches_roster(candidate: str, roster: Sequence[RosterEntry], bound_patient_id: int) -> bool:
     """Whether ``candidate`` (a 2-3 word name captured from a "switch to
     <Name>" construction) names a real, DIFFERENT patient on ``roster`` --
-    an exact, case-insensitive FULL-NAME match only.
+    an exact, case-insensitive FULL-NAME match only, excluding
+    ``bound_patient_id``'s own entry.
+
+    Issue #174: the ``bound_patient_id`` exclusion happens HERE, at
+    comparison time, keyed by ``pid`` -- not at fetch time (pre-#174,
+    ``app.tools.patient_summary.get_patient_roster`` took a ``patient_id``
+    and dropped that one record before returning). ``roster`` is now a
+    single process-wide, TTL'd, patient-AGNOSTIC cache
+    (``app.chat.RosterCache``) shared by every conversation regardless of
+    which patient it is bound to, so it may well contain the bound patient's
+    own (pid, name) entry -- excluding it here, by pid, is what stops a
+    "switch to <own name>" construction from being misread as a match
+    against a DIFFERENT patient who merely shares that pid's cached slot.
+    Excluding by NAME instead would be wrong: another, unrelated patient who
+    happens to share the bound patient's name would then also be wrongly
+    excluded from the "different patient" check.
 
     Deliberately NOT first-name-only (unlike ``_same_named_patient``'s
     bound-patient comparison, which allows the clinician to refer to the
@@ -1241,13 +1257,16 @@ def _matches_roster(candidate: str, roster: Sequence[str]) -> bool:
     intent rather than a currently load-bearing case.
     """
     candidate_cf = candidate.strip().casefold()
-    return any(candidate_cf == entry.strip().casefold() for entry in roster)
+    return any(
+        entry.pid != bound_patient_id and candidate_cf == entry.name.strip().casefold() for entry in roster
+    )
 
 
 def _is_foreign_switch_to_name(
     question: str,
+    bound_patient_id: int,
     bound_patient_name: str | None,
-    roster_provider: Callable[[], Sequence[str]] | None,
+    roster_provider: Callable[[], Sequence[RosterEntry]] | None,
 ) -> bool:
     """The roster-based "switch (over) to <Name>" signal (#237): ``True``
     only when a captured 2-3 word name (i) is not the bound patient and (ii)
@@ -1258,6 +1277,13 @@ def _is_foreign_switch_to_name(
     never pays the roster round trip. ``roster_provider is None`` (no roster
     available) fail-safe SKIPS this signal entirely, same posture as
     ``_is_foreign_named_patient`` with no bound name.
+
+    ``bound_patient_id`` is threaded through to ``_matches_roster`` for the
+    #174 comparison-time exclusion -- unlike the ``bound_patient_name``
+    check just below (which needs a resolved name and so is skipped when
+    name-binding is unavailable), the numeric id is ALWAYS known, so the
+    roster-level exclusion is never skipped even when ``bound_patient_name``
+    is ``None``.
 
     A trailing possessive on the capture ("switch to Bob Smith's chart" ->
     "Bob Smith's") is stripped via ``_POSSESSIVE_SUFFIX_RE`` BEFORE both
@@ -1272,14 +1298,14 @@ def _is_foreign_switch_to_name(
         return False
     if roster_provider is None:
         return False
-    return _matches_roster(candidate, roster_provider())
+    return _matches_roster(candidate, roster_provider(), bound_patient_id)
 
 
 def detect_foreign_patient_reference(
     question: str,
     bound_patient_id: int,
     bound_patient_name: str | None = None,
-    roster_provider: Callable[[], Sequence[str]] | None = None,
+    roster_provider: Callable[[], Sequence[RosterEntry]] | None = None,
 ) -> bool:
     """Deterministic PRE-dispatch guard (#223, extended by #224 and #237):
     does ``question`` explicitly reference a DIFFERENT patient than
@@ -1332,7 +1358,14 @@ def detect_foreign_patient_reference(
          conversation that never uses this construction never pays the
          round trip; ``None`` (no roster available -- e.g. the resolve
          failed) skips this signal entirely, same fail-safe posture as
-         signal 2 with no bound name.
+         signal 2 with no bound name. Issue #174: ``roster_provider`` now
+         resolves a patient-AGNOSTIC, process-wide-cached roster (every
+         patient's (pid, name), not "every OTHER patient's name" scoped to
+         one caller) -- ``_matches_roster`` (called via
+         ``_is_foreign_switch_to_name``) is what excludes ``bound_patient_id``
+         from the match, at comparison time, so this function's own
+         behavior here is unchanged even though what the provider returns
+         changed shape.
 
     This mirrors the guard's existing bias throughout: a wrongly
     hard-refused legitimate clinical question is a worse regression than a
@@ -1342,7 +1375,7 @@ def detect_foreign_patient_reference(
         return True
     if _is_foreign_named_patient(question, bound_patient_name):
         return True
-    return _is_foreign_switch_to_name(question, bound_patient_name, roster_provider)
+    return _is_foreign_switch_to_name(question, bound_patient_id, bound_patient_name, roster_provider)
 
 
 _CROSS_PATIENT_REFUSAL_ANSWER = (

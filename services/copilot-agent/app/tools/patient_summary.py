@@ -43,13 +43,32 @@ from __future__ import annotations
 
 import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
 from app.schemas.tools import PatientSummaryOutput
 
 _SEX_MAP = {"male": Sex.MALE, "female": Sex.FEMALE, "other": Sex.OTHER}
+
+
+class RosterEntry(NamedTuple):
+    """One patient's (pid, "First Last" display name) pair, as returned by
+    ``get_patient_roster`` (#237, made patient-agnostic by #174).
+
+    A plain ``NamedTuple``, not a ``ToolSchemaModel`` -- this never crosses
+    the tool-output JSON boundary (``app.schemas.tools``); it is purely an
+    internal shape shared between ``get_patient_roster``,
+    ``app.planner.Planner.resolve_patient_roster``, ``app.chat.RosterCache``,
+    and ``app.extraction._matches_roster``. Carrying ``pid`` alongside
+    ``name`` is what lets exclusion of the CALLER's bound patient happen at
+    comparison time (see ``_matches_roster``) instead of at fetch time --
+    the fetch itself no longer knows, or needs to know, which patient is
+    asking.
+    """
+
+    pid: int
+    name: str
 
 
 def get_patient_summary(client: OpenEmrClient, token: str, patient_id: int) -> PatientSummaryOutput:
@@ -128,9 +147,22 @@ def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> d
     raise OpenEmrApiError(ErrorCategory.NOT_FOUND, "OpenEMR patient not found")
 
 
-def get_patient_roster(client: OpenEmrClient, token: str, patient_id: int) -> list[str]:
-    """Every OTHER patient's own "First Last" display name (#237 roster-based
-    cross-patient detection) -- ``patient_id`` itself is excluded.
+def get_patient_roster(client: OpenEmrClient, token: str) -> list[RosterEntry]:
+    """Every patient's (pid, "First Last" display name) pair (#237
+    roster-based cross-patient detection).
+
+    Issue #174: deliberately does NOT take a ``patient_id`` to exclude, and
+    no longer excludes anyone. The roster is byte-identical across every
+    conversation regardless of which patient it is bound to (this fetch has
+    no per-caller state at all), which is what makes it safe to serve from
+    ONE process-wide, TTL'd cache (``app.chat.RosterCache``) shared by every
+    conversation instead of being resolved -- and retained -- separately per
+    conversation. Excluding the CALLER's bound patient is the caller's job
+    now, at COMPARISON time, keyed by ``pid`` (see
+    ``app.extraction._matches_roster``) rather than by name -- a name
+    comparison could wrongly exclude a different patient who happens to
+    share the bound patient's name, and pid is already known to every
+    caller with no extra fetch.
 
     Fail-safe: ``[]`` on any OpenEMR API error (timeout, insufficient scope,
     ...), never a raised exception -- callers
@@ -147,15 +179,14 @@ def get_patient_roster(client: OpenEmrClient, token: str, patient_id: int) -> li
         records = _fetch_all_patients(client, token)
     except OpenEmrApiError:
         return []
-    names: list[str] = []
+    entries: list[RosterEntry] = []
     for record in records:
-        if record.get("pid") == patient_id:
-            continue
+        pid = record.get("pid")
         fname, lname = record.get("fname"), record.get("lname")
         parts = [part for part in (fname, lname) if isinstance(part, str) and part]
-        if parts:
-            names.append(" ".join(parts))
-    return names
+        if isinstance(pid, int) and parts:
+            entries.append(RosterEntry(pid=pid, name=" ".join(parts)))
+    return entries
 
 
 def _count_rest_list(client: OpenEmrClient, token: str, path: str) -> int:
