@@ -2142,12 +2142,23 @@ def test_detect_foreign_patient_reference_excludes_bound_patient_by_pid_even_wit
 
 
 def test_detect_foreign_patient_reference_true_when_a_different_patient_shares_the_bound_patients_name():
-    # Presence pair for the test above: exclusion is by PID, not by name --
-    # a genuinely different patient (pid 2) who happens to share the exact
-    # same name as a roster entry that is NOT the bound patient must still
-    # be flagged as foreign. Proves the fix didn't overreach into excluding
-    # by name.
-    roster_provider = _roster_with_pids([(1, "Wanda Moore"), (2, "Bob Smith")])
+    # Presence pair for the test above -- a DISCRIMINATING fixture (Gate 3
+    # Opus re-review MINOR: the original fixture here,
+    # [(1, "Wanda Moore"), (2, "Bob Smith")], had NOBODY sharing a name, so
+    # it could not distinguish pid-keyed exclusion from name-keyed exclusion
+    # -- or from no exclusion at all -- all three give the same answer on
+    # that fixture).
+    #
+    # Here, pid 1 (the bound patient) AND pid 2 (a genuinely different
+    # patient) share the EXACT same name, "Bob Smith". A pid-keyed
+    # `_matches_roster` (what this code does) excludes ONLY pid 1's entry,
+    # leaving pid 2's identically-named entry as a live match -> True. A
+    # hypothetical NAME-keyed exclusion would instead look up the bound
+    # patient's own name (pid 1 -> "Bob Smith") and exclude every roster
+    # entry with THAT name -- including pid 2's -- leaving no match -> False.
+    # This fixture is the one case where the two designs actually diverge;
+    # asserting True here pins pid-keying, not name-keying.
+    roster_provider = _roster_with_pids([(1, "Bob Smith"), (2, "Bob Smith")])
     assert detect_foreign_patient_reference(
         "Switch over to Bob Smith and tell me his drug allergies.",
         1,

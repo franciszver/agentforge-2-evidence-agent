@@ -10,6 +10,7 @@ skipped by default (minimal CI runs hermetic tests only).
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 
 import httpx
@@ -295,6 +296,61 @@ def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client)
     roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
     assert roster == []
+
+
+def test_get_patient_roster_coerces_a_numeric_string_pid(make_openemr_client):
+    # Gate 2 (Opus) re-review MINOR: a MySQL-backed PHP REST layer could
+    # plausibly serialize `pid` as a numeric STRING rather than a JSON int.
+    # Pre-#174, get_patient_roster's exclusion was a plain `==` comparison
+    # (never gated inclusion on pid's type), so such a payload still
+    # produced a name. This proves the #174 rewrite didn't regress that --
+    # a numeric-string pid is coerced to int and the record is KEPT, not
+    # silently dropped.
+    body = {
+        "validationErrors": [],
+        "internalErrors": [],
+        "data": [{"pid": "7", "fname": "Nadia", "lname": "Torres", "DOB": "1990-01-01", "sex": "Female"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=body)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
+
+    assert roster == [RosterEntry(pid=7, name="Nadia Torres")]
+
+
+def test_get_patient_roster_drops_and_warns_on_a_non_numeric_pid(make_openemr_client, caplog):
+    # A pid that is neither an int nor a numeric string (missing, null,
+    # a float, garbage, ...) cannot be safely coerced -- the record is
+    # dropped (never crashes, never guesses), but LOUDLY: a warning is
+    # logged so a real occurrence is visible instead of silently shrinking
+    # the roster (and so silently disabling signal 3 for that one name).
+    body = {
+        "validationErrors": [],
+        "internalErrors": [],
+        "data": [
+            {"pid": "not-a-number", "fname": "Ghost", "lname": "Record", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": 8, "fname": "Real", "lname": "Patient", "DOB": "1990-01-01", "sex": "Female"},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=body)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    with caplog.at_level(logging.WARNING):
+        roster = get_patient_roster(make_openemr_client(handler), token="tok")
+
+    # The bad record is dropped -- no PHI (name) leaked into the log itself.
+    assert roster == [RosterEntry(pid=8, name="Real Patient")]
+    assert "Ghost" not in caplog.text
+    assert "Record" not in caplog.text
+    # Presence: the drop was actually logged, not silent.
+    assert any("dropped a patient roster record" in record.message for record in caplog.records)
 
 
 @pytest.mark.integration

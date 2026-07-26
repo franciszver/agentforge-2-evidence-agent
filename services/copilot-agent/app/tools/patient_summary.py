@@ -42,12 +42,15 @@ Phil Belford, pubpid 1):
 from __future__ import annotations
 
 import datetime
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, NamedTuple
 
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
 from app.schemas.tools import PatientSummaryOutput
+
+_logger = logging.getLogger(__name__)
 
 _SEX_MAP = {"male": Sex.MALE, "female": Sex.FEMALE, "other": Sex.OTHER}
 
@@ -181,12 +184,47 @@ def get_patient_roster(client: OpenEmrClient, token: str) -> list[RosterEntry]:
         return []
     entries: list[RosterEntry] = []
     for record in records:
-        pid = record.get("pid")
         fname, lname = record.get("fname"), record.get("lname")
         parts = [part for part in (fname, lname) if isinstance(part, str) and part]
-        if isinstance(pid, int) and parts:
+        pid = _coerce_pid(record.get("pid"))
+        if pid is None:
+            # Gate 2 (Opus) re-review MINOR: unlike ``_fetch_demographics``/
+            # ``resolve_patient_uuid`` (which compare ``pid`` with ``==`` and
+            # never gate inclusion on its TYPE), this function decides
+            # whether to keep a record at all based on whether ``pid``
+            # resolves to an int. Pre-#174 a non-int-but-numeric ``pid``
+            # still produced a name (comparison-based exclusion just
+            # silently no-opped); dropping the record here instead would
+            # make signal 3 go silently empty on such a payload -- a WORSE
+            # failure direction. Logged (no PHI -- no name, no raw pid
+            # value) so a real occurrence is visible rather than a silent
+            # roster gap.
+            if parts:
+                _logger.warning(
+                    "dropped a patient roster record with a non-integer pid",
+                    extra={"pid_type": type(record.get("pid")).__name__},
+                )
+            continue
+        if parts:
             entries.append(RosterEntry(pid=pid, name=" ".join(parts)))
     return entries
+
+
+def _coerce_pid(raw: Any) -> int | None:
+    """Best-effort int coercion for a REST patient record's ``pid`` field.
+
+    ``pid`` is normally already a JSON int, but a MySQL-backed PHP REST
+    layer could plausibly serialize it as a numeric string --
+    ``str.isdigit()`` (no sign, no decimal point: a real OpenEMR ``pid`` is
+    a positive auto-increment integer, never negative or fractional).
+    ``None`` for anything else (missing, non-numeric, float, ...) -- the
+    caller logs and drops that record rather than guessing further.
+    """
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return None
 
 
 def _count_rest_list(client: OpenEmrClient, token: str, path: str) -> int:

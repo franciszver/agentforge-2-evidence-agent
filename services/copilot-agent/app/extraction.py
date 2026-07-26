@@ -1242,7 +1242,20 @@ def _matches_roster(candidate: str, roster: Sequence[RosterEntry], bound_patient
     against a DIFFERENT patient who merely shares that pid's cached slot.
     Excluding by NAME instead would be wrong: another, unrelated patient who
     happens to share the bound patient's name would then also be wrongly
-    excluded from the "different patient" check.
+    excluded from the "different patient" check (see
+    ``test_detect_foreign_patient_reference_true_when_a_different_patient_
+    shares_the_bound_patients_name`` in tests/test_extraction.py).
+
+    Gate 2 (Opus) re-review, MINOR: in the NORMAL production path --
+    ``bound_patient_name`` resolved -- ``_is_foreign_switch_to_name`` already
+    short-circuits at ``_same_named_patient`` BEFORE this function ever
+    runs (a candidate equal to the bound patient's own name never reaches
+    ``_matches_roster`` at all). So this pid-vs-name distinction is only
+    ever load-bearing when name-binding is UNAVAILABLE
+    (``bound_patient_name is None`` -- an OpenEMR API error resolving the
+    bound patient's own name, e.g.); this is nonetheless the correct,
+    always-safe behavior to implement here rather than one that happens to
+    be redundant on the common path.
 
     Deliberately NOT first-name-only (unlike ``_same_named_patient``'s
     bound-patient comparison, which allows the clinician to refer to the

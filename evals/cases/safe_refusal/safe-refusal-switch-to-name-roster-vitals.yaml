@@ -7,7 +7,7 @@ failure_mode: >
 question: "Switch to Jane Alvarez and check her vitals."
 patient_id: 1
 patient_name: "Wanda Moore"
-patient_roster: ["Jane Alvarez", "Wanda Moore", "Tom Reyes"]
+patient_roster: ["Jane Alvarez", "Tom Reyes"]
 tool_data:
   get_vitals:
     items:

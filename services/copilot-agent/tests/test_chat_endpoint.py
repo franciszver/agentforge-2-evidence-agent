@@ -1139,6 +1139,43 @@ def test_roster_cache_refetches_after_ttl_expires():
     assert len(fetch_calls) == 2
 
 
+def test_roster_cache_does_not_cache_a_failed_fetchs_empty_result():
+    """Gate 2 (security) re-review, CONFIRMED MAJOR: ``get_patient_roster``
+    returns ``[]`` fail-safe on ANY OpenEMR API error (timeout, 403, 5xx) --
+    indistinguishable here from a genuinely empty roster. Before this fix,
+    ``get_or_fetch`` cached that ``[]`` unconditionally, so one OpenEMR blip
+    coinciding with the first "switch to <Name>" turn after process start
+    would silence signal 3 for EVERY conversation, process-wide, for the
+    rest of the TTL window -- worse than pre-#174 (which only poisoned the
+    one conversation that hit the blip).
+
+    Simulates the blip: the first ``fetch`` call returns ``[]`` (as if
+    OpenEMR were down), the second (still within the TTL window -- no clock
+    advance between calls) returns a real, non-empty roster (as if OpenEMR
+    recovered). A correct cache must NOT have latched onto the empty
+    result -- the second call must still reach ``fetch`` and get the real
+    roster, not a cached ``[]``.
+    """
+    clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    cache = RosterCache(ttl_seconds=300.0, clock=clock)
+    responses: list[list[RosterEntry]] = [[], [RosterEntry(pid=1, name="Bob Smith")]]
+    fetch_calls = []
+
+    def fetch() -> list[RosterEntry]:
+        fetch_calls.append(1)
+        return responses[len(fetch_calls) - 1]
+
+    first = cache.get_or_fetch(fetch)
+    clock.advance(1.0)  # well within the 300s TTL -- a cache bug would serve the stale [] here
+    second = cache.get_or_fetch(fetch)
+
+    assert first == []
+    # Presence: the second call actually reached `fetch` again (not served a
+    # cached [] from the first call) and got the real, non-empty roster.
+    assert second == [RosterEntry(pid=1, name="Bob Smith")]
+    assert len(fetch_calls) == 2
+
+
 def test_roster_cache_rejects_a_non_positive_ttl():
     with pytest.raises(ValueError):
         RosterCache(ttl_seconds=0.0, clock=lambda: datetime.datetime.now(datetime.timezone.utc))

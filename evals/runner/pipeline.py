@@ -86,12 +86,21 @@ _EVAL_FIXED_NOW = datetime(2026, 7, 15)
 # is now patient-agnostic and carries (pid, name) pairs so the bound
 # patient's own entry can be excluded at COMPARISON time, by pid, rather
 # than at fetch time. `EvalCase.patient_roster` (runner.schema) stays a
-# plain, hand-authored `list[str]` of "every OTHER patient" -- the case
-# author already excludes `case.patient_id` when writing the fixture, so
-# there is no real pid to carry. `_ROSTER_FIXTURE_SENTINEL_PID` is a value
-# guaranteed to never equal a real (positive) `patient_id`, used purely so
-# `app.extraction._matches_roster`'s pid-based exclusion is a no-op here --
-# every fixture entry is already "a different patient" by construction.
+# plain, hand-authored `list[str]` -- there is no real pid to carry for a
+# fixture entry, so every name here is adapted to a `RosterEntry` with THIS
+# ONE sentinel pid. Gate 3 (Opus) re-review MINOR (#174): that makes
+# `app.extraction._matches_roster`'s pid-based exclusion a PERMANENT no-op
+# for every eval case -- `_ROSTER_FIXTURE_SENTINEL_PID` can never equal a
+# real (positive) `case.patient_id`, so nothing on `case.patient_roster` is
+# ever excluded by this sentinel, regardless of what the case author
+# intended. Fixtures MUST NOT list the bound patient in `patient_roster` --
+# unlike the live roster (which now legitimately contains the bound
+# patient's own entry, excluded only at comparison time), an eval fixture
+# that does so relies entirely on `case.patient_name` also being set (so
+# `_is_foreign_switch_to_name`'s earlier `_same_named_patient` check
+# short-circuits before the roster is ever consulted) -- a case exercising
+# name-binding-UNAVAILABLE behavior with the bound patient also present in
+# `patient_roster` would wrongly refuse a "switch to <own name>" turn.
 _ROSTER_FIXTURE_SENTINEL_PID = -1
 
 

@@ -885,6 +885,18 @@ class RosterCache:
     until the next refresh) -- an acceptable, bounded trade against paying a
     full roster fetch on every matching turn.
 
+    A SEPARATE staleness case, NOT covered by the TTL analysis above: an
+    empty ``fetch()`` result (``[]``) is never cached -- see
+    ``get_or_fetch``'s docstring. ``[]`` is ``get_patient_roster``'s
+    fail-safe return for ANY OpenEMR API error, indistinguishable here from
+    a genuinely empty roster; caching it would let one transient fetch
+    failure go dark on signal 3 for every conversation, process-wide, for
+    the rest of ``ttl_seconds`` -- a fail-OPEN window strictly worse than
+    the pre-#174 per-conversation cache (which only poisoned the one
+    conversation that hit the blip). Skipping the cache write on an empty
+    result means a failed fetch is retried on every subsequent matching
+    turn until one actually succeeds, same cost as having no cache at all.
+
     ``enabled`` -- Gate 2 (security) finding on #174, CONFIRMED: sharing one
     cached roster across every caller is only safe when every caller is the
     SAME authorization principal. With ``copilot_per_user_token_enabled``
@@ -946,6 +958,23 @@ class RosterCache:
         reads or writes the cache -- every call gets its OWN, freshly
         fetched roster, scoped to whatever principal ``fetch`` itself is
         bound to.
+
+        Gate 2 (security) re-review, CONFIRMED MAJOR: an empty ``fetch()``
+        result is NEVER cached (``if roster:`` below). ``get_patient_roster``
+        (``app.tools.patient_summary``) returns ``[]`` fail-safe on ANY
+        OpenEMR API error -- a timeout, a 403, a 5xx blip -- indistinguishable
+        here from a genuinely empty roster. Caching that ``[]`` would turn
+        one transient OpenEMR blip, coinciding with the first "switch to
+        <Name>" turn after process start, into signal 3
+        (``app.extraction.detect_foreign_patient_reference``) going dark for
+        EVERY conversation for the rest of ``ttl_seconds`` -- a process-wide
+        fail-OPEN window, not just the one conversation that hit the blip
+        (pre-#174, a fetch failure poisoned only that one conversation's own
+        cache). Leaving ``self._roster``/``self._expires_at`` untouched on an
+        empty result means the NEXT call sees the same (already-expired, or
+        still-``None``) cache state and retries ``fetch()`` again -- costing
+        exactly what calling ``fetch()`` on every matching turn cost before
+        this cache existed, until a fetch actually succeeds.
         """
         if not self._enabled:
             return fetch()
@@ -954,9 +983,10 @@ class RosterCache:
             if self._roster is not None and self._expires_at is not None and now < self._expires_at:
                 return self._roster
         roster = fetch()
-        with self._lock:
-            self._roster = roster
-            self._expires_at = now + timedelta(seconds=self._ttl_seconds)
+        if roster:
+            with self._lock:
+                self._roster = roster
+                self._expires_at = now + timedelta(seconds=self._ttl_seconds)
         return roster
 
 

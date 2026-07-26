@@ -290,6 +290,7 @@ from app.planner import Planner, PlannerResult  # noqa: E402
 from app.schemas.ingestion import Citation  # noqa: E402
 from app.schemas.reranking import RerankedChunk  # noqa: E402
 from app.tool_call_scoping import engaged_call_ids  # noqa: E402
+from app.tools.patient_summary import RosterEntry  # noqa: E402
 from app.verdict import Verdict, VerdictResult  # noqa: E402
 from app.verification import CitationCheckResult, CitationStatus, ClaimCheckResult, records_of  # noqa: E402
 
@@ -304,7 +305,13 @@ import httpx  # noqa: E402
 
 from runner.loader import discover_case_files, load_case  # noqa: E402
 from runner.ollama_replay import OllamaLike, RecordedCall, RecordingOllamaClient, save_recording  # noqa: E402
-from runner.pipeline import _EVAL_FIXED_NOW, _EVAL_TOKEN, needs_semantic_support, needs_verification  # noqa: E402
+from runner.pipeline import (  # noqa: E402
+    _EVAL_FIXED_NOW,
+    _EVAL_TOKEN,
+    _ROSTER_FIXTURE_SENTINEL_PID,
+    needs_semantic_support,
+    needs_verification,
+)
 from runner.schema import EvalCase  # noqa: E402
 from runner.tool_stub import build_fake_registry  # noqa: E402
 
@@ -641,7 +648,12 @@ def _run_planner(
     passed in here, rather than each of this function and
     ``_run_verification_arm`` re-deriving them from ``case`` independently."""
     if detect_foreign_patient_reference(
-        case.question, case.patient_id, case.patient_name, roster_provider=lambda: case.patient_roster or []
+        case.question,
+        case.patient_id,
+        case.patient_name,
+        roster_provider=lambda: [
+            RosterEntry(pid=_ROSTER_FIXTURE_SENTINEL_PID, name=name) for name in (case.patient_roster or [])
+        ],
     ):
         return apply_recency_notice(cross_patient_refusal_result(), now=_EVAL_FIXED_NOW)
 
