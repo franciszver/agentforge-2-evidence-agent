@@ -28,7 +28,11 @@
  * 'SELECT * FROM spans WHERE correlation_id=? AND span_type=?',
  * ('<id>', 'feedback'))]"`)
  * -- the P4.4 task's required live verification, done once outside this
- * automated suite against the rebuilt agent.
+ * automated suite against the rebuilt agent. This same query shape (against
+ * `feedback_comment` rather than `SELECT *`) is now the documented, sanctioned
+ * way for a human to read a thumbs-down comment for triage -- see
+ * docs/TEST_PLAN.md's "Triage workflow: reading the clinician's
+ * feedback_comment (#179)" section.
  *
  * @package   OpenEMR
  * @link      https://www.open-emr.org

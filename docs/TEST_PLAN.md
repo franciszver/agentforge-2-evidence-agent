@@ -88,6 +88,36 @@ Located in `evals/`: YAML case files + a pytest runner. Each case documents the 
 
 The feedback loop feeds this suite: a 👎 or verification failure in the review queue can be promoted to a YAML regression case in `evals/regressions/`. Eval pass-rate over time is charted on the observability dashboard.
 
+### Triage workflow: reading the clinician's `feedback_comment` (#179)
+
+Promoting a thumbs-down to a real regression case means writing the actual `failure_mode` from the clinician's own words, not the generated TODO placeholder (`app.review_queue._failure_mode`, `services/copilot-agent/app/review_queue.py`). Before #176 that text was rendered on `GET /review`; #176 redacted it there because `/review` is unauthenticated and the comment is clinician free text that may contain PHI (`app.trace_store`'s module docstring). #179 confirmed no other surface renders it either (`/dashboard` never has; `/review/promote`'s YAML never re-emits it, #157) — the value now lives in exactly one place, the `spans.feedback_comment` column in the P4.2 trace store.
+
+**Sanctioned triage path: query the trace store directly, in the running `agent` container.** No proxy or CLI was built for this (see the decision below) — an operator with host/docker access reads the comment for a given correlation id with:
+
+```bash
+docker exec -it development-easy-agent-1 \
+  python3 -c "import sqlite3; conn = sqlite3.connect('/data/traces/traces.db'); \
+  rows = conn.execute('SELECT id, feedback_comment FROM spans WHERE correlation_id = ? AND feedback_comment IS NOT NULL ORDER BY id DESC', ('<CORRELATION_ID>',)).fetchall(); \
+  [print(r) for r in rows]"
+```
+
+Notes on this exact form (each verified against the current compose file / image, not assumed):
+
+- Container name `development-easy-agent-1` matches this repo's other `docker exec ...-agent-1` recipes (`docs/DEMO_SCRIPT.md`, `docs/ARCHITECTURE.md`'s capacity-run recipe); the compose service is `agent` (`docker/development-easy/docker-compose.copilot.yml`) if invoking via `docker compose exec agent ...` instead. This exact container name is a function of the compose *project* name (the directory the stack was brought up from) — it only holds for the primary `docker/development-easy` checkout. Against a non-primary stack (an `openemr-cmd worktree`, or any clone/checkout under a different directory name), find the real name with `docker compose ps --format '{{.Names}}'` from that stack's compose directory, or use `openemr-cmd worktree exec <branch> exec agent <cmd>`-style indirection rather than assuming this literal name.
+- Path `/data/traces/traces.db`, NOT the `Settings.trace_db_path` default of `/data/traces.db` — the compose overlay's `agent` service sets `TRACE_DB_PATH: /data/traces/traces.db` to scope the persistent `agenttracedata` volume mount (see that file's volumes comment, #180).
+- `python3 -c "import sqlite3; ..."`, NOT `sqlite3 <db> "<query>"` — the agent image (`python:3.11-slim` base) has no `sqlite3` CLI binary, only the stdlib module. A bare `docker exec ... sqlite3 ...` form does not work against this image.
+- `<CORRELATION_ID>` is the id shown on the (still-open) `/review` page next to the thumbs-down badge — that page tells the operator *which* trace to query; this command is how they read the one field it withholds.
+- The `WHERE` clause is deliberately scoped to one `correlation_id`, parameterized (not string-formatted). Do not broaden it into a table dump ("just to look around") — that turns a narrow, single-record read into exactly the unscoped PHI exposure #176 removed from `/review` in the first place; if a wider query is genuinely needed, that need itself is a sign this decision (below) should be revisited, not a reason to widen the copy-pasted command.
+- `SELECT id, ...` and `ORDER BY id DESC`, not a bare unordered `SELECT feedback_comment`: `app.feedback`'s write path inserts a new span unconditionally, with no uniqueness constraint on `correlation_id` (`app.dashboard_metrics`'s dedup — `ORDER BY (feedback_comment IS NOT NULL) DESC, id DESC` — exists precisely because more than one feedback row per correlation id happens, e.g. a clinician submits, reloads, and resubmits). Without an explicit order the query can return rows in an unspecified sequence; ordering newest-first and printing `id` alongside the comment lets the operator tell which row is current before hand-writing `failure_mode` from it, rather than possibly reading a superseded comment.
+
+**Decision (2026-07-26, #179): document this manual query as the sanctioned path, not a new authenticated proxy or CLI.** Options considered:
+
+- *Authenticated `/review` proxy* — give `/review` the same OpenEMR-authenticated-proxy plumbing `/feedback` and `/documents/{source_id}` already have (new PHP controller, CSRF, session wiring), then ungate the comment for a logged-in clinician. Correct long-term fix, restores the intended human-reads-it-in-the-UI workflow, but by far the largest scope of the three options.
+- *A small authenticated operator CLI/script* reading the comment for a correlation id. Smaller than the proxy, but still new code (auth, argument parsing, a script to maintain and test) for a workflow an operator can already do in one line with tools already on the host.
+- *Document the direct query (chosen).* Zero new code. Defensible specifically because this is a single local-appliance deployment: the agent's port is never published to a host port (`docker-compose.copilot.yml`'s `agent`/`ollama`/`llama-server*` are all `copilot_internal`-only), the only person who can run `docker exec` against it already has host/docker access to the machine, and that access is a strict superset of anything an authenticated HTTP proxy would grant. This keeps the comment off every HTTP surface, which is the property #176 bought — a proxy would put PHI back on an HTTP response, just an authenticated one.
+
+**Revisit this decision if:** the deployment stops being a single local appliance with an unpublished agent port (e.g. it moves behind a shared host, a published port, or multi-operator access where "has docker exec" is no longer equivalent to "is the treating clinician"); or #185's subject-claim binding work lands and makes gating `/review` with a real per-clinician identity cheap, at which point the authenticated-proxy option above stops being the largest-scope option and becomes the better one.
+
 ### Eval authoring convention
 
 Every case is one YAML file with the same shape, so 25+ cases stay structurally consistent regardless of author. This is the schema the P4.7 harness (`evals/runner/schema.py`) actually validates against — case files live under `evals/cases/<category>/<id>.yaml`:
