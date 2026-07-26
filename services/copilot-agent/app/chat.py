@@ -85,7 +85,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config import Settings, get_settings
+from app.config import (
+    DEFAULT_MAX_STORED_CONVERSATIONS,
+    DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    Settings,
+    get_settings,
+)
 from app.correlation import get_correlation_id, get_span_id
 from app.dev_token_bridge import DevTokenBridge
 from app.extraction import (
@@ -139,13 +144,14 @@ class ChatEvent(StrEnum):
 # legitimate clinical question -- including a long, detailed one -- while
 # leaving the bulk of the target model's 16k-token context window for the
 # planner/system prompt, retrieved evidence chunks, prior conversation
-# turns, and the answer itself. This bound applies to the WHOLE request
-# message unconditionally; it is independent of, and tighter than, nothing
-# -- app.retrieval.MAX_QUERY_CHARS (2000) is a SEPARATE, narrower bound that
-# only applies to the derived retrieval query, and only when
-# copilot_evidence_retrieval_enabled is true. Rejecting outright (422) is
-# deliberate, not truncating: a silently truncated question could change
-# clinical meaning without the caller knowing.
+# turns, and the answer itself. This bound applies unconditionally to the
+# WHOLE request message. It is a SEPARATE, WIDER bound than
+# app.retrieval.MAX_QUERY_CHARS (2000): that one only applies to the derived
+# retrieval query, and only when copilot_evidence_retrieval_enabled is true;
+# this one applies to every /chat request regardless of that flag.
+# Rejecting outright (422) is deliberate, not truncating: a silently
+# truncated question could change clinical meaning without the caller
+# knowing.
 MAX_CHAT_MESSAGE_LENGTH = 4000
 
 
@@ -585,26 +591,30 @@ class Conversation:
     history: list[Turn] = field(default_factory=list)
 
 
-# Fallback cap for a bare ``ConversationStore()`` constructed outside the
-# FastAPI dependency (as every hermetic test in this repo does today) --
-# kept in sync with ``Settings.copilot_max_stored_conversations``'s default
-# so behaviour is identical whether or not a caller threads settings through.
-DEFAULT_MAX_STORED_CONVERSATIONS = 2000
-
-
 class ConversationStore:
     """In-memory, LRU-bounded conversation store keyed by ``conversation_id``.
 
     Issue #167 (VULN-0004): an earlier version of this store had no
     eviction, so it retained every conversation for the process lifetime --
     unbounded, attacker-influenced memory growth (any caller can start a new
-    conversation). ``max_conversations`` bounds it: once the cap is
+    conversation). ``max_conversations`` bounds THAT axis: once the cap is
     exceeded, the least-recently-used conversation is evicted. "Used" means
     read via ``get`` or appended to via ``append_turn`` -- both move a
     conversation to the most-recently-used end, so an active multi-turn
     conversation is never evicted out from under its own caller as long as
     it stays under the cap; only conversations nobody has touched recently
     are reclaimed.
+
+    A SEPARATE axis (Gate 2 finding on #167): the conversation-count cap
+    alone does not stop a single conversation from growing forever -- an
+    attacker who reuses ONE ``conversation_id`` and keeps calling ``/chat``
+    stays permanently most-recently-used and so is never an eviction
+    candidate under the axis above. ``max_turns_per_conversation`` bounds
+    THIS axis: ``append_turn`` drops the oldest turn once a conversation's
+    own history exceeds the cap. Safe to drop silently (see
+    ``Settings.copilot_max_turns_per_conversation``'s docstring for how this
+    was verified): ``.history`` is read in exactly one place in the service,
+    as a boolean "any prior turns?" signal, never as planner context.
 
     A caller resuming with an evicted ``conversation_id`` gets ``get() ->
     None`` -- the endpoint already maps that to a clean 404 (unknown
@@ -614,10 +624,17 @@ class ConversationStore:
     with the same shape (get / create / append) a DB-backed store would have.
     """
 
-    def __init__(self, max_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS) -> None:
+    def __init__(
+        self,
+        max_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS,
+        max_turns_per_conversation: int = DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    ) -> None:
         if max_conversations <= 0:
             raise ValueError("max_conversations must be positive")
+        if max_turns_per_conversation <= 0:
+            raise ValueError("max_turns_per_conversation must be positive")
         self._max_conversations = max_conversations
+        self._max_turns_per_conversation = max_turns_per_conversation
         self._conversations: OrderedDict[str, Conversation] = OrderedDict()
 
     def get(self, conversation_id: str) -> Conversation | None:
@@ -630,14 +647,19 @@ class ConversationStore:
         conversation = Conversation(
             conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
         )
+        # No move_to_end here: OrderedDict already inserts a NEW key at the
+        # most-recently-used (right/end) position -- calling move_to_end
+        # immediately after would be a verified no-op.
         self._conversations[conversation.conversation_id] = conversation
-        self._conversations.move_to_end(conversation.conversation_id)
         while len(self._conversations) > self._max_conversations:
             self._conversations.popitem(last=False)
         return conversation
 
     def append_turn(self, conversation_id: str, turn: Turn) -> None:
-        self._conversations[conversation_id].history.append(turn)
+        history = self._conversations[conversation_id].history
+        history.append(turn)
+        if len(history) > self._max_turns_per_conversation:
+            del history[: len(history) - self._max_turns_per_conversation]
         self._conversations.move_to_end(conversation_id)
 
 
@@ -647,14 +669,25 @@ _default_store: ConversationStore | None = None
 def get_conversation_store(settings: Settings = Depends(get_settings)) -> ConversationStore:
     """FastAPI dependency: the active ``ConversationStore``. Override in tests.
 
-    Built lazily against ``Settings.copilot_max_stored_conversations``, the
-    same pattern ``get_trace_store`` uses -- importing this module never
-    reads settings, and the cap is operator-tunable via that setting rather
-    than a module-global read.
+    Built lazily against ``Settings.copilot_max_stored_conversations`` /
+    ``Settings.copilot_max_turns_per_conversation``. Deliberately a
+    DIFFERENT shape than ``get_trace_store`` below, which calls
+    ``get_settings()`` in its own body rather than taking ``settings`` as an
+    injected ``Depends`` parameter: that was the simpler option available
+    when this function was written, but injecting ``Settings`` via
+    ``Depends`` here is the better pattern -- it makes the settings
+    dependency visible in this function's signature (FastAPI's dependency
+    graph, not a hidden in-body call), and lets a test override
+    ``get_settings`` without needing to know this function reads it. Kept as
+    a lazily-built singleton (not rebuilt every request) so the store's
+    state persists across requests, matching ``get_trace_store``'s caching.
     """
     global _default_store
     if _default_store is None:
-        _default_store = ConversationStore(max_conversations=settings.copilot_max_stored_conversations)
+        _default_store = ConversationStore(
+            max_conversations=settings.copilot_max_stored_conversations,
+            max_turns_per_conversation=settings.copilot_max_turns_per_conversation,
+        )
     return _default_store
 
 

@@ -665,6 +665,49 @@ def test_conversation_store_bounds_retained_conversations():
     assert retained_count < len(conversation_ids) or not earliest_still_resolves
 
 
+def test_conversation_store_bounds_turns_per_conversation():
+    """Gate 2 finding on #167: the conversation-COUNT cap
+    (``max_conversations``) does not stop a SINGLE conversation from growing
+    forever -- an attacker reusing one ``conversation_id`` stays permanently
+    most-recently-used and so is never an eviction candidate under that cap
+    alone. This asserts the SEPARATE per-conversation turn cap: appending
+    far more turns than any plausible cap to ONE conversation must not
+    retain all of them.
+
+    Confirmed this fails against the pre-fix ``append_turn`` (unconditional
+    ``.history.append(turn)``, no trim) and passes against the fix (drops
+    the oldest turn once ``max_turns_per_conversation`` is exceeded): ran
+    this test against a stash of the code before the turn-cap was added --
+    it failed with ``AssertionError`` (history length was 5000, equal to
+    the turn count, not bounded); reran unstashed and it passes.
+    """
+    store = ConversationStore(max_turns_per_conversation=10)
+    conversation = store.create(patient_id=1)
+
+    turn_count = 5_000
+    for i in range(turn_count):
+        store.append_turn(
+            conversation.conversation_id,
+            Turn(
+                correlation_id=f"corr-{i}",
+                user="clinician",
+                patient_id=1,
+                question=f"question {i}",
+                answer=f"answer {i}",
+            ),
+        )
+
+    retained = store.get(conversation.conversation_id)
+    assert retained is not None
+    assert len(retained.history) < turn_count
+    assert len(retained.history) == 10
+    # Oldest turns are dropped, newest retained (LRU-of-turns, not just any
+    # 10 -- a real fix must keep the RECENT clinical context, not arbitrary
+    # entries).
+    assert retained.history[-1].question == f"question {turn_count - 1}"
+    assert retained.history[0].question == f"question {turn_count - 10}"
+
+
 def _dev_bearer(username: str, sub: int, pid: int) -> str:
     """Build a DevAgentToken-shaped bearer (``base64url(payload).sig``).
 
