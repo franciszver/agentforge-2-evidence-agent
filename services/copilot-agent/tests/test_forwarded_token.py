@@ -9,6 +9,15 @@ The wiring is unit-tested by calling ``get_planner_factory`` directly with a
 fake bridge and ``_default_planner_factory`` monkeypatched to capture the token
 it is bound to -- no real OpenEMR / Ollama client is constructed.
 
+#177: ``get_planner_factory`` no longer takes the raw ``Authorization`` header
+-- it takes the already-extracted-and-validated ``token`` (the return value of
+the ``get_authenticated_token`` dependency it now depends on), so these direct
+calls pass ``token=`` instead of ``authorization=``. There is no more "missing
+header" case to exercise here: a missing/invalid header now fails in
+``get_authenticated_token`` before this dependency is ever reached (see
+``test_chat_endpoint.py``'s
+``test_unauthenticated_chat_never_touches_dev_token_bridge_transport``).
+
 Fake token VALUES are tiny + keyword-free for the pre-push secret-scan.
 """
 
@@ -54,7 +63,7 @@ def capture_factory_token(monkeypatch):
 def test_flag_off_uses_dev_bridge_token(capture_factory_token, monkeypatch):
     monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
     get_planner_factory(
-        authorization=f"Bearer {_USER_TOK}",
+        token=_USER_TOK,
         dev_token_bridge=_FakeBridge(_BRIDGE_TOK),  # type: ignore[arg-type]
     )
     # Default (flag off): tool calls use the bridge's demo-clinician token,
@@ -65,25 +74,12 @@ def test_flag_off_uses_dev_bridge_token(capture_factory_token, monkeypatch):
 def test_flag_on_uses_request_forwarded_token(capture_factory_token, monkeypatch):
     monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
     get_planner_factory(
-        authorization=f"Bearer {_USER_TOK}",
+        token=_USER_TOK,
         dev_token_bridge=_FakeBridge(_BRIDGE_TOK),  # type: ignore[arg-type]
     )
     # Flag on: the planner is bound to the REQUEST's forwarded bearer, not the
     # dev bridge token -> OpenEMR enforces this user's ACL.
     assert capture_factory_token["token"] == _USER_TOK
-
-
-def test_flag_on_missing_header_does_not_raise_in_dependency(capture_factory_token, monkeypatch):
-    # get_planner_factory resolves as a FastAPI dependency (before the endpoint
-    # body validates the token). A missing header must NOT raise here (that
-    # would surface as a 500) -- it binds an empty token; the body's validator
-    # then rejects with 401 and the planner never runs.
-    monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
-    get_planner_factory(
-        authorization=None,
-        dev_token_bridge=_FakeBridge(_BRIDGE_TOK),  # type: ignore[arg-type]
-    )
-    assert capture_factory_token["token"] == ""
 
 
 # --- endpoint-level: introspection validator maps to 401 before planner ----
