@@ -383,6 +383,23 @@ class CitationStatus(StrEnum):
     # picks it up for free. Never set on a ``DocumentCitationCheckResult``
     # (guideline/patient-fact citations are not tied to a tool call).
     TOOL_CALL_NOT_ENGAGED = "tool_call_not_engaged"
+    # SourceRef-relevance extension (issue #170, app.source_ref_relevance) --
+    # see that module's docstring. Set ONLY by
+    # ``apply_source_ref_relevance`` downgrading an otherwise-``VALID``
+    # ``CitationCheckResult`` (a ``SourceRef``) whose asserted field/value is
+    # provenance-real (``check_source_ref`` already confirmed it) but, per
+    # the LLM judge, is not topically relevant support for the claim's prose
+    # (e.g. an appointment's ``status`` field "verifying" an unrelated
+    # blood-pressure claim -- #130/#170's motivating shape). Never produced
+    # by ``check_source_ref`` itself -- same posture as every other judge-set
+    # status above: this module still has no LLM call anywhere, the value
+    # exists here only so ``ClaimCheckResult.passed``'s existing
+    # AND-aggregation picks it up for free. Never set on a
+    # ``DocumentCitationCheckResult`` (that shape is ``NOT_SEMANTICALLY_
+    # SUPPORTED``'s territory, ``app.semantic_support`` -- see
+    # ``app.source_ref_relevance``'s module docstring for why the two are
+    # deliberately disjoint, never applied to the same claim).
+    NOT_TOPICALLY_RELEVANT = "not_topically_relevant"
 
 
 @dataclass(frozen=True)

@@ -284,6 +284,17 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     # needed here either. `COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED=true`
     # re-runs the eval suite with the gate on for the same kind of per-
     # category measurement.
+    # Issue #170: threads `Settings.copilot_source_ref_relevance_enabled`
+    # through exactly parallel to `require_tool_call_scoping`/
+    # `require_answer_grounding` above -- default OFF (MEASUREMENT-gated,
+    # see `app.source_ref_relevance`'s module docstring), so this is a no-op
+    # against every existing recording unless a caller explicitly sets
+    # `COPILOT_SOURCE_REF_RELEVANCE_ENABLED=true`. Unlike `support_judge`
+    # above, no `needs_*` re-recording gate is needed: this flag defaults
+    # False, so no committed recording has ever had to carry an extra judge
+    # call for it. `evals/runner/issue_170_source_ref_relevance_spike.py` is
+    # the live (non-replay) measurement harness for this gate.
+    source_ref_relevance_judge = ollama_client if Settings().copilot_source_ref_relevance_enabled else None
     verdict_result, rendered = run_verification(
         extractor,
         planner_result,
@@ -292,5 +303,6 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         support_judge=support_judge,
         require_answer_grounding=Settings().copilot_claim_answer_grounding_enabled,
         require_tool_call_scoping=Settings().copilot_extraction_tool_call_scoping_enabled,
+        source_ref_relevance_judge=source_ref_relevance_judge,
     )
     return CaseResult(planner_result=planner_result, verdict_result=verdict_result, rendered=rendered)
