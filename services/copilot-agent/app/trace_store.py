@@ -230,18 +230,25 @@ def hash_owner_token(token: str, secret: str) -> str:
 
     Issue #180: the ``/feedback`` ownership check binds a feedback write to
     the SAME bearer token that originated the trace (``record_request_span``'s
-    ``owner_token`` argument), not to a claimed identity -- see
-    ``app.chat.get_token_validator``'s docstring: even with
-    ``copilot_per_user_token_enabled`` on, OpenEMR's introspection response
-    (``app.openemr_auth.IntrospectionResult``) carries no subject/username
-    claim to check ownership against, only ``active``/``exp``/the SMART
-    launch ``patient``. The raw token itself is therefore the only
-    caller-distinguishing value available at either seam, and the front-end
-    panel already caches ONE token per browser session and reuses it for
-    both ``/chat`` and ``/feedback`` (see
+    ``owner_token`` argument), not to a claimed identity. Our
+    ``IntrospectionResult`` (``app.openemr_auth.introspect_token``) does not
+    parse the introspection response's ``sub`` claim today -- only
+    ``active``/``exp``/the SMART launch ``patient`` are kept, the rest of the
+    payload is dropped -- so it is not itself a checkable per-user principal
+    as things stand. That is a gap in what THIS service parses, not a
+    protocol limitation: OpenEMR's introspection response does carry a
+    signature-verified ``sub`` (see
+    ``src/Common/Auth/OpenIDConnect/JWT/JsonWebKeyParser.php`` and
+    ``TokenIntrospectionRestController``), and binding ownership to it once
+    ``copilot_per_user_token_enabled`` is on is real, available follow-up
+    work -- tracked separately, not solved here. The raw token itself is
+    the one caller-distinguishing value available TODAY at both ``/chat``
+    and ``/feedback``, and the front-end panel already caches ONE token per
+    browser session and reuses it for both (see
     ``interface/.../public/assets/js/copilot-chat.js``'s token-broker
     comment) -- so "same token" is exactly "same session that started this
-    trace", which is the ownership question ``/feedback`` needs answered.
+    trace", which is the ownership question ``/feedback`` needs answered
+    today.
 
     Keyed (not a bare hash) for the same reason as :func:`hash_args`: a
     bearer token is a secret-shaped value an attacker with read access to
@@ -254,10 +261,18 @@ def hash_owner_token(token: str, secret: str) -> str:
     the legitimate original caller's token, since the stored hash was keyed
     with the now-rotated secret. Fail-closed and consistent with
     ``caller_owns_trace``'s stated direction (an unrecorded/unverifiable
-    owner is rejected, never treated as open), but it is an availability/UX
-    cost, not a new one: exactly the same rotation-on-restart behavior
-    already applies to ``args_hash`` today, this just adds a second
-    consumer of it.
+    owner is rejected, never treated as open) -- but this IS a new,
+    user-visible consequence of that unset-secret default, not a pre-existing
+    one: nothing reads ``args_hash`` back across a process lifetime (it is
+    written once and only ever compared within the same write, never looked
+    up later), so a secret rotation there was previously unobservable.
+    ``owner_token_hash`` is looked up and compared on a LATER request, so an
+    unset ``trace_args_hash_secret`` paired with a trace store that outlives
+    the process (a persistent ``/data`` volume) is now a misconfiguration
+    with a concrete, user-visible failure mode: a clinician's own legitimate
+    feedback on a pre-restart answer gets rejected. Deployments that persist
+    ``traces.db`` across restarts should pin ``trace_args_hash_secret``
+    explicitly.
     """
     return _keyed_digest(secret, token)
 
@@ -366,12 +381,35 @@ class TraceStore:
         entirely against an un-migrated production DB. SQLite's
         ``ALTER TABLE ... ADD COLUMN`` is safe here: every added column is
         nullable with no default, so existing rows are unaffected. A no-op
-        on a fresh/already-migrated DB (nothing missing to add)."""
+        on a fresh/already-migrated DB (nothing missing to add).
+
+        Racing-migration guard (#180 review finding): ``get_trace_store``
+        (``app.chat``) is a lazily-built, non-atomic check-then-set process
+        global, resolved from Starlette's worker-thread pool by every
+        route that depends on it -- so two concurrent FIRST requests
+        against a pre-existing DB that still needs a column can both
+        construct a ``TraceStore``, both read the same pre-migration
+        ``PRAGMA table_info`` result here, and both attempt the SAME
+        ``ALTER TABLE ... ADD COLUMN``. SQLite has no ``IF NOT EXISTS`` for
+        ``ADD COLUMN``, so the loser raises
+        ``sqlite3.OperationalError: duplicate column name`` -- uncaught,
+        that propagates out of ``__init__`` and turns dependency resolution
+        into a 500 for a request that did nothing wrong. Harmless on the
+        shipped stack (a fresh, empty DB has nothing to migrate on either
+        thread's first run) but live for any deployment where ``/data``
+        persists a pre-#180 (or otherwise older-schema) DB across a
+        restart. Caught and ignored here: the loser's column is already
+        there courtesy of the winner, which is exactly the end state this
+        method is trying to reach either way."""
         existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(spans)")}
         for column in _COLUMNS:
             if column in ("id", *_ALWAYS_COLUMNS) or column in existing_columns:
                 continue
-            connection.execute(f"ALTER TABLE spans ADD COLUMN {column} TEXT")
+            try:
+                connection.execute(f"ALTER TABLE spans ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
 
     def _insert(self, *, span_type: SpanType, correlation_id: str, start_ts: float, end_ts: float, status: SpanStatus, **type_specific: Any) -> int:
         duration_ms = (end_ts - start_ts) * 1000
@@ -454,6 +492,22 @@ class TraceStore:
 
         Only an exact, constant-time (``hmac.compare_digest``) match
         returns ``True``.
+
+        First REQUEST span wins, by design -- security-load-bearing, not
+        arbitrary. ``correlation_id`` is attacker-influenceable (an inbound
+        ``X-Correlation-ID`` header is honored verbatim, see
+        ``app.correlation.CorrelationIdMiddleware``), so a caller with
+        network access to this agent could ``POST /chat`` with a foreign,
+        already-in-use correlation id and get a SECOND ``REQUEST`` span
+        appended for it, carrying their own ``owner_token_hash``. Taking
+        the LAST span here (mirroring ``app.review_queue``'s ``[-1]``
+        "most recent wins" convention for other span lookups) would let
+        that second span silently replace the original owner -- an
+        ownership-TAKEOVER primitive, not just a failed forgery. Taking the
+        FIRST span instead keeps the original ``/chat`` caller authoritative
+        forever, regardless of what a later request appends under the same
+        id. Do not "simplify" this to match ``review_queue``'s ``[-1]``
+        convention without re-reading this paragraph first.
         """
         request_spans = [span for span in self.get_spans(correlation_id) if span.span_type == SpanType.REQUEST]
         if not request_spans:
@@ -593,6 +647,7 @@ class TraceStore:
         end_ts: float,
         feedback_thumb: FeedbackThumb,
         feedback_comment: str | None,
+        owner_token: str | None = None,
     ) -> int:
         """Record clinician feedback on a response (P4.3's ``/feedback``
         endpoint seam -- not wired here). ``feedback_comment`` is
@@ -602,7 +657,16 @@ class TraceStore:
         is still stored verbatim: persisting it here is permitted, only
         rendering it is not. Always ``ok`` -- writing a feedback span IS the
         success event; there is no underlying operation for it to have
-        failed."""
+        failed.
+
+        ``owner_token`` (#180): the SAME token ``app.feedback.feedback_endpoint``
+        already checked via ``caller_owns_trace`` before calling this --
+        stored (hashed, never raw) on this FEEDBACK span too, purely for
+        attribution, not enforcement (ownership was already decided by the
+        time this is called). Without it, a post-#180 feedback row is
+        indistinguishable from a pre-#180 one in a DB upgraded in place, so
+        a triager reading a disputed comment has no way to tell which
+        regime produced it."""
         return self._insert(
             span_type=SpanType.FEEDBACK,
             correlation_id=correlation_id,
@@ -611,6 +675,7 @@ class TraceStore:
             status=SpanStatus.OK,
             feedback_thumb=feedback_thumb.value,
             feedback_comment=feedback_comment,
+            owner_token_hash=hash_owner_token(owner_token, self._hash_secret) if owner_token else None,
         )
 
     def get_spans(self, correlation_id: str) -> list[Span]:

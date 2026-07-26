@@ -872,11 +872,28 @@
         widget.status.textContent = 'Could not send feedback. Try again.';
     }
 
+    // A FOURTH, TERMINAL state (agent-service #180): the agent's ownership
+    // check rejects this correlation id's feedback permanently (a 403 --
+    // e.g. the trace's REQUEST span was never recorded, or predates a
+    // trace-store reset such as an agent restart with no persistent
+    // /data). Unlike applyFeedbackErrorState, retrying can NEVER succeed
+    // for this correlation id, so this does NOT re-enable the buttons
+    // (that would invite a retry loop the user has no way to know is
+    // futile) and uses distinct copy so the clinician doesn't read a
+    // generic "try again" as a transient blip worth repeating.
+    function applyFeedbackUnavailableState(widget) {
+        widget.upBtn.disabled = true;
+        widget.downBtn.disabled = true;
+        widget.commentSendBtn.disabled = true;
+        widget.commentWrap.classList.add('copilot-hidden');
+        widget.status.textContent = 'This answer can no longer be rated.';
+    }
+
     // Orchestration: wires the widget's buttons to POST public/feedback-proxy.php.
     // `options` needs `context`, `ensureToken` (the chat controller's cached
     // bearer-token seam), `fetchImpl`, and `feedbackUrl`.
     function attachFeedbackHandlers(widget, correlationId, options) {
-        var state = 'idle'; // idle | pending | done -- the no-double-submit guard
+        var state = 'idle'; // idle | pending | done | unavailable -- the no-double-submit guard
 
         function post(thumb, comment) {
             return options.ensureToken().then(function (token) {
@@ -888,7 +905,15 @@
                 });
             }).then(function (resp) {
                 if (!resp.ok) {
-                    throw new Error('feedback request failed');
+                    // Carry the HTTP status on the rejection so callers can
+                    // tell a permanent 403 (ownership check, #180 -- never
+                    // retryable) apart from a transient failure (worth a
+                    // retry). `resp.status` is undefined for a bare `{ ok:
+                    // false }` double with no status set, which the `=== 403`
+                    // check below correctly treats as the transient case.
+                    var err = new Error('feedback request failed');
+                    err.status = resp.status;
+                    throw err;
                 }
             });
         }
@@ -906,7 +931,12 @@
                 if (thumb === 'down') {
                     widget.commentWrap.classList.remove('copilot-hidden');
                 }
-            }).catch(function () {
+            }).catch(function (err) {
+                if (err && err.status === 403) {
+                    state = 'unavailable';
+                    applyFeedbackUnavailableState(widget);
+                    return;
+                }
                 state = 'idle';
                 applyFeedbackErrorState(widget);
             });
@@ -922,7 +952,12 @@
             return post('down', comment).then(function () {
                 widget.commentWrap.classList.add('copilot-hidden');
                 widget.status.textContent = 'Thanks for the detail';
-            }).catch(function () {
+            }).catch(function (err) {
+                if (err && err.status === 403) {
+                    state = 'unavailable';
+                    applyFeedbackUnavailableState(widget);
+                    return;
+                }
                 widget.commentSendBtn.disabled = false;
                 widget.status.textContent = 'Could not send comment. Try again.';
             });
@@ -1436,6 +1471,7 @@
         applyFeedbackPendingState: applyFeedbackPendingState,
         applyFeedbackSuccessState: applyFeedbackSuccessState,
         applyFeedbackErrorState: applyFeedbackErrorState,
+        applyFeedbackUnavailableState: applyFeedbackUnavailableState,
         attachFeedbackHandlers: attachFeedbackHandlers,
         resetActiveConversation: resetActiveConversation
     };

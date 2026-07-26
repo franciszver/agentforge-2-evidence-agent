@@ -39,6 +39,7 @@ const {
     applyFeedbackPendingState,
     applyFeedbackSuccessState,
     applyFeedbackErrorState,
+    applyFeedbackUnavailableState,
     attachFeedbackHandlers
 } = global.window.CopilotChat;
 
@@ -218,6 +219,30 @@ describe('feedback widget state', () => {
         expect(widget.downBtn.disabled).toBe(false);
         expect(widget.status.textContent).toMatch(/try again/i);
     });
+
+    // #180: the agent's ownership check (POST /feedback) returns a
+    // PERMANENT 403 for a correlation id it will never accept feedback for
+    // again (e.g. the REQUEST span never existed or was lost to an agent
+    // restart with no persistent trace store) -- distinct from
+    // applyFeedbackErrorState's transient/retryable case, both in copy
+    // (no "try again", since trying again cannot succeed) and in NOT
+    // re-enabling the controls, which would invite a retry the user has no
+    // way to know is futile.
+    test('unavailable state leaves both buttons AND the comment box disabled, with no retry copy', () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        widget.commentWrap.classList.remove('copilot-hidden');
+        applyFeedbackPendingState(widget);
+
+        applyFeedbackUnavailableState(widget);
+
+        expect(widget.upBtn.disabled).toBe(true);
+        expect(widget.downBtn.disabled).toBe(true);
+        expect(widget.commentSendBtn.disabled).toBe(true);
+        expect(widget.commentWrap.classList.contains('copilot-hidden')).toBe(true);
+        expect(widget.status.textContent).not.toMatch(/try again/i);
+        expect(widget.status.textContent.toLowerCase()).toMatch(/no longer be rated/);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -279,6 +304,73 @@ describe('attachFeedbackHandlers', () => {
         expect(widget.status.textContent).toMatch(/try again/i);
         expect(widget.upBtn.disabled).toBe(false);
         expect(widget.wrapper.classList.contains('copilot-feedback-submitted')).toBe(false);
+    });
+
+    test('a 403 thumb submit applies the unavailable state, not the retryable error state', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        await attachFeedbackHandlersClick(widget.upBtn);
+
+        expect(widget.upBtn.disabled).toBe(true);
+        expect(widget.downBtn.disabled).toBe(true);
+        expect(widget.status.textContent).not.toMatch(/try again/i);
+        expect(widget.status.textContent.toLowerCase()).toMatch(/no longer be rated/);
+    });
+
+    test('a 403 thumb submit is terminal: a later click never re-submits', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        await attachFeedbackHandlersClick(widget.upBtn);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+        // The disabled attribute alone isn't the guard (see the existing
+        // "even a synthetic click bypassing disabled" precedent below) --
+        // the internal state machine must also refuse to re-submit.
+        widget.upBtn.disabled = false;
+        widget.upBtn.dispatchEvent(new window.Event('click'));
+        await flushPromises();
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test('a 403 comment submit applies the unavailable state, not the retryable error message', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        widget.commentWrap.classList.remove('copilot-hidden');
+        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        widget.commentInput.value = 'Missed the recent A1C.';
+        widget.commentSendBtn.dispatchEvent(new window.Event('click'));
+        await flushPromises();
+
+        expect(widget.commentSendBtn.disabled).toBe(true);
+        expect(widget.commentWrap.classList.contains('copilot-hidden')).toBe(true);
+        expect(widget.status.textContent).not.toMatch(/try again/i);
+        expect(widget.status.textContent.toLowerCase()).toMatch(/no longer be rated/);
+    });
+
+    // Presence pairing for the three 403 tests above: a non-403 failure
+    // (already covered by "a failed submit applies the error state and
+    // allows retry") is unaffected by the new branch -- still the
+    // retryable path, not the terminal one. Explicit here so a future
+    // change to the `err.status === 403` check can't silently widen to
+    // treat every failure as terminal.
+    test('a non-403 failure does NOT apply the terminal unavailable state', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 500 }));
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        await attachFeedbackHandlersClick(widget.upBtn);
+
+        expect(widget.upBtn.disabled).toBe(false);
+        expect(widget.status.textContent).toMatch(/try again/i);
     });
 
     test('a rejected ensureToken (broker failure) applies the error state', async () => {

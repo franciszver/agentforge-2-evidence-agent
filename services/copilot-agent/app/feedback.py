@@ -35,26 +35,35 @@ path). Before persisting, the endpoint verifies the presented bearer token
 matches the token that originated ``target_correlation_id``'s trace, via
 ``TraceStore.caller_owns_trace`` -- see that method's docstring and
 ``app.trace_store.hash_owner_token``'s docstring for the full reasoning. In
-short: real per-user token introspection
-(``app.openemr_auth.IntrospectionResult``) turned out NOT to carry a
-subject/username claim even with ``copilot_per_user_token_enabled`` on --
-only ``active``/``exp``/the SMART launch ``patient`` -- so "the authenticated
-caller" never becomes a checkable principal by that route, flag on or off.
-The raw bearer token itself is the one caller-distinguishing value
-available at both ``/chat`` and ``/feedback``, and the panel already caches
-exactly one token per browser session and reuses it for both calls (see
+short: our ``IntrospectionResult`` (``app.openemr_auth.introspect_token``)
+does not parse the introspection response's ``sub`` claim today -- it keeps
+only ``active``/``exp``/the SMART launch ``patient`` and drops the rest of
+the payload -- so it is not itself a checkable per-user principal as things
+stand; OpenEMR's introspection endpoint DOES return ``sub`` (OpenEMR
+signature-verifies it when minting the token), so binding ownership to
+``sub`` once ``copilot_per_user_token_enabled`` is on is real, available
+follow-up work, not a protocol limitation -- tracked separately, not solved
+here. The dev-bridge, flag-off path is the one where no per-user principal
+is obtainable at all even in principle: the dev token's username claim is
+HMAC'd with a per-session CSRF-derived signing key
+(``AgentTokenBroker``/``DevAgentToken`` on the PHP side) that this agent
+never verifies (see ``app.chat._user_identity_from_token``'s docstring), so
+that claim cannot be trusted as a principal regardless of what this service
+chooses to parse. Either way, the raw bearer token itself is the one
+caller-distinguishing value available TODAY at both ``/chat`` and
+``/feedback``, and the panel already caches exactly one token per browser
+session and reuses it for both calls (see
 ``app.trace_store.hash_owner_token``'s docstring), so "presented the same
 token that started this trace" is a sound, implementable proxy for
 ownership that works identically regardless of
-``copilot_per_user_token_enabled`` -- unlike the deferred introspection-based
-design, this needed no flag gate. A correlation id with no recorded owner
-(no ``REQUEST`` span, or one written before #180) is rejected, not treated
-as unclaimed -- see ``caller_owns_trace``'s fail-closed cases. A caller
-holding a foreign but otherwise-valid token can still discover a real
-``correlation_id`` via the unauthenticated ``GET /review`` page (#176) --
-that page redacts the comment itself but still lists correlation ids, so
-ids must be assumed enumerable -- this is exactly the attempted-forgery
-case this check rejects.
+``copilot_per_user_token_enabled`` -- and needed no flag gate. A correlation
+id with no recorded owner (no ``REQUEST`` span, or one written before #180)
+is rejected, not treated as unclaimed -- see ``caller_owns_trace``'s
+fail-closed cases. A caller holding a foreign but otherwise-valid token can
+still discover a real ``correlation_id`` via the unauthenticated ``GET
+/review`` page (#176) -- that page redacts the comment itself but still
+lists correlation ids, so ids must be assumed enumerable -- this is exactly
+the attempted-forgery case this check rejects.
 
 PHI note: the comment is user-authored text about the response, not a
 patient RECORD value pulled from a tool -- but it may incidentally contain
@@ -137,6 +146,7 @@ def feedback_endpoint(
             end_ts=time.time(),
             feedback_thumb=request.thumb,
             feedback_comment=request.comment,
+            owner_token=token,
         )
     except Exception as exc:
         # Hard fail (see module docstring): never expose exc's message

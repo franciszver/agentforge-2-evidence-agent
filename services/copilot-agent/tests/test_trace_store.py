@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.trace_store import FeedbackThumb, Span, SpanStatus, SpanType, TraceStore, hash_args
+from app.trace_store import FeedbackThumb, Span, SpanStatus, SpanType, TraceStore, hash_args, hash_owner_token
 
 # The exact pre-P3.8 schema (committed on main before this branch added
 # span_id/parent_span_id/worker_name/sub_task_type) -- see
@@ -153,6 +153,69 @@ def test_migrates_a_pre_p38_db_so_new_columns_are_writable(db_path: str) -> None
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
 
 
+def test_migration_tolerates_a_concurrent_racing_alter_table(db_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#180 review MINOR 6: ``get_trace_store`` (``app.chat``) is a lazily
+    built, non-atomic check-then-set process global, resolved from
+    Starlette's worker-thread pool by every route that depends on it. Two
+    concurrent FIRST requests against a persistent DB that still needs a
+    column can both read ``PRAGMA table_info`` before either ``ALTER``s,
+    and the loser's ``ALTER TABLE ... ADD COLUMN`` raises
+    ``sqlite3.OperationalError: duplicate column name`` -- uncaught, that
+    would propagate out of ``TraceStore.__init__`` and turn dependency
+    resolution into an unhandled 500 for a request that did nothing wrong.
+
+    Reproduced deterministically (no real threads / timing dependence): a
+    SECOND, independent connection is spliced in to win the race and
+    commit the identical ``ALTER`` first, right as the connection under
+    test is about to run the same statement -- the exact interleaving two
+    real racing threads could produce.
+    """
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_PRE_P38_SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
+
+    # ``sqlite3.Connection`` is an immutable C type -- its methods can't be
+    # monkeypatched directly. Subclassing (via the ``factory`` argument
+    # ``sqlite3.connect`` already supports) and patching the module-level
+    # ``sqlite3.connect`` function (an ordinary, patchable Python callable)
+    # is the supported way to intercept a connection's ``execute`` calls.
+    original_connect = sqlite3.connect
+    already_raced = False
+
+    class _RacingConnection(sqlite3.Connection):
+        def execute(self, sql: str, *args: object, **kwargs: object) -> sqlite3.Cursor:  # type: ignore[override]
+            nonlocal already_raced
+            if not already_raced and "ADD COLUMN owner_token_hash" in sql:
+                already_raced = True
+                # A plain connection via the ORIGINAL connect -- not the
+                # patched one -- so this racer's own ALTER doesn't
+                # recursively re-enter this override.
+                racer = original_connect(db_path)
+                try:
+                    racer.execute(sql)
+                    racer.commit()
+                finally:
+                    racer.close()
+            return super().execute(sql, *args, **kwargs)
+
+    def patched_connect(path: str, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return original_connect(path, *args, factory=_RacingConnection, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sqlite3, "connect", patched_connect)
+
+    # Must NOT raise sqlite3.OperationalError: duplicate column name.
+    store = TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+    # And the migration actually completed despite the race -- the column
+    # this test targeted, and every other missing one, is usable.
+    store.record_request_span(correlation_id="corr-race", start_ts=0.0, end_ts=1.0, ok=True, owner_token="tok")
+    span = store.get_spans("corr-race")[0]
+    assert span.owner_token_hash is not None
+
+
 def test_record_request_span_write_and_read_back(store: TraceStore) -> None:
     store.record_request_span(correlation_id="corr-1", start_ts=100.0, end_ts=100.25, ok=True)
 
@@ -222,6 +285,29 @@ def test_caller_owns_trace_false_when_request_span_recorded_no_owner(store: Trac
     store.record_request_span(correlation_id="corr-legacy", start_ts=0.0, end_ts=1.0, ok=True)
 
     assert store.caller_owns_trace("corr-legacy", "any-token") is False
+
+
+def test_caller_owns_trace_first_request_span_wins_over_a_later_appended_one(store: TraceStore) -> None:
+    # #180 review finding: correlation_id is attacker-influenceable (an
+    # inbound X-Correlation-ID header is honored verbatim, see
+    # app.correlation.CorrelationIdMiddleware), so a caller with network
+    # access to this agent could POST /chat with a foreign, already-in-use
+    # correlation id and get a SECOND REQUEST span appended for it, under
+    # their OWN token. caller_owns_trace deliberately keeps the FIRST
+    # span's owner authoritative forever -- taking the last one (the
+    # convention app.review_queue uses for OTHER span lookups) would turn
+    # this check into an ownership-takeover primitive instead of a defense
+    # against one. Both assertions matter: the original owner still owns
+    # it, AND the second span's own token does NOT gain ownership.
+    store.record_request_span(
+        correlation_id="corr-shared", start_ts=0.0, end_ts=1.0, ok=True, owner_token="clinician-a-token"
+    )
+    store.record_request_span(
+        correlation_id="corr-shared", start_ts=2.0, end_ts=3.0, ok=True, owner_token="attacker-token"
+    )
+
+    assert store.caller_owns_trace("corr-shared", "clinician-a-token") is True
+    assert store.caller_owns_trace("corr-shared", "attacker-token") is False
 
 
 def test_record_tool_span_write_and_read_back(store: TraceStore) -> None:
@@ -340,6 +426,43 @@ def test_record_feedback_span_comment_is_optional(store: TraceStore) -> None:
     span = store.get_spans("corr-8")[0]
     assert span.feedback_thumb == FeedbackThumb.DOWN
     assert span.feedback_comment is None
+
+
+def test_record_feedback_span_records_owner_token_hash(store: TraceStore) -> None:
+    # #180 review MINOR 5: a FEEDBACK span records the (already-checked)
+    # caller's own owner_token_hash too, so a post-#180 row is
+    # distinguishable from a pre-#180 one in a DB upgraded in place -- a
+    # triager reading a disputed comment can tell which regime produced it.
+    store.record_feedback_span(
+        correlation_id="corr-9",
+        start_ts=1.0,
+        end_ts=1.0,
+        feedback_thumb=FeedbackThumb.DOWN,
+        feedback_comment="Missed the recent A1C.",
+        owner_token="clinician-a-token",
+    )
+
+    span = store.get_spans("corr-9")[0]
+    assert span.owner_token_hash is not None
+    assert span.owner_token_hash != "clinician-a-token"
+    assert span.owner_token_hash == hash_owner_token("clinician-a-token", _TEST_HASH_KEY)
+
+
+def test_record_feedback_span_without_owner_token_records_no_hash(store: TraceStore) -> None:
+    # Presence pairing for the test above: omitting owner_token (every
+    # existing caller before #180) still records no hash, same as
+    # record_request_span's own default -- not a regression for callers
+    # that don't pass it.
+    store.record_feedback_span(
+        correlation_id="corr-10",
+        start_ts=1.0,
+        end_ts=1.0,
+        feedback_thumb=FeedbackThumb.UP,
+        feedback_comment=None,
+    )
+
+    span = store.get_spans("corr-10")[0]
+    assert span.owner_token_hash is None
 
 
 def test_get_spans_filters_by_correlation_id(store: TraceStore) -> None:

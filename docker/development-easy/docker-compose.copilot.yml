@@ -260,9 +260,40 @@ services:
   agent:
     build:
       context: ../../services/copilot-agent
+    # #180 review finding: traces.db (app/config.py's trace_db_path,
+    # default /data/traces.db) backs the P4.5 dashboard and P4.9 review
+    # queue -- both meant to aggregate across many chat sessions over time,
+    # not just the sessions since the container last started. Without a
+    # named volume it lived on the container's writable layer with no
+    # declared mount here, so it (and every trace/feedback row in it) was
+    # already silently wiped on every container recreation, restart, or
+    # OOM-kill -- true before #180 too, just newly consequential now that a
+    # missing REQUEST span means a permanent 403 on /feedback instead of a
+    # merely-empty dashboard.
+    volumes:
+      - agenttracedata:/data
     environment:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
+      # #180 review finding: TraceStore.hash_owner_token (services/copilot-agent
+      # /app/trace_store.py) keys the /feedback ownership hash with this
+      # secret. app/config.py's trace_args_hash_secret deliberately ships NO
+      # hardcoded default (this repo is public; a committed literal would be
+      # a published key) -- unset, a random 32 bytes is generated PER
+      # PROCESS. That was harmless while traces.db never outlived a
+      # container (see the volume note above): args_hash is written once
+      # and never compared across a process lifetime, so a restart's key
+      # rotation was unobservable. owner_token_hash IS compared on a LATER
+      # request (a /feedback call after the /chat call that created the
+      # trace), so pairing an unset secret with the persistent volume above
+      # would recreate exactly the failure #180's review caught: every
+      # trace recorded before a restart becomes permanently unownable, and
+      # the clinician who legitimately owns it gets a 403 on their own
+      # feedback. Required (no default) rather than silently falling back
+      # to an empty-string secret, which would be weaker than no pinning at
+      # all -- set a real value in this stack's .env (see WT_* vars in
+      # docker-compose.yml for the established generated-.env convention).
+      TRACE_ARGS_HASH_SECRET: "${TRACE_ARGS_HASH_SECRET:?Set TRACE_ARGS_HASH_SECRET in your .env to a stable random value -- required now that traces.db persists in the agenttracedata volume across restarts; see app/config.py's trace_args_hash_secret docstring}"
       # P3.10e (issue #73): default "llama_server" -- flip to "ollama" for
       # instant rollback of the answer/extract/reranker roles.
       COPILOT_LLM_ENGINE: llama_server
@@ -320,3 +351,4 @@ volumes:
   ollamamodels: {}
   llamacppmodels: {}
   llamacppembedmodels: {}
+  agenttracedata: {}
