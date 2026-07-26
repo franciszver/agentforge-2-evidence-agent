@@ -13,15 +13,18 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+import pydantic
 import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import (
     ChatEvent,
+    ChatRequest,
     ConversationStore,
     PatientMismatchError,
     TokenValidationError,
     Turn,
+    _default_token_validator,
     get_claim_extractor,
     get_conversation_store,
     get_planner_factory,
@@ -556,6 +559,59 @@ def test_rejected_token_returns_401_and_never_invokes_planner():
 
     assert response.status_code == 401
     assert fake_planner.questions == []
+
+
+# --------------------------------------------------------------------------
+# Red-team findings #167/#168 (issue #171) -- current-behaviour xfails
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason=(
+        "#168 (VULN-0001, evals/recordings/identity-authz-garbage-bearer-token/): "
+        "_default_token_validator (app/chat.py:194-201) accepts ANY non-empty token -- its "
+        "own docstring says so -- and get_token_validator (app/chat.py:297-306) returns it "
+        "whenever copilot_per_user_token_enabled is False, the shipped default. Fixed "
+        "(fail-closed) behaviour: a garbage bearer token should be REJECTED."
+    ),
+    strict=True,
+)
+def test_default_token_validator_rejects_garbage_bearer_token():
+    with pytest.raises(TokenValidationError):
+        _default_token_validator("this-is-not-a-real-token-just-garbage-xyz123")
+
+
+@pytest.mark.xfail(
+    reason=(
+        "#167 (VULN-0004, deductive from source -- no recording; see the issue body's "
+        "'What was and was not demonstrated'): ChatRequest.message (app/chat.py:137) has no "
+        "max_length -- contrast app.feedback.MAX_COMMENT_LENGTH (app/feedback.py:67), which "
+        "DOES bound FeedbackRequest.comment (app/feedback.py:75) the same way. "
+        "ConversationStore (app/chat.py:570-594) exposes exactly get/create/append_turn and "
+        "nothing else -- no eviction, TTL, or cap; its own docstring carries a TODO(P4.2) "
+        "placeholder for exactly this. Fixed behaviour asserted here: ChatRequest should "
+        "reject a message over a documented MAX_CHAT_MESSAGE_LENGTH bound (mirroring "
+        "MAX_COMMENT_LENGTH's precedent), and ConversationStore should expose SOME "
+        "eviction/cap surface."
+    ),
+    strict=True,
+)
+def test_chat_request_rejects_overlong_message_and_conversation_store_has_eviction_surface():
+    with pytest.raises(pydantic.ValidationError):
+        ChatRequest(message="x" * 1_000_000, patient_id=1)
+
+    # No such bound exists today (P4.2's own TODO) -- any of these names
+    # would satisfy "some eviction/cap surface"; none is present yet.
+    eviction_surface_names = {
+        "evict",
+        "max_conversations",
+        "max_size",
+        "capacity",
+        "ttl",
+        "MAX_CONVERSATIONS",
+    }
+    store_members = set(dir(ConversationStore))
+    assert store_members & eviction_surface_names
 
 
 def _dev_bearer(username: str, sub: int, pid: int) -> str:
