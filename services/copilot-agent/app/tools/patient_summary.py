@@ -215,14 +215,29 @@ def _coerce_pid(raw: Any) -> int | None:
 
     ``pid`` is normally already a JSON int, but a MySQL-backed PHP REST
     layer could plausibly serialize it as a numeric string --
-    ``str.isdigit()`` (no sign, no decimal point: a real OpenEMR ``pid`` is
-    a positive auto-increment integer, never negative or fractional).
+    ``str.isdecimal()`` (no sign, no decimal point: a real OpenEMR ``pid``
+    is a positive auto-increment integer, never negative or fractional).
+
+    Gate 3 (Opus) re-review, CONFIRMED subtlety: this is ``isdecimal()``,
+    deliberately NOT ``isdigit()``. ``isdigit()`` also returns ``True`` for
+    Unicode category No characters -- superscripts ("²") and circled
+    digits ("①") -- that ``int()`` then REJECTS with ``ValueError``,
+    which would escape this function uncaught (``get_patient_roster``'s own
+    ``try`` wraps only ``_fetch_all_patients``, not this coercion),
+    propagating all the way up through ``resolve_patient_roster`` /
+    ``_roster_provider`` into the ``_stream_chat`` pre-dispatch guard --
+    directly contradicting this function's own "never raises" contract.
+    ``isdecimal()`` is ``True`` only for Unicode category Nd (what ``int()``
+    actually accepts), so it can never trigger that path. Not a realistic
+    OpenEMR payload (robustness, not exploitability) -- but the predicate
+    must be correct regardless of how likely the input is.
+
     ``None`` for anything else (missing, non-numeric, float, ...) -- the
     caller logs and drops that record rather than guessing further.
     """
     if isinstance(raw, int) and not isinstance(raw, bool):
         return raw
-    if isinstance(raw, str) and raw.isdigit():
+    if isinstance(raw, str) and raw.isdecimal():
         return int(raw)
     return None
 

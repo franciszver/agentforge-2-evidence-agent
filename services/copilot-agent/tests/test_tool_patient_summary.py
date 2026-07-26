@@ -328,11 +328,24 @@ def test_get_patient_roster_drops_and_warns_on_a_non_numeric_pid(make_openemr_cl
     # dropped (never crashes, never guesses), but LOUDLY: a warning is
     # logged so a real occurrence is visible instead of silently shrinking
     # the roster (and so silently disabling signal 3 for that one name).
+    #
+    # Gate 3 (Opus) re-review, CONFIRMED subtlety: also includes two
+    # Unicode-digit-shaped strings, a superscript ("²") and a circled
+    # digit ("①") -- both pass ``str.isdigit()`` but NOT
+    # ``str.isdecimal()``, and ``int()`` raises ``ValueError`` on both.
+    # ``_coerce_pid`` uses ``isdecimal()`` specifically so these are dropped
+    # cleanly (via the same ``None`` path as "not-a-number") rather than
+    # raising out of ``get_patient_roster``, which would otherwise
+    # contradict this function's own "never raises" docstring promise and
+    # propagate uncaught through ``resolve_patient_roster`` /
+    # ``_roster_provider`` into the ``_stream_chat`` pre-dispatch guard.
     body = {
         "validationErrors": [],
         "internalErrors": [],
         "data": [
             {"pid": "not-a-number", "fname": "Ghost", "lname": "Record", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": "²", "fname": "Superscript", "lname": "Pid", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": "①", "fname": "Circled", "lname": "Pid", "DOB": "1990-01-01", "sex": "Female"},
             {"pid": 8, "fname": "Real", "lname": "Patient", "DOB": "1990-01-01", "sex": "Female"},
         ],
     }
@@ -345,12 +358,15 @@ def test_get_patient_roster_drops_and_warns_on_a_non_numeric_pid(make_openemr_cl
     with caplog.at_level(logging.WARNING):
         roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
-    # The bad record is dropped -- no PHI (name) leaked into the log itself.
+    # The bad records are dropped, never raised -- no PHI (name) leaked into
+    # the log itself.
     assert roster == [RosterEntry(pid=8, name="Real Patient")]
     assert "Ghost" not in caplog.text
     assert "Record" not in caplog.text
-    # Presence: the drop was actually logged, not silent.
-    assert any("dropped a patient roster record" in record.message for record in caplog.records)
+    assert "Superscript" not in caplog.text
+    assert "Circled" not in caplog.text
+    # Presence: all three bad records were actually logged, not silent.
+    assert sum(1 for record in caplog.records if "dropped a patient roster record" in record.message) == 3
 
 
 @pytest.mark.integration
