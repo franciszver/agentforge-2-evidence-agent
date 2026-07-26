@@ -23,8 +23,16 @@ Only non-PHI data is ever stored:
   * model name, token counts, tool name, worker name, sub-task TYPE name
     (all closed-set / non-identifying)
   * verdict + claim/stripped COUNTS -- never claim text or citation values
-  * feedback thumb + a user-authored comment ABOUT THE RESPONSE (explicitly
-    permitted -- it is not patient record data)
+  * feedback thumb + a user-authored comment ABOUT THE RESPONSE -- persisting
+    it here is permitted (it is not a patient RECORD value pulled from a
+    tool), but the comment itself is free text a clinician typed and MAY
+    CONTAIN PHI incidentally (e.g. a patient name typed inline while
+    describing a failure). ``app.review_queue``'s module docstring states
+    this explicitly, and issue #176 corrected a previously-false claim that
+    this field carries no PHI: it is not rendered on any page for that
+    reason (``app.review_page``'s ``/review`` redacts it; the P4.5 dashboard
+    never rendered it; ``/review/promote`` never re-emits it into the public
+    ``evals/`` repo, #157). It stays on disk here only.
 
 Raw tool args, raw tool results, the question/answer text, and any patient
 record value (drug names, allergy substances, lab values, free text) are

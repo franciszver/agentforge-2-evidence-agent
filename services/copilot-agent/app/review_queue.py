@@ -189,8 +189,11 @@ def _failure_mode(feedback: Span | None, verification: Span | None, correlation_
             # evals/ repo. The clinician's free-text comment may contain
             # patient details, so it is NEVER re-emitted here -- only a neutral
             # TODO placeholder pointing back at the correlation id. The raw
-            # comment stays in the trusted-local review queue (review_page.py),
-            # which is where a human writes the real failure_mode from.
+            # comment is not shown on any rendered surface (#176 redacted it
+            # out of app.review_page's /review too) -- it remains only in the
+            # P4.2 trace store (app.trace_store's ``spans.feedback_comment``
+            # column), which a human must query directly to read it and write
+            # the real failure_mode.
             return (
                 f"TODO: describe the failure mode. Thumbs-down on correlation id "
                 f"{correlation_id}; the clinician's comment is in the local review "

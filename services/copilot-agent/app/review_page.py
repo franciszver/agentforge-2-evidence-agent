@@ -22,7 +22,9 @@ strings or numeric aggregates. Every dynamic string (including the
 redaction placeholder, for defense in depth even though it is a fixed
 constant) is passed through :func:`_esc` (``html.escape``) before being
 embedded in a template; see
-``tests/test_review_page.py::test_review_queue_escapes_html_in_correlation_id_and_comment``.
+``tests/test_review_page.py::test_review_queue_escapes_html_in_correlation_id`` and
+``tests/test_review_page.py::test_review_queue_lists_a_thumbs_down_entry`` (which
+pins the redaction placeholder in place of the raw comment -- #176).
 
 **Auth posture: open, matching ``GET /dashboard`` (P0.6) -- and why the
 comment is redacted, not gated (#176).** Both routes here are reads with no
