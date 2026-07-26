@@ -89,7 +89,7 @@ from app.tools.appointments import get_appointments
 from app.tools.encounters import get_encounters
 from app.tools.labs import get_recent_labs
 from app.tools.medications import get_medications
-from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
+from app.tools.patient_summary import RosterEntry, get_patient_name, get_patient_roster, get_patient_summary
 from app.tools.problems import get_problems
 from app.tools.vitals import get_vitals
 
@@ -586,10 +586,19 @@ class Planner:
         """
         return get_patient_name(self._openemr, self._token, self._patient_id)
 
-    def resolve_patient_roster(self) -> list[str]:
-        """Every OTHER patient's own display name (#237 roster-based
+    def resolve_patient_roster(self) -> list[RosterEntry]:
+        """Every patient's (pid, display name) pair (#237 roster-based
         cross-patient detection), for ``app.extraction
         .detect_foreign_patient_reference``'s "switch to <Name>" signal.
+
+        Issue #174: patient-agnostic -- unlike pre-#174, this does NOT
+        exclude ``self._patient_id``'s own entry (the fetch has no per-caller
+        state at all, which is what lets ``app.chat.RosterCache`` serve it
+        from ONE process-wide, TTL'd cache shared across every conversation
+        instead of resolving and retaining it separately per conversation).
+        The bound patient's own entry is excluded by the CALLER, at
+        comparison time, keyed by pid (see
+        ``app.extraction._matches_roster``).
 
         ``[]`` on any OpenEMR API error (fail-safe -- see
         ``app.tools.patient_summary.get_patient_roster``). An OPTIONAL
@@ -599,9 +608,11 @@ class Planner:
         ONCE per conversation, at creation time), callers invoke this LAZILY
         -- only when a candidate "switch to <Name>" construction has already
         matched -- so a conversation that never mentions another patient by
-        name never pays this round trip.
+        name never pays this round trip. This method itself performs no
+        caching -- ``app.chat.RosterCache`` (the process-wide TTL cache) sits
+        in front of it at the call site.
         """
-        return get_patient_roster(self._openemr, self._token, self._patient_id)
+        return get_patient_roster(self._openemr, self._token)
 
     def run(
         self,

@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 from app.chat import (
     Conversation,
     ConversationStore,
+    RosterCache,
     _default_clock,
     _stream_chat,
     get_claim_extractor,
@@ -341,6 +342,7 @@ def test_client_disconnect_mid_stream_closes_inner_generator_and_records_failed_
         message="What is he taking?",
         user="unknown",
         clock=_default_clock,
+        roster_cache=RosterCache(ttl_seconds=300.0, clock=_default_clock),
     )
 
     # Pull the first two frames: the ``conversation`` frame, then the first

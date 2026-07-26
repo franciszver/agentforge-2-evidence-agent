@@ -65,8 +65,8 @@ from app.openemr_client import OpenEmrClient
 from app.planner import Planner, PlannerResult
 from app.rendering import RenderedAnswer
 from app.schemas.ingestion import Citation
+from app.tools.patient_summary import RosterEntry
 from app.verdict import VerdictResult
-
 from runner.ollama_replay import OllamaLike
 from runner.schema import (
     EvalCase,
@@ -81,6 +81,27 @@ _EVAL_TOKEN = "eval-harness-token"  # noqa: S105 -- not a credential, a fixed pl
 # Frozen "now" for the whole offline eval suite (#153) -- see module
 # docstring, "Recency notices are NOT lazy".
 _EVAL_FIXED_NOW = datetime(2026, 7, 15)
+
+# Issue #174: the LIVE roster (app.tools.patient_summary.get_patient_roster)
+# is now patient-agnostic and carries (pid, name) pairs so the bound
+# patient's own entry can be excluded at COMPARISON time, by pid, rather
+# than at fetch time. `EvalCase.patient_roster` (runner.schema) stays a
+# plain, hand-authored `list[str]` -- there is no real pid to carry for a
+# fixture entry, so every name here is adapted to a `RosterEntry` with THIS
+# ONE sentinel pid. Gate 3 (Opus) re-review MINOR (#174): that makes
+# `app.extraction._matches_roster`'s pid-based exclusion a PERMANENT no-op
+# for every eval case -- `_ROSTER_FIXTURE_SENTINEL_PID` can never equal a
+# real (positive) `case.patient_id`, so nothing on `case.patient_roster` is
+# ever excluded by this sentinel, regardless of what the case author
+# intended. Fixtures MUST NOT list the bound patient in `patient_roster` --
+# unlike the live roster (which now legitimately contains the bound
+# patient's own entry, excluded only at comparison time), an eval fixture
+# that does so relies entirely on `case.patient_name` also being set (so
+# `_is_foreign_switch_to_name`'s earlier `_same_named_patient` check
+# short-circuits before the roster is ever consulted) -- a case exercising
+# name-binding-UNAVAILABLE behavior with the bound patient also present in
+# `patient_roster` would wrongly refuse a "switch to <own name>" turn.
+_ROSTER_FIXTURE_SENTINEL_PID = -1
 
 
 def _offline_openemr_client() -> OpenEmrClient:
@@ -197,7 +218,9 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         case.question,
         case.patient_id,
         case.patient_name,
-        roster_provider=lambda: case.patient_roster or [],
+        roster_provider=lambda: [
+            RosterEntry(pid=_ROSTER_FIXTURE_SENTINEL_PID, name=name) for name in (case.patient_roster or [])
+        ],
     ):
         planner_result = cross_patient_refusal_result()
     else:

@@ -83,7 +83,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Protocol
 
@@ -95,6 +95,7 @@ from pydantic import BaseModel, Field
 from app.config import (
     DEFAULT_MAX_STORED_CONVERSATIONS,
     DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    DEFAULT_ROSTER_CACHE_TTL_SECONDS,
     Settings,
     get_settings,
 )
@@ -127,6 +128,7 @@ from app.schemas.ingestion import Citation
 from app.schemas.reranking import RerankedChunk
 from app.semantic_support import SemanticSupportJudgeLike
 from app.supervisor import EvidenceRetrieverWorker, IntakeExtractorWorker, RetrieveSubTask, Supervisor
+from app.tools.patient_summary import RosterEntry
 from app.trace_store import TraceStore, record_span_best_effort
 from app.verdict import VerdictResult, to_trace_record
 
@@ -679,19 +681,41 @@ class Conversation:
     ``None`` name simply disables those signals for this conversation,
     falling back to #223's numeric-only detection.
 
-    ``patient_roster`` (#237 roster-based detection) is every OTHER
-    patient's display name, resolved LAZILY -- unlike ``patient_name``, NOT
-    at conversation-creation time -- see ``_stream_chat``'s
-    ``_roster_provider`` closure. ``None`` means "not yet resolved" (the
-    common case: most turns never mention another patient by name);
-    populated on first use and cached here so a second matching turn in the
-    SAME conversation does not pay the round trip again.
+    Issue #174: this class used to also carry ``patient_roster`` (#237
+    roster-based detection) -- every OTHER patient's display name, resolved
+    lazily and cached HERE, on the conversation, for the conversation's
+    entire lifetime. That field is gone. Two independent problems with it,
+    read together in #174's analysis:
+
+      * Memory: the roster is proportional to total patient count, which no
+        operator setting bounds, and every open ``Conversation`` retained
+        its OWN full copy -- the dominant term in this service's worst-case
+        memory footprint (see ``Settings.copilot_max_turns_per_conversation``
+        's docstring, corrected by #174 to stop citing this as a still-open
+        gap), and a ~2000x amplification against OpenEMR's patient API for
+        any conversation that ever used a "switch to <Name>" construction.
+      * Privacy: ``docs/ARCHITECTURE.md``'s conversation-to-pid binding is a
+        boundary the agent adds on top of OpenEMR's own auth -- every
+        conversation is anchored to the pid the panel was opened on.
+        Retaining every OTHER patient's name on that same conversation
+        object, for its whole lifetime, undermined that boundary regardless
+        of memory, and would have mattered more once ``ConversationStore``'s
+        TODO(P4.2) durable, DB-backed store lands.
+
+    The roster is byte-identical across every conversation (nothing in the
+    fetch is caller-specific -- see
+    ``app.tools.patient_summary.get_patient_roster``), so there was nothing
+    conversation-specific here worth keeping: ``app.chat.RosterCache`` now
+    serves it from ONE process-wide, TTL'd cache instead, and no
+    ``Conversation`` object holds any other patient's name at all.
+    ``_stream_chat``'s ``_roster_provider`` closure reads that shared cache
+    directly; see its docstring for the resolve-lazily behavior this
+    replaces.
     """
 
     conversation_id: str
     patient_id: int
     patient_name: str | None = None
-    patient_roster: list[str] | None = None
     history: list[Turn] = field(default_factory=list)
 
 
@@ -835,6 +859,168 @@ def get_conversation_store(settings: Settings = Depends(get_settings)) -> Conver
             max_turns_per_conversation=settings.copilot_max_turns_per_conversation,
         )
     return _default_store
+
+
+class RosterCache:
+    """Process-wide, TTL'd cache of OpenEMR's full patient roster (#174).
+
+    Replaces the per-``Conversation`` ``patient_roster`` field this class's
+    docstring on ``Conversation`` describes in full -- read that first for
+    the memory/privacy analysis behind why a SHARED cache, not a per-object
+    one, is the fix. In short: the roster
+    (``app.tools.patient_summary.get_patient_roster``) is byte-identical no
+    matter which patient is asking, so there is exactly ONE roster worth
+    caching process-wide, not one copy per open conversation -- PROVIDED
+    every caller sharing that one cached copy is provably the same
+    authorization principal (see ``enabled`` below; this is not always
+    true).
+
+    ``ttl_seconds`` bounds staleness: the roster feeds a *soft* heuristic
+    (routing a "switch to <Name>" construction to a refusal, see
+    ``app.extraction.detect_foreign_patient_reference``'s signal 3) -- the
+    unconditional numeric-id cross-patient signal is a completely separate
+    code path and is unaffected by any staleness here. Worst case, a
+    patient added to OpenEMR within the last ``ttl_seconds`` briefly misses
+    the name-match signal (falls back to no refusal on that one construction
+    until the next refresh) -- an acceptable, bounded trade against paying a
+    full roster fetch on every matching turn.
+
+    A SEPARATE staleness case, NOT covered by the TTL analysis above: an
+    empty ``fetch()`` result (``[]``) is never cached -- see
+    ``get_or_fetch``'s docstring. ``[]`` is ``get_patient_roster``'s
+    fail-safe return for ANY OpenEMR API error, indistinguishable here from
+    a genuinely empty roster; caching it would let one transient fetch
+    failure go dark on signal 3 for every conversation, process-wide, for
+    the rest of ``ttl_seconds`` -- a fail-OPEN window strictly worse than
+    the pre-#174 per-conversation cache (which only poisoned the one
+    conversation that hit the blip). Skipping the cache write on an empty
+    result means a failed fetch is retried on every subsequent matching
+    turn until one actually succeeds, same cost as having no cache at all.
+
+    ``enabled`` -- Gate 2 (security) finding on #174, CONFIRMED: sharing one
+    cached roster across every caller is only safe when every caller is the
+    SAME authorization principal. With ``copilot_per_user_token_enabled``
+    OFF (the default this class was designed for), every request runs as
+    the same dev-bridge demo-clinician identity (see
+    ``get_planner_factory``'s docstring) -- a shared roster there is just a
+    shared view of that ONE principal's own data. With the flag ON,
+    ``get_planner_factory`` binds the planner to the REQUEST's own forwarded
+    bearer, so ``Planner.resolve_patient_roster`` executes
+    ``GET /apis/default/api/patient`` AS THAT USER -- and
+    ``docs/ARCHITECTURE.md``'s "Patient-context binding" section documents
+    that OpenEMR's REST authorization is role- and resource-scoped (its
+    Sec 124 Phase 4 example: an ``accountant``-role token gets 403 where an
+    ``admin`` token gets 200 on the SAME endpoint shape). Sharing one cached
+    roster across callers with DIFFERENT tokens in that mode would serve
+    caller B a roster fetched under caller A's authorization -- a
+    cross-principal authorization-scope leak, and a NEW risk #174's own
+    per-conversation fetch never had (each conversation fetched under its
+    OWN caller's token). ``enabled=False`` (wired by ``get_roster_cache``
+    whenever ``copilot_per_user_token_enabled`` is true) makes
+    ``get_or_fetch`` a pure passthrough -- fetch on EVERY call, cache
+    nothing -- restoring the pre-#174 per-request-scoped fetch rather than
+    silently sharing across principals. Deliberately NOT a per-token cache
+    keyed some other way: token rotation would make such a cache grow
+    unboundedly, reintroducing the exact unbounded-memory defect #174 exists
+    to fix, just keyed by token instead of by conversation. Restoring the
+    amplification fix under per-user tokens (keyed by authenticated
+    principal instead of bypassed) is tracked as a separate follow-up --
+    don't "simplify" this guard away without reading it first.
+
+    Thread safety: shared, mutable, process-wide singleton
+    (``_default_roster_cache``), same posture as ``ConversationStore`` above
+    -- guarded by ``self._lock``. The fetch itself (an HTTP round trip) runs
+    OUTSIDE the lock so concurrent requests are never serialized on network
+    I/O, only on the cheap swap of the cached result; a stale-cache race
+    (two threads both see an expired entry and both fetch) is accepted --
+    last writer wins, and the roster is presumed identical regardless of
+    which concurrent fetch produced it. (Not relevant when ``enabled`` is
+    ``False``: there is no cached state to race over.)
+    """
+
+    def __init__(self, ttl_seconds: float, clock: Clock, *, enabled: bool = True) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._enabled = enabled
+        self._lock = threading.Lock()
+        self._roster: list[RosterEntry] | None = None
+        self._expires_at: datetime | None = None
+
+    def get_or_fetch(self, fetch: Callable[[], list[RosterEntry]]) -> list[RosterEntry]:
+        """Return the cached roster if still fresh; otherwise call ``fetch``
+        (``Planner.resolve_patient_roster``, an OpenEMR round trip),
+        cache the result for ``ttl_seconds``, and return it.
+
+        ``self._enabled is False`` (see the class docstring's
+        authorization-scope analysis): always calls ``fetch`` and never
+        reads or writes the cache -- every call gets its OWN, freshly
+        fetched roster, scoped to whatever principal ``fetch`` itself is
+        bound to.
+
+        Gate 2 (security) re-review, CONFIRMED MAJOR: an empty ``fetch()``
+        result is NEVER cached (``if roster:`` below). ``get_patient_roster``
+        (``app.tools.patient_summary``) returns ``[]`` fail-safe on ANY
+        OpenEMR API error -- a timeout, a 403, a 5xx blip -- indistinguishable
+        here from a genuinely empty roster. Caching that ``[]`` would turn
+        one transient OpenEMR blip, coinciding with the first "switch to
+        <Name>" turn after process start, into signal 3
+        (``app.extraction.detect_foreign_patient_reference``) going dark for
+        EVERY conversation for the rest of ``ttl_seconds`` -- a process-wide
+        fail-OPEN window, not just the one conversation that hit the blip
+        (pre-#174, a fetch failure poisoned only that one conversation's own
+        cache). Leaving ``self._roster``/``self._expires_at`` untouched on an
+        empty result means the NEXT call sees the same (already-expired, or
+        still-``None``) cache state and retries ``fetch()`` again -- costing
+        exactly what calling ``fetch()`` on every matching turn cost before
+        this cache existed, until a fetch actually succeeds.
+        """
+        if not self._enabled:
+            return fetch()
+        now = self._clock()
+        with self._lock:
+            if self._roster is not None and self._expires_at is not None and now < self._expires_at:
+                return self._roster
+        roster = fetch()
+        if roster:
+            with self._lock:
+                self._roster = roster
+                self._expires_at = now + timedelta(seconds=self._ttl_seconds)
+        return roster
+
+
+_default_roster_cache: RosterCache | None = None
+
+
+def get_roster_cache(
+    settings: Settings = Depends(get_settings), clock: Clock = Depends(get_clock)
+) -> RosterCache:
+    """FastAPI dependency: the active ``RosterCache`` (#174). Override in tests.
+
+    Same "frozen at first use" posture as ``get_conversation_store`` above:
+    ``settings.copilot_roster_cache_ttl_seconds`` is read once, the first
+    time this dependency resolves, and baked into ``_default_roster_cache``
+    for the rest of the process's life -- changing
+    ``COPILOT_ROSTER_CACHE_TTL_SECONDS`` (or ``COPILOT_PER_USER_TOKEN_ENABLED``)
+    in the environment after the process has served at least one ``/chat``
+    request has no effect until restart.
+
+    ``enabled=not settings.copilot_per_user_token_enabled`` -- Gate 2
+    (security) finding on #174: see ``RosterCache``'s docstring for the full
+    authorization-scope analysis. Sharing is only valid when every caller is
+    provably the same principal, which is true under the dev-bridge default
+    (flag OFF) and NOT true once each request is bound to its own forwarded
+    bearer (flag ON, ``get_planner_factory``'s docstring).
+    """
+    global _default_roster_cache
+    if _default_roster_cache is None:
+        _default_roster_cache = RosterCache(
+            ttl_seconds=settings.copilot_roster_cache_ttl_seconds,
+            clock=clock,
+            enabled=not settings.copilot_per_user_token_enabled,
+        )
+    return _default_roster_cache
 
 
 _default_trace_store: TraceStore | None = None
@@ -1380,6 +1566,7 @@ def _stream_chat(
     message: str,
     user: str,
     clock: Clock,
+    roster_cache: RosterCache,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
     patient_fact_provider: PatientFactProvider = _no_op_patient_fact_provider,
     support_judge_provider: SupportJudgeProvider = _no_op_support_judge_provider,
@@ -1411,17 +1598,22 @@ def _stream_chat(
         # available below regardless of which branch runs next.
         run_streaming = getattr(planner, "run_streaming", None)
 
-        def _roster_provider() -> list[str]:
+        def _roster_provider() -> list[RosterEntry]:
             # #237: resolved LAZILY -- this closure is only ever CALLED by
             # detect_foreign_patient_reference when a "switch to <Name>"
             # construction has already matched and isn't the bound patient,
             # so a turn that never uses that construction never pays this
-            # round trip. Cached on the conversation so a second matching
-            # turn in the SAME conversation reuses it instead of re-fetching.
-            if conversation.patient_roster is None:
-                resolve_roster = getattr(planner, "resolve_patient_roster", None)
-                conversation.patient_roster = resolve_roster() if resolve_roster is not None else []
-            return conversation.patient_roster
+            # round trip. #174: served from ``roster_cache``, a
+            # process-wide, TTL'd cache SHARED across every conversation
+            # (not this one conversation's own field) -- see
+            # ``Conversation``'s docstring and ``RosterCache``'s docstring
+            # for why a shared cache is correct here, not just cheaper. A
+            # planner double with no ``resolve_patient_roster`` capability
+            # (the pre-#237 default) never reaches the cache at all.
+            resolve_roster = getattr(planner, "resolve_patient_roster", None)
+            if resolve_roster is None:
+                return []
+            return roster_cache.get_or_fetch(resolve_roster)
 
         # #223 (extended by #224, #237): deterministic PRE-dispatch
         # cross-patient refusal guard, checked BEFORE the planner runs at
@@ -1705,6 +1897,7 @@ async def chat_endpoint(
     store: ConversationStore = Depends(get_conversation_store),
     trace_store: TraceStore = Depends(get_trace_store),
     clock: Clock = Depends(get_clock),
+    roster_cache: RosterCache = Depends(get_roster_cache),
     evidence_retriever: EvidenceRetriever = Depends(get_evidence_retriever),
     patient_fact_provider: PatientFactProvider = Depends(get_patient_fact_provider),
     support_judge_provider: SupportJudgeProvider = Depends(get_support_judge_provider),
@@ -1760,6 +1953,7 @@ async def chat_endpoint(
             request.message,
             user,
             clock,
+            roster_cache,
             evidence_retriever,
             patient_fact_provider,
             support_judge_provider,

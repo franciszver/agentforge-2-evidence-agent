@@ -10,6 +10,7 @@ skipped by default (minimal CI runs hermetic tests only).
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 
 import httpx
@@ -19,7 +20,7 @@ from app.config import Settings
 from app.openemr_auth import fetch_token_password_grant, register_client
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
-from app.tools.patient_summary import get_patient_name, get_patient_roster, get_patient_summary
+from app.tools.patient_summary import RosterEntry, get_patient_name, get_patient_roster, get_patient_summary
 
 PHIL_UUID = "a243a1bb-178f-4092-8c67-52dfaf67fca6"
 
@@ -234,33 +235,53 @@ def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
 
 # --------------------------------------------------------------------------
 # get_patient_roster (#237 roster-based cross-patient detection) -- the same
-# roster fetch/select pattern as get_patient_name, but keeping every OTHER
-# patient's display name instead of the bound one's -- feeds
+# roster fetch/select pattern as get_patient_name, but returning (pid, name)
+# pairs for EVERY patient -- feeds
 # app.extraction.detect_foreign_patient_reference's "switch to <Name>" signal
 # (a referenced name is foreign only if it matches a real DIFFERENT patient).
+#
+# Issue #174 made this fetch patient-agnostic: it no longer takes a
+# ``patient_id`` to exclude, because the shared, process-wide
+# ``app.chat.RosterCache`` in front of it is used by every conversation
+# regardless of which patient is bound -- a fetch-time exclusion keyed to
+# ONE caller's bound patient would be wrong for every other conversation
+# reusing the cached result. Exclusion of the CALLER's own bound patient now
+# happens at comparison time in app.extraction._matches_roster, keyed by
+# pid (see tests/test_extraction.py's roster section for that behavior).
 # --------------------------------------------------------------------------
 
 
-def test_get_patient_roster_returns_every_other_patients_name(make_openemr_client):
+def test_get_patient_roster_returns_every_patients_pid_and_name(make_openemr_client):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/apis/default/api/patient":
             return httpx.Response(200, json=PATIENT_LIST_BODY)
         raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
-    assert roster == ["Susan Underwood"]
+    assert roster == [RosterEntry(pid=1, name="Phil Belford"), RosterEntry(pid=2, name="Susan Underwood")]
 
 
-def test_get_patient_roster_excludes_the_bound_patient_itself(make_openemr_client):
+def test_get_patient_roster_no_longer_excludes_the_bound_patient_at_fetch_time(make_openemr_client):
+    # Breaks-by-design (#174): this is the FORMER
+    # `test_get_patient_roster_excludes_the_bound_patient_itself`, whose
+    # assertion inverted -- the fetch is patient-agnostic now, so patient 1
+    # (Phil Belford, previously the "bound" patient excluded here) IS
+    # present. The exclusion assertion this test used to make MOVED to
+    # tests/test_extraction.py's comparison-time roster tests (see
+    # `_matches_roster`'s pid-based exclusion there), which is where
+    # exclusion actually happens post-#174.
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/apis/default/api/patient":
             return httpx.Response(200, json=PATIENT_LIST_BODY)
         raise AssertionError(f"unexpected request beyond the patient fetch: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
-    assert "Phil Belford" not in roster
+    assert RosterEntry(pid=1, name="Phil Belford") in roster
+    # Presence pair: also still returns the OTHER patient, so this isn't
+    # trivially true of a degenerate single-entry roster.
+    assert RosterEntry(pid=2, name="Susan Underwood") in roster
 
 
 def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client):
@@ -272,9 +293,80 @@ def test_get_patient_roster_returns_empty_list_on_api_error(make_openemr_client)
             return httpx.Response(403, json={"error": "insufficient_scope"})
         raise AssertionError(f"unexpected request: {request.url.path}")
 
-    roster = get_patient_roster(make_openemr_client(handler), token="tok", patient_id=1)
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
 
     assert roster == []
+
+
+def test_get_patient_roster_coerces_a_numeric_string_pid(make_openemr_client):
+    # Gate 2 (Opus) re-review MINOR: a MySQL-backed PHP REST layer could
+    # plausibly serialize `pid` as a numeric STRING rather than a JSON int.
+    # Pre-#174, get_patient_roster's exclusion was a plain `==` comparison
+    # (never gated inclusion on pid's type), so such a payload still
+    # produced a name. This proves the #174 rewrite didn't regress that --
+    # a numeric-string pid is coerced to int and the record is KEPT, not
+    # silently dropped.
+    body = {
+        "validationErrors": [],
+        "internalErrors": [],
+        "data": [{"pid": "7", "fname": "Nadia", "lname": "Torres", "DOB": "1990-01-01", "sex": "Female"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=body)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    roster = get_patient_roster(make_openemr_client(handler), token="tok")
+
+    assert roster == [RosterEntry(pid=7, name="Nadia Torres")]
+
+
+def test_get_patient_roster_drops_and_warns_on_a_non_numeric_pid(make_openemr_client, caplog):
+    # A pid that is neither an int nor a numeric string (missing, null,
+    # a float, garbage, ...) cannot be safely coerced -- the record is
+    # dropped (never crashes, never guesses), but LOUDLY: a warning is
+    # logged so a real occurrence is visible instead of silently shrinking
+    # the roster (and so silently disabling signal 3 for that one name).
+    #
+    # Gate 3 (Opus) re-review, CONFIRMED subtlety: also includes two
+    # Unicode-digit-shaped strings, a superscript ("²") and a circled
+    # digit ("①") -- both pass ``str.isdigit()`` but NOT
+    # ``str.isdecimal()``, and ``int()`` raises ``ValueError`` on both.
+    # ``_coerce_pid`` uses ``isdecimal()`` specifically so these are dropped
+    # cleanly (via the same ``None`` path as "not-a-number") rather than
+    # raising out of ``get_patient_roster``, which would otherwise
+    # contradict this function's own "never raises" docstring promise and
+    # propagate uncaught through ``resolve_patient_roster`` /
+    # ``_roster_provider`` into the ``_stream_chat`` pre-dispatch guard.
+    body = {
+        "validationErrors": [],
+        "internalErrors": [],
+        "data": [
+            {"pid": "not-a-number", "fname": "Ghost", "lname": "Record", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": "²", "fname": "Superscript", "lname": "Pid", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": "①", "fname": "Circled", "lname": "Pid", "DOB": "1990-01-01", "sex": "Female"},
+            {"pid": 8, "fname": "Real", "lname": "Patient", "DOB": "1990-01-01", "sex": "Female"},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/apis/default/api/patient":
+            return httpx.Response(200, json=body)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    with caplog.at_level(logging.WARNING):
+        roster = get_patient_roster(make_openemr_client(handler), token="tok")
+
+    # The bad records are dropped, never raised -- no PHI (name) leaked into
+    # the log itself.
+    assert roster == [RosterEntry(pid=8, name="Real Patient")]
+    assert "Ghost" not in caplog.text
+    assert "Record" not in caplog.text
+    assert "Superscript" not in caplog.text
+    assert "Circled" not in caplog.text
+    # Presence: all three bad records were actually logged, not silent.
+    assert sum(1 for record in caplog.records if "dropped a patient roster record" in record.message) == 3
 
 
 @pytest.mark.integration

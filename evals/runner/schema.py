@@ -304,10 +304,16 @@ class EvalCase(BaseModel):
             "Every OTHER patient's display name (#237 roster-based "
             "cross-patient detection), fed into app.extraction"
             ".detect_foreign_patient_reference's roster-based 'switch to "
-            "<Name>' signal -- mirrors what app.chat resolves live (lazily) "
-            "via Planner.resolve_patient_roster(). Absent (None) for cases "
+            "<Name>' signal -- mirrors what app.chat resolves live via "
+            "Planner.resolve_patient_roster(). Absent (None) for cases "
             "that don't need it -- the signal is then skipped entirely, "
-            "byte-identical to the pre-#237 harness."
+            "byte-identical to the pre-#237 harness. Issue #174 made the "
+            "LIVE roster patient-agnostic (pid+name pairs, no fetch-time "
+            "exclusion) -- this fixture stays plain names, hand-authored as "
+            "already excluding `patient_id`, and `runner.pipeline.run_case` "
+            "adapts each name to a RosterEntry with a sentinel pid "
+            "guaranteed to differ from any real `patient_id` before calling "
+            "the shared `_matches_roster` comparison."
         ),
     )
     tool_data: dict[ToolName, dict[str, Any]] = Field(default_factory=dict)

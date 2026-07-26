@@ -42,14 +42,36 @@ Phil Belford, pubpid 1):
 from __future__ import annotations
 
 import datetime
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.openemr_client import ErrorCategory, OpenEmrApiError, OpenEmrClient
 from app.schemas.common import Sex
 from app.schemas.tools import PatientSummaryOutput
 
+_logger = logging.getLogger(__name__)
+
 _SEX_MAP = {"male": Sex.MALE, "female": Sex.FEMALE, "other": Sex.OTHER}
+
+
+class RosterEntry(NamedTuple):
+    """One patient's (pid, "First Last" display name) pair, as returned by
+    ``get_patient_roster`` (#237, made patient-agnostic by #174).
+
+    A plain ``NamedTuple``, not a ``ToolSchemaModel`` -- this never crosses
+    the tool-output JSON boundary (``app.schemas.tools``); it is purely an
+    internal shape shared between ``get_patient_roster``,
+    ``app.planner.Planner.resolve_patient_roster``, ``app.chat.RosterCache``,
+    and ``app.extraction._matches_roster``. Carrying ``pid`` alongside
+    ``name`` is what lets exclusion of the CALLER's bound patient happen at
+    comparison time (see ``_matches_roster``) instead of at fetch time --
+    the fetch itself no longer knows, or needs to know, which patient is
+    asking.
+    """
+
+    pid: int
+    name: str
 
 
 def get_patient_summary(client: OpenEmrClient, token: str, patient_id: int) -> PatientSummaryOutput:
@@ -128,9 +150,22 @@ def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> d
     raise OpenEmrApiError(ErrorCategory.NOT_FOUND, "OpenEMR patient not found")
 
 
-def get_patient_roster(client: OpenEmrClient, token: str, patient_id: int) -> list[str]:
-    """Every OTHER patient's own "First Last" display name (#237 roster-based
-    cross-patient detection) -- ``patient_id`` itself is excluded.
+def get_patient_roster(client: OpenEmrClient, token: str) -> list[RosterEntry]:
+    """Every patient's (pid, "First Last" display name) pair (#237
+    roster-based cross-patient detection).
+
+    Issue #174: deliberately does NOT take a ``patient_id`` to exclude, and
+    no longer excludes anyone. The roster is byte-identical across every
+    conversation regardless of which patient it is bound to (this fetch has
+    no per-caller state at all), which is what makes it safe to serve from
+    ONE process-wide, TTL'd cache (``app.chat.RosterCache``) shared by every
+    conversation instead of being resolved -- and retained -- separately per
+    conversation. Excluding the CALLER's bound patient is the caller's job
+    now, at COMPARISON time, keyed by ``pid`` (see
+    ``app.extraction._matches_roster``) rather than by name -- a name
+    comparison could wrongly exclude a different patient who happens to
+    share the bound patient's name, and pid is already known to every
+    caller with no extra fetch.
 
     Fail-safe: ``[]`` on any OpenEMR API error (timeout, insufficient scope,
     ...), never a raised exception -- callers
@@ -147,15 +182,64 @@ def get_patient_roster(client: OpenEmrClient, token: str, patient_id: int) -> li
         records = _fetch_all_patients(client, token)
     except OpenEmrApiError:
         return []
-    names: list[str] = []
+    entries: list[RosterEntry] = []
     for record in records:
-        if record.get("pid") == patient_id:
-            continue
         fname, lname = record.get("fname"), record.get("lname")
         parts = [part for part in (fname, lname) if isinstance(part, str) and part]
+        pid = _coerce_pid(record.get("pid"))
+        if pid is None:
+            # Gate 2 (Opus) re-review MINOR: unlike ``_fetch_demographics``/
+            # ``resolve_patient_uuid`` (which compare ``pid`` with ``==`` and
+            # never gate inclusion on its TYPE), this function decides
+            # whether to keep a record at all based on whether ``pid``
+            # resolves to an int. Pre-#174 a non-int-but-numeric ``pid``
+            # still produced a name (comparison-based exclusion just
+            # silently no-opped); dropping the record here instead would
+            # make signal 3 go silently empty on such a payload -- a WORSE
+            # failure direction. Logged (no PHI -- no name, no raw pid
+            # value) so a real occurrence is visible rather than a silent
+            # roster gap.
+            if parts:
+                _logger.warning(
+                    "dropped a patient roster record with a non-integer pid",
+                    extra={"pid_type": type(record.get("pid")).__name__},
+                )
+            continue
         if parts:
-            names.append(" ".join(parts))
-    return names
+            entries.append(RosterEntry(pid=pid, name=" ".join(parts)))
+    return entries
+
+
+def _coerce_pid(raw: Any) -> int | None:
+    """Best-effort int coercion for a REST patient record's ``pid`` field.
+
+    ``pid`` is normally already a JSON int, but a MySQL-backed PHP REST
+    layer could plausibly serialize it as a numeric string --
+    ``str.isdecimal()`` (no sign, no decimal point: a real OpenEMR ``pid``
+    is a positive auto-increment integer, never negative or fractional).
+
+    Gate 3 (Opus) re-review, CONFIRMED subtlety: this is ``isdecimal()``,
+    deliberately NOT ``isdigit()``. ``isdigit()`` also returns ``True`` for
+    Unicode category No characters -- superscripts ("²") and circled
+    digits ("①") -- that ``int()`` then REJECTS with ``ValueError``,
+    which would escape this function uncaught (``get_patient_roster``'s own
+    ``try`` wraps only ``_fetch_all_patients``, not this coercion),
+    propagating all the way up through ``resolve_patient_roster`` /
+    ``_roster_provider`` into the ``_stream_chat`` pre-dispatch guard --
+    directly contradicting this function's own "never raises" contract.
+    ``isdecimal()`` is ``True`` only for Unicode category Nd (what ``int()``
+    actually accepts), so it can never trigger that path. Not a realistic
+    OpenEMR payload (robustness, not exploitability) -- but the predicate
+    must be correct regardless of how likely the input is.
+
+    ``None`` for anything else (missing, non-numeric, float, ...) -- the
+    caller logs and drops that record rather than guessing further.
+    """
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.isdecimal():
+        return int(raw)
+    return None
 
 
 def _count_rest_list(client: OpenEmrClient, token: str, path: str) -> int:

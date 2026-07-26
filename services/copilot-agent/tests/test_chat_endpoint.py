@@ -16,6 +16,7 @@ from typing import Any
 
 import pydantic
 import pytest
+from fastapi import Header
 from fastapi.testclient import TestClient
 
 import app.chat as chat
@@ -24,15 +25,17 @@ from app.chat import (
     ChatRequest,
     ConversationStore,
     PatientMismatchError,
+    RosterCache,
     TokenValidationError,
     Turn,
     get_claim_extractor,
     get_conversation_store,
     get_planner_factory,
     get_require_tool_call_scoping,
+    get_roster_cache,
     get_token_validator,
 )
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.extraction import ClaimExtractor
 from app.main import app
 from app.openemr_auth import IntrospectionResult
@@ -48,6 +51,7 @@ from app.schemas.tools import (
     VitalsOutput,
 )
 from app.schemas.verification import Claim, VerifiedAnswer
+from app.tools.patient_summary import RosterEntry
 
 
 class FakePlanner:
@@ -107,12 +111,23 @@ def _reset_process_wide_singletons() -> Iterator[None]:
     to one test's env/creds that then silently leaks into a LATER test under
     ``pytest-randomly`` reordering. Mirrors ``test_launch_binding.py``'s
     ``_reset_binder_singleton`` for ``chat._launch_patient_binder``.
+
+    Also resets ``chat._default_roster_cache`` (#174): ``get_roster_cache``
+    is a top-level dependency of ``chat_endpoint`` (evaluated on EVERY
+    ``/chat`` call, not just when a "switch to <Name>" construction fires),
+    so without this reset the first test in the session to hit a real
+    (non-overridden) ``get_roster_cache`` call would seed a cached roster
+    that could silently leak into a later roster-assertion test under
+    ``pytest-randomly`` reordering -- the same leak class as the two
+    singletons above, just for a cache instead of a validator/bridge.
     """
     chat._token_introspector = None
     chat._dev_token_bridge = None
+    chat._default_roster_cache = None
     yield
     chat._token_introspector = None
     chat._dev_token_bridge = None
+    chat._default_roster_cache = None
 
 
 def _iter_sse_events(text: str) -> list[tuple[str, str]]:
@@ -147,6 +162,37 @@ def _override_ok_validator() -> None:
 
 def _override_planner_factory(fake_planner: FakePlanner) -> None:
     app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: fake_planner)
+
+
+def _override_planner_factory_keyed_by_bearer_token(planners_by_token: dict[str, FakePlanner]) -> None:
+    """Unlike ``_override_planner_factory`` above (always the SAME planner,
+    regardless of caller) -- mirrors what the REAL ``get_planner_factory``
+    does with ``copilot_per_user_token_enabled`` ON (#124 Phase 4): a
+    DIFFERENT planner bound to EACH caller's own forwarded bearer token.
+    Needed to prove #174 Gate 2's authorization-scope fix, which is
+    specifically about caller A's cached fetch never being served to
+    caller B when the two are different principals (different tokens)."""
+
+    def factory_dependency(authorization: str | None = Header(default=None)):
+        token = authorization[len("Bearer ") :] if authorization and authorization.startswith("Bearer ") else ""
+        planner = planners_by_token[token]
+        return lambda patient_id: planner
+
+    app.dependency_overrides[get_planner_factory] = factory_dependency
+
+
+def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
+    """A FRESH ``RosterCache`` per test (#174): ``get_roster_cache`` is a
+    process-wide singleton by default (mirrors ``get_conversation_store``'s
+    ``_default_store``), so any roster-fetch-COUNT assertion needs its own
+    cache -- otherwise an earlier test's cached roster (or fetch count)
+    could leak in. A real wall clock (not a fixed/injected one) is fine
+    here: every test in this module completes in well under
+    ``ttl_seconds``, so the default 300s never actually expires mid-test.
+    """
+    cache = RosterCache(ttl_seconds=ttl_seconds, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
+    app.dependency_overrides[get_roster_cache] = lambda: cache
+    return cache
 
 
 client = TestClient(app)
@@ -520,23 +566,36 @@ def test_named_cross_patient_reference_is_refused_before_any_tool_dispatch_when_
 # signal (app.extraction.detect_foreign_patient_reference's signal 3), fed by
 # the planner's OPTIONAL ``resolve_patient_roster`` capability -- resolved
 # LAZILY (only when a "switch to <Name>" construction actually matched, never
-# at conversation-creation time like ``resolve_patient_name``) and cached on
-# the ``Conversation`` so a second matching turn in the SAME conversation
-# does not pay the round trip again.
+# at conversation-creation time like ``resolve_patient_name``).
+#
+# Issue #174: caching moved OFF the ``Conversation`` object (deleted --
+# scaled with patient count and was retained per-conversation for its whole
+# lifetime, both a memory and a privacy problem, see ``Conversation``'s
+# docstring in app/chat.py) and onto ``app.chat.RosterCache``, a single,
+# process-wide, TTL'd cache SHARED across every conversation. A second
+# matching turn in the SAME conversation still reuses the cached roster
+# (below), and so does a matching turn in a DIFFERENT, brand-new
+# conversation -- see ``test_roster_is_resolved_once_and_shared_across_
+# conversations_and_turns``, which extends the old
+# ``test_roster_is_resolved_once_and_cached_across_turns`` to prove that.
 # --------------------------------------------------------------------------
 
 
 class FakePlannerWithRoster(FakePlanner):
     """A ``FakePlanner`` that also offers the OPTIONAL roster-resolution
     capability -- mirrors how the real ``Planner.resolve_patient_roster``
-    duck-types alongside ``run``/``run_streaming``/``resolve_patient_name``."""
+    duck-types alongside ``run``/``run_streaming``/``resolve_patient_name``.
 
-    def __init__(self, trace, answer, roster: list[str], raw_results=None) -> None:
+    ``roster`` is a list of ``RosterEntry`` (pid, name) pairs (#174 made the
+    real roster patient-agnostic -- see ``app.tools.patient_summary
+    .get_patient_roster``), NOT plain names."""
+
+    def __init__(self, trace, answer, roster: list[RosterEntry], raw_results=None) -> None:
         super().__init__(trace, answer, raw_results)
         self._roster = roster
         self.roster_resolve_calls = 0
 
-    def resolve_patient_roster(self) -> list[str]:
+    def resolve_patient_roster(self) -> list[RosterEntry]:
         self.roster_resolve_calls += 1
         return self._roster
 
@@ -546,10 +605,11 @@ def test_switch_to_name_matching_roster_is_refused_before_any_tool_dispatch():
     fake_planner = FakePlannerWithRoster(
         trace=trace,
         answer="Bob Smith has a drug allergy to ZZ-TEST-MARKER.",
-        roster=["Bob Smith"],
+        roster=[RosterEntry(pid=99, name="Bob Smith")],
     )
     _override_ok_validator()
     _override_planner_factory(fake_planner)
+    _override_roster_cache()
 
     response = client.post(
         "/chat",
@@ -570,9 +630,10 @@ def test_switch_to_name_matching_roster_is_refused_before_any_tool_dispatch():
 
 
 def test_roster_is_not_resolved_when_question_has_no_switch_to_construction():
-    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=["Bob Smith"])
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=99, name="Bob Smith")])
     _override_ok_validator()
     _override_planner_factory(fake_planner)
+    _override_roster_cache()
 
     client.post(
         "/chat",
@@ -588,9 +649,10 @@ def test_switch_to_a_drug_brand_not_on_the_roster_dispatches_normally():
     # roster (not present on it) is what proves this is an ordinary
     # same-patient medication switch, not a cross-patient retarget.
     trace = [ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None)]
-    fake_planner = FakePlannerWithRoster(trace=trace, answer="ok", roster=["Bob Smith"])
+    fake_planner = FakePlannerWithRoster(trace=trace, answer="ok", roster=[RosterEntry(pid=99, name="Bob Smith")])
     _override_ok_validator()
     _override_planner_factory(fake_planner)
+    _override_roster_cache()
 
     response = client.post(
         "/chat",
@@ -603,10 +665,19 @@ def test_switch_to_a_drug_brand_not_on_the_roster_dispatches_normally():
     assert fake_planner.roster_resolve_calls == 1
 
 
-def test_roster_is_resolved_once_and_cached_across_turns():
-    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=["Bob Smith"])
+def test_roster_is_resolved_once_and_shared_across_conversations_and_turns():
+    # Formerly ``test_roster_is_resolved_once_and_cached_across_turns`` --
+    # STILL passes, but for a new reason post-#174: the first two calls
+    # below prove the pre-existing within-conversation caching claim still
+    # holds (now via the shared ``RosterCache``, not
+    # ``Conversation.patient_roster``); the THIRD call (new) extends this to
+    # prove CROSS-conversation sharing -- the actual #174 fix -- by starting
+    # a brand-new conversation (no ``conversation_id``) and showing it still
+    # reuses the cached roster instead of paying a fresh fetch.
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=99, name="Bob Smith")])
     _override_ok_validator()
     _override_planner_factory(fake_planner)
+    _override_roster_cache()
 
     store = ConversationStore()
     app.dependency_overrides[get_conversation_store] = lambda: store
@@ -629,7 +700,145 @@ def test_roster_is_resolved_once_and_cached_across_turns():
         headers={"Authorization": "Bearer good-token"},
     )
 
-    # Cached on the conversation -- resolved once, reused on the second turn.
+    # Cached across turns in the SAME conversation -- resolved once, reused
+    # on the second turn (pre-#174 behavior, preserved).
+    assert fake_planner.roster_resolve_calls == 1
+
+    third = client.post(
+        "/chat",
+        json={"message": "Switch to Coumadin therapy and monitor her INR.", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    # #174: a brand-new Conversation (no conversation_id -- proven distinct
+    # below) has no cache of its OWN, yet still does not pay a fresh fetch --
+    # it shares the process-wide RosterCache with the first two calls.
+    assert _conversation_id(third.text) != conversation_id
+    assert fake_planner.roster_resolve_calls == 1
+
+
+def test_roster_cache_bypassed_per_caller_when_per_user_token_enabled():
+    """#174 Gate 2 (security) finding, CONFIRMED: ``RosterCache`` is a
+    single, process-wide, UNKEYED cache -- not keyed by token, scope, role,
+    or facility. With ``copilot_per_user_token_enabled`` ON, each request's
+    planner is bound to THAT request's own forwarded bearer
+    (``get_planner_factory``'s docstring: "OpenEMR maps every tool call to
+    that user -> per-user ACL"), and OpenEMR's REST authorization is role-
+    and resource-scoped (``docs/ARCHITECTURE.md``'s "Patient-context
+    binding" section; #124 Phase 4 documents an ``accountant``-role token
+    getting 403 where an ``admin`` token gets 200 on the SAME endpoint
+    shape). So sharing one cached roster across callers with DIFFERENT
+    tokens would serve caller B a roster fetched under caller A's
+    authorization -- caller B deciding cross-patient refusals using patient
+    identities caller B was never authorized to enumerate. This did NOT
+    exist pre-#174 (each conversation fetched its own, caller-scoped
+    roster) and must not be reintroduced by the #174 shared-cache fix.
+
+    Pairs with
+    ``test_roster_is_resolved_once_and_shared_across_conversations_and_turns``
+    above (flag OFF: sharing across DIFFERENT callers IS correct there,
+    because the dev-bridge default makes every caller provably the SAME
+    principal) to pin BOTH directions of this decision.
+
+    Before the Gate-2 fix (``RosterCache`` unconditionally shared, with no
+    ``enabled`` gate at all): caller B's request would be served caller A's
+    already-cached roster and ``planner_b.roster_resolve_calls`` would stay
+    0 -- this assertion fails.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        copilot_per_user_token_enabled=True, copilot_roster_cache_ttl_seconds=300.0
+    )
+
+    response_a = client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    response_b = client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
+    # Presence: the roster signal genuinely fired for BOTH callers (a
+    # refusal), so a low/zero fetch count below can't just mean the guard
+    # never ran.
+    assert "chart is currently open" in next(
+        data for name, data in _iter_sse_events(response_a.text) if name == "answer"
+    )
+    assert "chart is currently open" in next(
+        data for name, data in _iter_sse_events(response_b.text) if name == "answer"
+    )
+
+    # The authorization-scope assertion: caller B's own fetch actually
+    # happened -- caller B was NOT served caller A's cached roster.
+    assert planner_a.roster_resolve_calls == 1
+    assert planner_b.roster_resolve_calls == 1
+
+
+def test_roster_fetch_amplification_is_bounded_across_n_distinct_conversations():
+    """RED test for #174, kept green post-fix: N>=3 ``/chat`` POSTs, each
+    with NO ``conversation_id`` (so each gets its OWN, brand-new
+    ``Conversation`` -- proven below by asserting N distinct
+    conversation_ids), all containing a "switch to <Name>" construction that
+    matches the roster.
+
+    Counter seam: ``fake_planner.roster_resolve_calls`` -- an attribute on
+    the ONE ``FakePlanner`` instance ``_override_planner_factory`` wires up
+    for every request via ``get_planner_factory`` (see that helper: the
+    override closure is ``lambda patient_id: fake_planner``, ignoring
+    ``patient_id`` and always returning the SAME object). This is the
+    honest seam because it mirrors the real amplification being fixed: in
+    production a fresh ``Planner`` IS built per request
+    (``_default_planner_factory``), so ``Planner.resolve_patient_roster()``
+    itself is never a persistent counter there either -- what makes the
+    fetch COUNT converge to 1 in production is ``app.chat.RosterCache``
+    sitting between ``_roster_provider`` and
+    ``planner.resolve_patient_roster()``, exactly the seam this test
+    exercises by counting calls to the roster-resolving object itself
+    (whether that object is one shared test double or, in production, the
+    per-request ``Planner``'s own bound method -- either way, a call only
+    reaches it on a RosterCache miss).
+
+    Before #174: each of the N brand-new ``Conversation`` objects has its
+    own ``patient_roster is None`` starting state, so ALL N calls miss and
+    ``roster_resolve_calls`` ends at exactly N (this test fails at N==3
+    today). After #174: ``app.chat.RosterCache`` is shared process-wide, so
+    only the FIRST call misses -- ``roster_resolve_calls`` converges to 1.
+    """
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=99, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+    _override_roster_cache()
+
+    n = 3
+    conversation_ids: set[str] = set()
+    for _ in range(n):
+        response = client.post(
+            "/chat",
+            json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+            headers={"Authorization": "Bearer good-token"},
+        )
+        assert response.status_code == 200
+        conversation_ids.add(_conversation_id(response.text))
+        # Presence pair for the absence-style assertion below: the roster
+        # signal must have genuinely FIRED every single time (a refusal),
+        # not merely gone unexercised -- otherwise a low fetch count could
+        # just mean the guard never ran at all.
+        answer_data = next(data for name, data in _iter_sse_events(response.text) if name == "answer")
+        assert "chart is currently open" in answer_data
+
+    # Presence: N genuinely distinct Conversation objects were created, not
+    # one conversation_id accidentally reused across the loop.
+    assert len(conversation_ids) == n
+
+    # The amplification-reduction assertion: fewer fetches than conversations
+    # (today: fails, roster_resolve_calls == n), converging to exactly 1.
+    assert 1 <= fake_planner.roster_resolve_calls < n
     assert fake_planner.roster_resolve_calls == 1
 
 
@@ -879,6 +1088,99 @@ def test_chat_request_rejects_overlong_conversation_id():
         ChatRequest(message="hi", patient_id=1, conversation_id="x" * 65)
 
 
+class _FakeTickingClock:
+    """A ``Clock`` (``Callable[[], datetime]``) the test advances by hand --
+    for ``RosterCache`` TTL tests, where a real wall clock would make
+    expiry either flaky (too short a sleep) or slow (too long a sleep)."""
+
+    def __init__(self, start: datetime.datetime) -> None:
+        self._now = start
+
+    def __call__(self) -> datetime.datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += datetime.timedelta(seconds=seconds)
+
+
+def test_roster_cache_returns_cached_value_without_refetching_within_ttl():
+    clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    cache = RosterCache(ttl_seconds=60.0, clock=clock)
+    fetch_calls = []
+
+    def fetch() -> list[RosterEntry]:
+        fetch_calls.append(1)
+        return [RosterEntry(pid=1, name="Bob Smith")]
+
+    first = cache.get_or_fetch(fetch)
+    clock.advance(30.0)  # still within the 60s TTL
+    second = cache.get_or_fetch(fetch)
+
+    assert first == [RosterEntry(pid=1, name="Bob Smith")]
+    assert second == first
+    assert len(fetch_calls) == 1
+
+
+def test_roster_cache_refetches_after_ttl_expires():
+    clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    cache = RosterCache(ttl_seconds=60.0, clock=clock)
+    fetch_calls = []
+
+    def fetch() -> list[RosterEntry]:
+        fetch_calls.append(1)
+        return [RosterEntry(pid=len(fetch_calls), name="Bob Smith")]
+
+    cache.get_or_fetch(fetch)
+    clock.advance(61.0)  # past the 60s TTL
+    cache.get_or_fetch(fetch)
+
+    # Presence: staleness is genuinely bounded, not permanent -- a second,
+    # DIFFERENT fetch actually happened once the TTL elapsed.
+    assert len(fetch_calls) == 2
+
+
+def test_roster_cache_does_not_cache_a_failed_fetchs_empty_result():
+    """Gate 2 (security) re-review, CONFIRMED MAJOR: ``get_patient_roster``
+    returns ``[]`` fail-safe on ANY OpenEMR API error (timeout, 403, 5xx) --
+    indistinguishable here from a genuinely empty roster. Before this fix,
+    ``get_or_fetch`` cached that ``[]`` unconditionally, so one OpenEMR blip
+    coinciding with the first "switch to <Name>" turn after process start
+    would silence signal 3 for EVERY conversation, process-wide, for the
+    rest of the TTL window -- worse than pre-#174 (which only poisoned the
+    one conversation that hit the blip).
+
+    Simulates the blip: the first ``fetch`` call returns ``[]`` (as if
+    OpenEMR were down), the second (still within the TTL window -- no clock
+    advance between calls) returns a real, non-empty roster (as if OpenEMR
+    recovered). A correct cache must NOT have latched onto the empty
+    result -- the second call must still reach ``fetch`` and get the real
+    roster, not a cached ``[]``.
+    """
+    clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    cache = RosterCache(ttl_seconds=300.0, clock=clock)
+    responses: list[list[RosterEntry]] = [[], [RosterEntry(pid=1, name="Bob Smith")]]
+    fetch_calls = []
+
+    def fetch() -> list[RosterEntry]:
+        fetch_calls.append(1)
+        return responses[len(fetch_calls) - 1]
+
+    first = cache.get_or_fetch(fetch)
+    clock.advance(1.0)  # well within the 300s TTL -- a cache bug would serve the stale [] here
+    second = cache.get_or_fetch(fetch)
+
+    assert first == []
+    # Presence: the second call actually reached `fetch` again (not served a
+    # cached [] from the first call) and got the real, non-empty roster.
+    assert second == [RosterEntry(pid=1, name="Bob Smith")]
+    assert len(fetch_calls) == 2
+
+
+def test_roster_cache_rejects_a_non_positive_ttl():
+    with pytest.raises(ValueError):
+        RosterCache(ttl_seconds=0.0, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
 def test_conversation_store_bounds_retained_conversations():
     # BEHAVIOUR, not vocabulary (issue-#86 failure class avoided): a class-level
     # dir()/vocabulary check would never see an instance-level cap (e.g.
@@ -979,6 +1281,31 @@ def test_get_conversation_store_builds_singleton_from_settings():
         assert store_again._max_turns_per_conversation == 3
     finally:
         chat_module._default_store = original_default_store
+
+
+def test_get_roster_cache_builds_singleton_from_settings():
+    """#174 counterpart to ``test_get_conversation_store_builds_singleton_
+    from_settings`` above (same Gate 3 MINOR-finding rationale): every
+    roster test in this module overrides ``get_roster_cache`` directly, so
+    this calls the real dependency function to prove
+    ``copilot_roster_cache_ttl_seconds`` actually lands on the
+    ``RosterCache`` it builds, and that the value is frozen at first use
+    (a later call with a DIFFERENT ``Settings`` does not rebuild)."""
+    import app.chat as chat_module
+
+    original_default_roster_cache = chat_module._default_roster_cache
+    chat_module._default_roster_cache = None
+    try:
+        settings_a = Settings(copilot_roster_cache_ttl_seconds=7.0)
+        cache = chat_module.get_roster_cache(settings_a, chat_module.get_clock())
+        assert cache._ttl_seconds == 7.0
+
+        settings_b = Settings(copilot_roster_cache_ttl_seconds=999.0)
+        cache_again = chat_module.get_roster_cache(settings_b, chat_module.get_clock())
+        assert cache_again is cache  # singleton: not rebuilt
+        assert cache_again._ttl_seconds == 7.0  # frozen at first use, NOT 999.0
+    finally:
+        chat_module._default_roster_cache = original_default_roster_cache
 
 
 def _dev_bearer(username: str, sub: int, pid: int) -> str:

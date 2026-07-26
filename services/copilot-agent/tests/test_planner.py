@@ -38,6 +38,7 @@ from app.schemas.tools import (
     MedicationsOutput,
     RecentLabsOutput,
 )
+from app.tools.patient_summary import RosterEntry
 
 
 class _ScriptedOllamaClient:
@@ -530,15 +531,24 @@ def test_resolve_patient_name_returns_none_when_patient_not_found(make_openemr_c
 
 # --- resolve_patient_roster (#237 roster-based cross-patient detection) -----
 #
-# Best-effort every-OTHER-patient's display name, for the roster-based
-# "switch to <Name>" signal (app.extraction.detect_foreign_patient_reference)
-# -- same getattr-duck-typed OPTIONAL-capability pattern as
-# resolve_patient_name, called lazily (only when a candidate name
-# construction actually matched) rather than at conversation-creation time --
-# see app.chat's wiring comment for why.
+# Best-effort (pid, display name) pairs for every patient, for the
+# roster-based "switch to <Name>" signal
+# (app.extraction.detect_foreign_patient_reference) -- same
+# getattr-duck-typed OPTIONAL-capability pattern as resolve_patient_name,
+# called lazily (only when a candidate name construction actually matched)
+# rather than at conversation-creation time -- see app.chat's wiring comment
+# for why.
+#
+# Issue #174: patient-agnostic -- unlike resolve_patient_name (scoped to
+# ``self._patient_id``), this no longer excludes the bound patient's own
+# entry; that exclusion moved to comparison time
+# (app.extraction._matches_roster, keyed by pid). This is what lets
+# app.chat.RosterCache serve ONE fetch from a process-wide cache shared
+# across every conversation, instead of each conversation needing its own,
+# differently-filtered copy.
 
 
-def test_resolve_patient_roster_returns_every_other_patients_name(make_openemr_client):
+def test_resolve_patient_roster_returns_every_patients_pid_and_name(make_openemr_client):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/apis/default/api/patient":
             return httpx.Response(
@@ -576,7 +586,10 @@ def test_resolve_patient_roster_returns_every_other_patients_name(make_openemr_c
         registry={},
     )
 
-    assert planner.resolve_patient_roster() == ["Bob Smith"]
+    assert planner.resolve_patient_roster() == [
+        RosterEntry(pid=BOUND_PATIENT_ID, name="Wanda Moore"),
+        RosterEntry(pid=BOUND_PATIENT_ID + 1, name="Bob Smith"),
+    ]
 
 
 def test_resolve_patient_roster_returns_empty_list_on_api_error(make_openemr_client):
