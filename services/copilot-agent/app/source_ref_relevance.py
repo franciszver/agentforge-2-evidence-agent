@@ -157,12 +157,12 @@ the patient's raw chart data): {facts}
 """
 
 
-def judge_source_ref_relevance(
+def judge_source_ref_relevance_full(
     claim_text: str,
     source_ref_facts: Sequence[str],
     judge: SemanticSupportJudgeLike,
     context_facts: Sequence[str] | None = None,
-) -> bool:
+) -> SemanticSupportJudgement:
     """Ask ``judge`` whether ``source_ref_facts`` are topically relevant
     support for ``claim_text`` -- the SourceRef-oriented counterpart to
     ``app.semantic_support.judge_support``. ``context_facts`` are sibling
@@ -170,11 +170,18 @@ def judge_source_ref_relevance(
     "Established-facts context" / "Self-exclusion") -- NEVER the current
     claim's own facts, which are passed separately as ``source_ref_facts``.
 
-    Fail-closed (see module docstring): ``True`` only for an explicit
-    ``SupportVerdict.SUPPORTED``. Any judge error (``LLMEngineError``) is
-    caught here and treated as unsupported, never propagated -- a flaky
-    judge call must degrade to "not verified", never crash an otherwise-
-    working turn."""
+    Returns the FULL judgement (verdict + reason), unlike
+    ``judge_source_ref_relevance`` below -- exists as a separate function so
+    a measurement harness (``evals/runner/
+    issue_170_source_ref_relevance_spike.py``) can log WHY the judge decided
+    what it decided, the same way ``evals/runner/issue_130_spike.py`` did for
+    its own (context-free) judge call. Production code
+    (``apply_source_ref_relevance``) only ever needs the bool.
+
+    Fail-closed (see module docstring): a judge error (``LLMEngineError``)
+    is caught here and reported as an explicit ``NOT_SUPPORTED`` judgement
+    rather than propagating -- a flaky judge call must degrade to "not
+    verified", never crash an otherwise-working turn."""
     facts_text = "; ".join(source_ref_facts) if source_ref_facts else "(none)"
     context_block = ""
     if context_facts:
@@ -187,9 +194,21 @@ def judge_source_ref_relevance(
         },
     ]
     try:
-        judgement: SemanticSupportJudgement = judge.extract(messages, SemanticSupportJudgement)
-    except LLMEngineError:
-        return False
+        return judge.extract(messages, SemanticSupportJudgement)
+    except LLMEngineError as exc:
+        return SemanticSupportJudgement(verdict=SupportVerdict.NOT_SUPPORTED, reason=f"judge error (fail-closed): {exc}"[:280])
+
+
+def judge_source_ref_relevance(
+    claim_text: str,
+    source_ref_facts: Sequence[str],
+    judge: SemanticSupportJudgeLike,
+    context_facts: Sequence[str] | None = None,
+) -> bool:
+    """Fail-closed bool wrapper around ``judge_source_ref_relevance_full``
+    (the production call shape ``apply_source_ref_relevance`` uses):
+    ``True`` only for an explicit ``SupportVerdict.SUPPORTED``."""
+    judgement = judge_source_ref_relevance_full(claim_text, source_ref_facts, judge, context_facts)
     return judgement.verdict is SupportVerdict.SUPPORTED
 
 
