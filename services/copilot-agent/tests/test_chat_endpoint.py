@@ -13,11 +13,13 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+import pydantic
 import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import (
     ChatEvent,
+    ChatRequest,
     ConversationStore,
     PatientMismatchError,
     TokenValidationError,
@@ -556,6 +558,92 @@ def test_rejected_token_returns_401_and_never_invokes_planner():
 
     assert response.status_code == 401
     assert fake_planner.questions == []
+
+
+# --------------------------------------------------------------------------
+# Red-team findings #167/#168 (issue #171) -- current-behaviour xfails
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason=(
+        "#168 (VULN-0001, evals/recordings/identity-authz-garbage-bearer-token/): "
+        "get_token_validator (app/chat.py:297-306) hands back the permissive "
+        "_default_token_validator (app/chat.py:194-201, accepts ANY non-empty token -- its "
+        "own docstring says so) whenever copilot_per_user_token_enabled is False, the "
+        "shipped default. Fixed (fail-closed) behaviour: a garbage bearer token should be "
+        "REJECTED."
+    ),
+    strict=True,
+)
+def test_default_token_validator_rejects_garbage_bearer_token(monkeypatch):
+    # Exercises the PUBLIC seam (get_token_validator(), the FastAPI dependency
+    # itself) rather than importing the private _default_token_validator directly --
+    # this both survives the likely fix (deleting the permissive stub, which would
+    # turn a direct import into an ImportError failing every test in this module at
+    # collection) AND actually proves the reason string's second clause: that the
+    # shipped default (copilot_per_user_token_enabled unset/False) really does hand
+    # back a validator that accepts garbage, not just that _default_token_validator
+    # in isolation does.
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+
+    validator = get_token_validator()
+
+    with pytest.raises(TokenValidationError):
+        validator("this-is-not-a-real-token-just-garbage-xyz123")
+
+
+@pytest.mark.xfail(
+    reason=(
+        "#167 (VULN-0004, evals/recordings/dos-unbounded-chat-message-length/): a live "
+        "13,917-char draw was recorded and returned a normal 200 with no rejection at any "
+        "layer -- see the issue body's 'What was and was not demonstrated'. What IS "
+        "deductive (no measured OOM) is only the unbounded-GROWTH/exhaustion conclusion, "
+        "not this input-acceptance behaviour, which was directly observed. "
+        "ChatRequest.message (app/chat.py:137) has no max_length -- contrast "
+        "app.feedback.MAX_COMMENT_LENGTH (app/feedback.py:67), which DOES bound "
+        "FeedbackRequest.comment (app/feedback.py:75) the same way. Fixed behaviour "
+        "asserted here: ChatRequest should reject a message over a documented "
+        "MAX_CHAT_MESSAGE_LENGTH bound (mirroring MAX_COMMENT_LENGTH's precedent)."
+    ),
+    strict=True,
+)
+def test_chat_request_rejects_overlong_message():
+    with pytest.raises(pydantic.ValidationError):
+        ChatRequest(message="x" * 1_000_000, patient_id=1)
+
+
+@pytest.mark.xfail(
+    reason=(
+        "#167 (VULN-0004, deductive from source for THIS specific claim -- the growth is "
+        "unbounded because ConversationStore never evicts; see evals/recordings/"
+        "dos-unbounded-chat-message-length/ for the related live-draw evidence on the "
+        "message-length half of #167): ConversationStore (app/chat.py:570-594) exposes "
+        "exactly get/create/append_turn and nothing else -- no eviction, TTL, or cap; its "
+        "own docstring carries a TODO(P4.2) placeholder for exactly this. Fixed behaviour "
+        "asserted here: creating far more conversations than any plausible cap must not "
+        "leave all of them retrievable forever."
+    ),
+    strict=True,
+)
+def test_conversation_store_bounds_retained_conversations():
+    # BEHAVIOUR, not vocabulary (issue-#86 failure class avoided): a class-level
+    # dir()/vocabulary check would never see an instance-level cap (e.g.
+    # self._max_conversations set in __init__, or an OrderedDict-backed LRU with
+    # no new public method at all) -- a real P4.2 fix could close the vulnerability
+    # while such a check kept xfailing forever. This instead creates WAY more
+    # conversations than any plausible cap and asserts the store's own behaviour:
+    # either fewer than all of them still resolve via get() (bounded retention),
+    # or the earliest one specifically has been evicted (LRU semantics). Any
+    # eviction/cap/TTL implementation satisfies one of the two; today's
+    # unbounded dict satisfies neither.
+    store = ConversationStore()
+    conversation_ids = [store.create(patient_id=1).conversation_id for _ in range(10_000)]
+
+    retained_count = sum(1 for cid in conversation_ids if store.get(cid) is not None)
+    earliest_still_resolves = store.get(conversation_ids[0]) is not None
+
+    assert retained_count < len(conversation_ids) or not earliest_still_resolves
 
 
 def _dev_bearer(username: str, sub: int, pid: int) -> str:
