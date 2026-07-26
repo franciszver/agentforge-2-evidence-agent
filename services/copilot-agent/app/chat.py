@@ -99,7 +99,7 @@ from app.config import (
     get_settings,
 )
 from app.correlation import get_correlation_id, get_span_id
-from app.dev_token_bridge import DevTokenBridge
+from app.dev_token_bridge import DevTokenBridge, DevTokenError
 from app.extraction import (
     ClaimExtractor,
     ClaimExtractorLike,
@@ -519,6 +519,26 @@ def get_planner_factory(
     miss) token fetch happens here, in a sync dependency FastAPI runs in its
     worker-thread pool -- not in the ``async`` ``chat_endpoint`` body, so a
     token refresh never blocks the event loop.
+
+    #168 Gate 3 (Opus) finding: an unprovisioned bridge (missing/invalid dev
+    client creds -- any deployment that isn't the local dev stack, now that
+    the flag-off default is fail-closed) used to let ``dev_token_bridge
+    .get_token()`` raise ``DevTokenError`` straight out of THIS dependency,
+    which FastAPI resolves before the endpoint body's token check ever runs
+    -- surfacing as an uncaught 500, not the 401 the body's
+    ``_fail_closed_token_validator`` promises. Beyond the wrong status code,
+    that 500-vs-401 split is itself a fingerprinting oracle (tells an
+    unauthenticated caller whether the bridge is provisioned) and every such
+    request drove a fresh, uncached, unauthenticated OAuth password-grant
+    attempt against OpenEMR (the bridge caches only on success) -- bounded
+    only by ``openemr_api_timeout_seconds``, with no backoff. Caught here and
+    bound to an empty token instead, mirroring the flag-ON branch's own
+    ``TokenValidationError`` handling immediately above: the planner factory
+    still gets built (this dependency must never raise for an auth problem,
+    same reasoning as the flag-ON branch's docstring), and the empty token is
+    inert until a tool call would use it -- which never happens, because the
+    body's validator rejects with 401 first and the planner is only ever
+    *run* after validation passes.
     """
     if get_settings().copilot_per_user_token_enabled:
         try:
@@ -526,7 +546,11 @@ def get_planner_factory(
         except TokenValidationError:
             token = ""
         return _default_planner_factory(token)
-    return _default_planner_factory(dev_token_bridge.get_token())
+    try:
+        token = dev_token_bridge.get_token()
+    except DevTokenError:
+        token = ""
+    return _default_planner_factory(token)
 
 
 def _default_clock() -> datetime:

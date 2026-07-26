@@ -401,13 +401,16 @@ Stated plainly, in order of what would need to change:
    UX choice, and enabling the real per-user path is a documented, **one-line
    flag flip** the owner controls. Framed precisely: proven live, flag-gated,
    default off — not shipped-on-by-default.
-2. **Real token introspection at `/chat` — built.** In the default dev
-   configuration `TokenValidator` is a stub. The production validator — RFC
-   7662 introspection of the forwarded `authorization_code`-flow token against
-   OpenEMR's own token state (client_secret_post, fail-closed, short-TTL
-   hash-keyed cache) — is now built and exercised live; it is selected when the
-   per-user flow above is enabled, and it supersedes the earlier
-   `DevAgentToken`-validation plan (#127).
+2. **Real token introspection at `/chat` — built.** As of #168 (VULN-0001)
+   the shipped default `TokenValidator` is fail-closed, not a stub — every
+   token is rejected unless the explicit, dev-only
+   `copilot_dev_accept_any_bearer_token` opt-in is also set (see boundary 2
+   above). The production validator — RFC 7662 introspection of the forwarded
+   `authorization_code`-flow token against OpenEMR's own token state
+   (client_secret_post, fail-closed, short-TTL hash-keyed cache) — is now
+   built and exercised live; it is selected when the per-user flow above is
+   enabled, and it supersedes the earlier `DevAgentToken`-validation plan
+   (#127).
 3. **Patient-context binding upgrade.** The current binding (every
    conversation anchored to the `pid` the panel was opened on; the tool
    layer refuses any other patient id, logging the attempt) is

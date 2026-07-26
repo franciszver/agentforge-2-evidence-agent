@@ -18,6 +18,7 @@ import pydantic
 import pytest
 from fastapi.testclient import TestClient
 
+import app.chat as chat
 from app.chat import (
     ChatEvent,
     ChatRequest,
@@ -34,6 +35,7 @@ from app.chat import (
 from app.config import Settings
 from app.extraction import ClaimExtractor
 from app.main import app
+from app.openemr_auth import IntrospectionResult
 from app.planner import PlannerResult, ToolCallTrace
 from app.schemas.common import AllergySeverity, MedicationStatus, SourceRef, VitalType
 from app.schemas.planner import ToolName
@@ -91,6 +93,26 @@ def _override_extractor(extractor: FakeExtractor) -> None:
 def _reset_overrides() -> Iterator[None]:
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_wide_singletons() -> Iterator[None]:
+    """Gate 3 (Opus) MINOR finding: ``chat._token_introspector`` and
+    ``chat._dev_token_bridge`` are lazily-built, process-wide singletons
+    (``get_token_introspector`` / ``get_dev_token_bridge``) baked from
+    whatever ``Settings`` were live the FIRST time either is called. No
+    fixture reset them, so a test that exercises the real (non-overridden)
+    introspection or dev-bridge path -- e.g. the flag precedence test below,
+    or the fail-closed-default endpoint test -- could seed a singleton bound
+    to one test's env/creds that then silently leaks into a LATER test under
+    ``pytest-randomly`` reordering. Mirrors ``test_launch_binding.py``'s
+    ``_reset_binder_singleton`` for ``chat._launch_patient_binder``.
+    """
+    chat._token_introspector = None
+    chat._dev_token_bridge = None
+    yield
+    chat._token_introspector = None
+    chat._dev_token_bridge = None
 
 
 def _iter_sse_events(text: str) -> list[tuple[str, str]]:
@@ -730,6 +752,16 @@ def test_dev_accept_any_bearer_token_flag_logs_a_warning(monkeypatch, caplog):
     )
 
 
+class _InactiveIntrospector:
+    """Fake ``Introspector`` (see ``test_introspection.py``'s ``_FakeIntrospector``)
+    that always reports a token inactive -- stands in for the real RFC 7662
+    round trip so this test proves ONLY the precedence decision, not the
+    introspection HTTP path (that's ``test_introspection.py``'s job)."""
+
+    def introspect(self, token: str) -> IntrospectionResult:
+        return IntrospectionResult(active=False, exp=None)
+
+
 def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatch):
     # Precedence, pinned: with BOTH copilot_per_user_token_enabled AND
     # copilot_dev_accept_any_bearer_token true, the real introspection
@@ -741,6 +773,20 @@ def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatc
     # Proven behaviourally (garbage token REJECTED, not just "not identical
     # to the dev stub function") so the assertion survives the introspection
     # validator's own internal implementation changing shape.
+    #
+    # Gate 3 (Opus) MINOR finding: an earlier version of this test let
+    # ``get_token_validator`` build the REAL introspector
+    # (``get_token_introspector`` -> ``TokenIntrospector.from_settings``),
+    # which -- whenever the confidential-client creds file happens to exist
+    # (e.g. inside the provisioned agent container) -- made a genuine
+    # outbound POST of a garbage token to OpenEMR's introspection endpoint,
+    # AND seeded the process-wide ``chat._token_introspector`` singleton
+    # (reset by the ``_reset_process_wide_singletons`` fixture above, but the
+    # network call itself is still undesirable in a "hermetic" suite). This
+    # injects a fake introspector instead, exactly as ``test_introspection
+    # .py`` does for the introspection unit tests themselves -- the
+    # precedence decision under test never needs a real network round trip.
+    monkeypatch.setattr(chat, "get_token_introspector", lambda: _InactiveIntrospector())
     monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
     monkeypatch.setenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", "true")
 
@@ -748,6 +794,59 @@ def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatc
 
     with pytest.raises(TokenValidationError):
         validator("this-is-not-a-real-token-just-garbage-xyz123")
+
+
+def test_fail_closed_default_returns_401_not_500_at_the_endpoint(monkeypatch):
+    # Gate 3 (Opus) CRITICAL finding: every prior #168 test (including
+    # test_fail_closed_default_rejects_garbage_bearer_token above) exercises
+    # get_token_validator() directly, and every EXISTING endpoint-level 401
+    # test (test_missing_token_returns_401_and_never_invokes_planner /
+    # test_rejected_token_returns_401_and_never_invokes_planner) overrides
+    # get_planner_factory -- so none of them ever resolve the REAL
+    # get_planner_factory dependency, which is where the bug actually lived.
+    #
+    # In the shipped default posture (both auth flags off) with an
+    # UNPROVISIONED dev-token bridge -- any deployment that isn't the local
+    # dev stack -- get_planner_factory (app/chat.py) used to call
+    # dev_token_bridge.get_token() unconditionally on the flag-off branch,
+    # which FastAPI resolves BEFORE the endpoint body's token check even
+    # runs. An unprovisioned bridge raises DevTokenError there, uncaught,
+    # surfacing as a 500 -- not the 401 _fail_closed_token_validator's own
+    # docstring promises. Beyond the wrong status code that's a
+    # fingerprinting oracle (500 on /chat vs 401 everywhere else tells an
+    # unauthenticated caller whether the dev bridge is provisioned) and,
+    # because the bridge caches only on success, unauthenticated
+    # amplification: every such request drove a fresh outbound OAuth
+    # password-grant attempt against OpenEMR.
+    #
+    # Deliberately does NOT override get_token_validator or
+    # get_planner_factory -- the whole point is to resolve the REAL FastAPI
+    # dependency chain, exactly as a live deployment would. Points the dev
+    # bridge's creds file at a path that cannot exist, so DevTokenBridge
+    # fails exactly like an unprovisioned (non-dev-stack) deployment would,
+    # deterministically and with no real network call
+    # (DevTokenBridge._load_creds raises DevTokenError on a plain file-read
+    # failure, before any HTTP request is attempted).
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    monkeypatch.delenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "COPILOT_DEV_CLIENT_CREDS_PATH",
+        "/nonexistent/path/this-file-does-not-exist-issue-168.json",
+    )
+
+    garbage = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer this-is-not-a-real-token-just-garbage-xyz123"},
+    )
+    no_header = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+    )
+
+    for response in (garbage, no_header):
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid or missing token"}
 
 
 def test_chat_request_rejects_overlong_message():
