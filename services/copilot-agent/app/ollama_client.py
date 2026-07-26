@@ -78,7 +78,32 @@ _EMBEDDINGS_PATH = "/api/embeddings"
 # real corpus retrieval results into truncated-JSON extraction failures
 # that do not exist today. A caller may still pass ``options={"num_predict":
 # ...}`` to extract() explicitly if a bound is wanted there.
+#
+# CEILING, not a default (Gate 3 follow-up): unlike ``temperature`` (a
+# behavioural knob a caller is free to override in either direction), this
+# is a retention bound protecting process memory -- see the module-level
+# rationale above. A caller MAY still ask for FEWER tokens (a smaller
+# ``options["num_predict"]`` is honoured as-is), but may never ask for
+# more: ``_clamped_chat_options`` takes ``min(caller_value,
+# CHAT_MAX_TOKENS)`` when the caller supplies one, and ``CHAT_MAX_TOKENS``
+# outright when they don't.
 CHAT_MAX_TOKENS = 1536
+
+
+def _clamped_chat_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge ``options`` with a ``num_predict`` ceiling of ``CHAT_MAX_TOKENS``.
+
+    Used by ``chat``/``chat_stream`` only -- see ``CHAT_MAX_TOKENS``'s
+    docstring for why this clamps (a memory-safety bound) rather than
+    merely defaults (the way ``temperature`` is merged in ``_build_body``).
+    """
+    merged_options: dict[str, Any] = dict(options) if options else {}
+    caller_num_predict = merged_options.get("num_predict")
+    merged_options["num_predict"] = (
+        CHAT_MAX_TOKENS if caller_num_predict is None else min(caller_num_predict, CHAT_MAX_TOKENS)
+    )
+    return merged_options
+
 
 # Matches everything up to and including the first "</think>" marker (and any
 # whitespace right after it), whether or not a matching "<think>" opening tag
@@ -193,9 +218,7 @@ class OllamaClient:
         ``LlmCallStats`` entry to ``call_stats`` regardless of outcome.
         """
         _logger.info("ollama chat call", extra={"model": self._model})
-        merged_options: dict[str, Any] = {"num_predict": CHAT_MAX_TOKENS}
-        if options:
-            merged_options.update(options)
+        merged_options = _clamped_chat_options(options)
         body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:
@@ -258,9 +281,7 @@ class OllamaClient:
         (additive only).
         """
         _logger.info("ollama chat stream call", extra={"model": self._model})
-        merged_options: dict[str, Any] = {"num_predict": CHAT_MAX_TOKENS}
-        if options:
-            merged_options.update(options)
+        merged_options = _clamped_chat_options(options)
         body = self._build_body(messages, stream=True, options=merged_options)
         start_ts = time.time()
         try:

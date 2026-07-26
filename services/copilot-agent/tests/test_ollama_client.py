@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.correlation import _STDLIB_RECORD_ATTRS
-from app.ollama_client import OllamaClient, OllamaError
+from app.ollama_client import CHAT_MAX_TOKENS, OllamaClient, OllamaError
 
 
 class _Animal(BaseModel):
@@ -79,6 +79,71 @@ def test_chat_sends_think_false_stream_true_temperature_zero_and_model():
     assert body["stream"] is True
     assert body["model"] == "qwen3:4b"
     assert body["options"]["temperature"] == 0
+
+
+def test_chat_defaults_num_predict_to_chat_max_tokens_when_caller_omits_it():
+    """Issue #167 Gate 3 follow-up: CHAT_MAX_TOKENS is a memory-safety
+    ceiling, not a mere default -- but a caller who passes no ``num_predict``
+    at all still gets the cap applied (this is what makes it a bound, not
+    just a clamp on an explicit override)."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}])
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["options"]["num_predict"] == CHAT_MAX_TOKENS
+
+
+def test_chat_clamps_a_caller_num_predict_above_the_ceiling():
+    """A caller asking for MORE than CHAT_MAX_TOKENS is clamped down to it --
+    unlike ``temperature``, this option is a retention bound protecting
+    process memory, so a caller must not be able to raise it (issue #167
+    Gate 3 follow-up)."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}], options={"num_predict": CHAT_MAX_TOKENS + 5000})
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["options"]["num_predict"] == CHAT_MAX_TOKENS
+
+
+def test_chat_respects_a_caller_num_predict_below_the_ceiling():
+    """A caller asking for FEWER tokens than CHAT_MAX_TOKENS is honoured
+    as-is -- the ceiling only ever clamps DOWN, never up (issue #167 Gate 3
+    follow-up)."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_ndjson({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = _client(handler)
+    client.chat([{"role": "user", "content": "hi"}], options={"num_predict": 42})
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["options"]["num_predict"] == 42
 
 
 def test_chat_strips_leaked_thinking_preamble_from_content():
