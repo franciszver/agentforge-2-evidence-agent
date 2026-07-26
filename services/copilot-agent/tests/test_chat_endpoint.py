@@ -20,6 +20,7 @@ from fastapi import Header
 from fastapi.testclient import TestClient
 
 import app.chat as chat
+import app.dev_token_bridge as dev_token_bridge
 from app.chat import (
     ChatEvent,
     ChatRequest,
@@ -38,7 +39,7 @@ from app.chat import (
 from app.config import Settings, get_settings
 from app.extraction import ClaimExtractor
 from app.main import app
-from app.openemr_auth import IntrospectionResult
+from app.openemr_auth import IntrospectionResult, OpenEmrAuthError
 from app.planner import PlannerResult, ToolCallTrace
 from app.schemas.common import AllergySeverity, MedicationStatus, SourceRef, VitalType
 from app.schemas.planner import ToolName
@@ -1056,6 +1057,84 @@ def test_fail_closed_default_returns_401_not_500_at_the_endpoint(monkeypatch):
     for response in (garbage, no_header):
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid or missing token"}
+
+
+def test_unauthenticated_chat_never_touches_dev_token_bridge_transport(tmp_path, monkeypatch):
+    # #177: #168 (the test above) closed the STATUS-CODE oracle -- an
+    # unprovisioned bridge now 401s instead of 500ing -- but did NOT stop the
+    # fetch attempt itself. ``get_planner_factory`` (a FastAPI dependency,
+    # resolved before this test's #168 fix existed) called
+    # ``dev_token_bridge.get_token()`` -- an outbound OAuth password-grant --
+    # on EVERY flag-off request, unauthenticated or not, because FastAPI
+    # resolved it independently of the endpoint body's own token check. That
+    # is unauthenticated threadpool starvation (the bounded, app-wide sync
+    # dependency threadpool), repeated failed password-grants against the
+    # demo clinician account, and a timing oracle (a live bridge attempt
+    # costs a real network round trip; a short-circuited one does not).
+    #
+    # Counted at the transport seam (``fetch_token_password_grant``, the
+    # actual outbound HTTP call ``DevTokenBridge._fetch`` makes) rather than a
+    # wall-clock threshold, which would be flaky. A VALID creds file is
+    # supplied so ``DevTokenBridge._load_creds`` would succeed and actually
+    # reach the transport if invoked -- proving the zero count comes from the
+    # auth-first ordering fix, not from some unrelated pre-existing
+    # short-circuit (e.g. a missing creds file).
+    calls: list[None] = []
+
+    def _counting_fetch(*args: object, **kwargs: object) -> None:
+        calls.append(None)
+        raise OpenEmrAuthError("must never be reached before the caller's own token is validated")
+
+    monkeypatch.setattr(dev_token_bridge, "fetch_token_password_grant", _counting_fetch)
+
+    creds_file = tmp_path / "openemr-dev-client.json"
+    creds_file.write_text(
+        json.dumps({"client_id": "cid-177", "client_secret": "secret-177"}), encoding="utf-8"
+    )
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+    monkeypatch.delenv("COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv("COPILOT_DEV_CLIENT_CREDS_PATH", str(creds_file))
+
+    # Absence: no Authorization header at all.
+    no_header = client.post("/chat", json={"message": "hello", "patient_id": 1})
+    assert no_header.status_code == 401
+    assert calls == [], "a request with no Authorization header must never reach the bridge transport"
+
+    # Absence: a garbage bearer token (fail-closed default rejects it too).
+    garbage = client.post(
+        "/chat",
+        json={"message": "hello", "patient_id": 1},
+        headers={"Authorization": "Bearer this-is-not-a-real-token-just-garbage-xyz177"},
+    )
+    assert garbage.status_code == 401
+    assert calls == [], "a rejected bearer token must never reach the bridge transport"
+
+
+def test_authenticated_chat_still_fetches_from_the_dev_token_bridge(monkeypatch):
+    # Presence pairing for the absence assertions above (so they cannot pass
+    # vacuously, e.g. because the bridge is unreachable for some unrelated
+    # reason): an AUTHENTICATED caller -- one whose token passes the active
+    # validator -- must still cause exactly the one fetch it always has.
+    # Exercised as a direct call (like ``test_forwarded_token.py``'s
+    # wiring tests) rather than a full ``/chat`` round trip, so this does not
+    # need to run a real ``Planner`` against a live Ollama/OpenEMR to observe
+    # the fetch.
+    class _CountingBridge:
+        def __init__(self, token: str) -> None:
+            self._token = token
+            self.calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            return self._token
+
+    bridge = _CountingBridge("real-openemr-token-177")
+    monkeypatch.delenv("COPILOT_PER_USER_TOKEN_ENABLED", raising=False)
+
+    factory = get_planner_factory(token="authenticated-caller-token", dev_token_bridge=bridge)
+    factory(1)
+
+    assert bridge.calls == 1, "an authenticated caller must still fetch exactly once from the bridge"
 
 
 def test_chat_request_rejects_overlong_message():
