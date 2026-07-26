@@ -73,6 +73,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -82,7 +83,7 @@ from typing import Protocol
 from fastapi import Depends, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
 from app.correlation import get_correlation_id, get_span_id
@@ -131,10 +132,27 @@ class ChatEvent(StrEnum):
     DONE = "done"
 
 
+# DoS guard (issue #167, VULN-0004): the largest ``message`` POST /chat will
+# accept before rejecting the request with a 422, mirroring the precedent
+# app.feedback.MAX_COMMENT_LENGTH already sets for FeedbackRequest.comment.
+# 4000 characters (~1,000 tokens at ~4 chars/token) comfortably covers any
+# legitimate clinical question -- including a long, detailed one -- while
+# leaving the bulk of the target model's 16k-token context window for the
+# planner/system prompt, retrieved evidence chunks, prior conversation
+# turns, and the answer itself. This bound applies to the WHOLE request
+# message unconditionally; it is independent of, and tighter than, nothing
+# -- app.retrieval.MAX_QUERY_CHARS (2000) is a SEPARATE, narrower bound that
+# only applies to the derived retrieval query, and only when
+# copilot_evidence_retrieval_enabled is true. Rejecting outright (422) is
+# deliberate, not truncating: a silently truncated question could change
+# clinical meaning without the caller knowing.
+MAX_CHAT_MESSAGE_LENGTH = 4000
+
+
 class ChatRequest(BaseModel):
     """``POST /chat`` request body."""
 
-    message: str
+    message: str = Field(max_length=MAX_CHAT_MESSAGE_LENGTH)
     patient_id: int
     conversation_id: str | None = None
 
@@ -567,35 +585,76 @@ class Conversation:
     history: list[Turn] = field(default_factory=list)
 
 
+# Fallback cap for a bare ``ConversationStore()`` constructed outside the
+# FastAPI dependency (as every hermetic test in this repo does today) --
+# kept in sync with ``Settings.copilot_max_stored_conversations``'s default
+# so behaviour is identical whether or not a caller threads settings through.
+DEFAULT_MAX_STORED_CONVERSATIONS = 2000
+
+
 class ConversationStore:
-    """In-memory conversation store keyed by ``conversation_id``.
+    """In-memory, LRU-bounded conversation store keyed by ``conversation_id``.
+
+    Issue #167 (VULN-0004): an earlier version of this store had no
+    eviction, so it retained every conversation for the process lifetime --
+    unbounded, attacker-influenced memory growth (any caller can start a new
+    conversation). ``max_conversations`` bounds it: once the cap is
+    exceeded, the least-recently-used conversation is evicted. "Used" means
+    read via ``get`` or appended to via ``append_turn`` -- both move a
+    conversation to the most-recently-used end, so an active multi-turn
+    conversation is never evicted out from under its own caller as long as
+    it stays under the cap; only conversations nobody has touched recently
+    are reclaimed.
+
+    A caller resuming with an evicted ``conversation_id`` gets ``get() ->
+    None`` -- the endpoint already maps that to a clean 404 (unknown
+    conversation_id), not a crash; see ``chat_endpoint``.
 
     TODO(P4.2): replace with the durable trace store; this is a placeholder
     with the same shape (get / create / append) a DB-backed store would have.
     """
 
-    def __init__(self) -> None:
-        self._conversations: dict[str, Conversation] = {}
+    def __init__(self, max_conversations: int = DEFAULT_MAX_STORED_CONVERSATIONS) -> None:
+        if max_conversations <= 0:
+            raise ValueError("max_conversations must be positive")
+        self._max_conversations = max_conversations
+        self._conversations: OrderedDict[str, Conversation] = OrderedDict()
 
     def get(self, conversation_id: str) -> Conversation | None:
-        return self._conversations.get(conversation_id)
+        conversation = self._conversations.get(conversation_id)
+        if conversation is not None:
+            self._conversations.move_to_end(conversation_id)
+        return conversation
 
     def create(self, patient_id: int, patient_name: str | None = None) -> Conversation:
         conversation = Conversation(
             conversation_id=str(uuid.uuid4()), patient_id=patient_id, patient_name=patient_name
         )
         self._conversations[conversation.conversation_id] = conversation
+        self._conversations.move_to_end(conversation.conversation_id)
+        while len(self._conversations) > self._max_conversations:
+            self._conversations.popitem(last=False)
         return conversation
 
     def append_turn(self, conversation_id: str, turn: Turn) -> None:
         self._conversations[conversation_id].history.append(turn)
+        self._conversations.move_to_end(conversation_id)
 
 
-_default_store = ConversationStore()
+_default_store: ConversationStore | None = None
 
 
-def get_conversation_store() -> ConversationStore:
-    """FastAPI dependency: the active ``ConversationStore``. Override in tests."""
+def get_conversation_store(settings: Settings = Depends(get_settings)) -> ConversationStore:
+    """FastAPI dependency: the active ``ConversationStore``. Override in tests.
+
+    Built lazily against ``Settings.copilot_max_stored_conversations``, the
+    same pattern ``get_trace_store`` uses -- importing this module never
+    reads settings, and the cap is operator-tunable via that setting rather
+    than a module-global read.
+    """
+    global _default_store
+    if _default_store is None:
+        _default_store = ConversationStore(max_conversations=settings.copilot_max_stored_conversations)
     return _default_store
 
 

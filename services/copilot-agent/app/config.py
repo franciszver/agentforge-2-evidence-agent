@@ -199,6 +199,19 @@ class Settings(BaseSettings):
     # this flag -- see app/chat.py's _log_encounter_record.
     copilot_evidence_retrieval_enabled: bool = False
 
+    # Issue #167 (VULN-0004): caps how many conversations
+    # app.chat.ConversationStore retains at once -- an unbounded in-memory
+    # dict growing for the process lifetime is unbounded attacker-influenced
+    # memory growth (any caller can start a new conversation). The store
+    # evicts least-recently-used conversations once this cap is exceeded.
+    # 2000 is generous headroom for a single-appliance deployment (this
+    # service is not internet-facing -- port 8000 is internal-network only,
+    # see the issue's "Reachability" section) while keeping worst-case
+    # memory low: even a few thousand conversations x a handful of turns x a
+    # few KB of text each is a low tens-of-MB bound, not unbounded growth.
+    # Operator-tunable so a larger or smaller deployment can adjust it.
+    copilot_max_stored_conversations: int = 2000
+
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose
     # verbatim-provenance check already passed -- a citation only counts as

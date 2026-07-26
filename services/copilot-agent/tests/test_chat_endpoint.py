@@ -260,6 +260,53 @@ def test_resume_with_mismatched_patient_id_is_rejected():
     assert second.status_code in (400, 409)
 
 
+def test_resume_with_evicted_conversation_id_is_clean_404_not_500():
+    """Issue #167: eviction must fail safe. A caller that still holds a
+    ``conversation_id`` for a conversation the store has since evicted (LRU,
+    over-cap) must see the SAME clean 404 an unknown/bogus id already gets --
+    ``store.get`` returning ``None`` is indistinguishable from "never
+    existed" by design, and ``chat_endpoint`` already maps that to a 404
+    (see the mismatched-patient-id 409 test above for the neighbouring
+    branch), never a 500.
+    """
+    fake_planner = FakePlanner(trace=[], answer="first answer")
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    # Cap of 1: creating a second conversation evicts the first (LRU, least-
+    # recently-used since nothing touched it again after creation).
+    store = ConversationStore(max_conversations=1)
+    app.dependency_overrides[get_conversation_store] = lambda: store
+
+    first = client.post(
+        "/chat",
+        json={"message": "first question", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    evicted_conversation_id = _conversation_id(first.text)
+
+    # A second, unrelated conversation pushes the store over its cap of 1,
+    # evicting the first.
+    client.post(
+        "/chat",
+        json={"message": "unrelated question", "patient_id": 2},
+        headers={"Authorization": "Bearer good-token"},
+    )
+    assert store.get(evicted_conversation_id) is None  # confirms eviction actually happened
+
+    resume = client.post(
+        "/chat",
+        json={
+            "message": "second question",
+            "patient_id": 1,
+            "conversation_id": evicted_conversation_id,
+        },
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    assert resume.status_code == 404
+
+
 # --------------------------------------------------------------------------
 # #224 name-binding: Conversation gains the bound patient's own display name,
 # resolved once at conversation-creation time via the planner's OPTIONAL
@@ -593,39 +640,11 @@ def test_default_token_validator_rejects_garbage_bearer_token(monkeypatch):
         validator("this-is-not-a-real-token-just-garbage-xyz123")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "#167 (VULN-0004, evals/recordings/dos-unbounded-chat-message-length/): a live "
-        "13,917-char draw was recorded and returned a normal 200 with no rejection at any "
-        "layer -- see the issue body's 'What was and was not demonstrated'. What IS "
-        "deductive (no measured OOM) is only the unbounded-GROWTH/exhaustion conclusion, "
-        "not this input-acceptance behaviour, which was directly observed. "
-        "ChatRequest.message (app/chat.py:137) has no max_length -- contrast "
-        "app.feedback.MAX_COMMENT_LENGTH (app/feedback.py:67), which DOES bound "
-        "FeedbackRequest.comment (app/feedback.py:75) the same way. Fixed behaviour "
-        "asserted here: ChatRequest should reject a message over a documented "
-        "MAX_CHAT_MESSAGE_LENGTH bound (mirroring MAX_COMMENT_LENGTH's precedent)."
-    ),
-    strict=True,
-)
 def test_chat_request_rejects_overlong_message():
     with pytest.raises(pydantic.ValidationError):
         ChatRequest(message="x" * 1_000_000, patient_id=1)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "#167 (VULN-0004, deductive from source for THIS specific claim -- the growth is "
-        "unbounded because ConversationStore never evicts; see evals/recordings/"
-        "dos-unbounded-chat-message-length/ for the related live-draw evidence on the "
-        "message-length half of #167): ConversationStore (app/chat.py:570-594) exposes "
-        "exactly get/create/append_turn and nothing else -- no eviction, TTL, or cap; its "
-        "own docstring carries a TODO(P4.2) placeholder for exactly this. Fixed behaviour "
-        "asserted here: creating far more conversations than any plausible cap must not "
-        "leave all of them retrievable forever."
-    ),
-    strict=True,
-)
 def test_conversation_store_bounds_retained_conversations():
     # BEHAVIOUR, not vocabulary (issue-#86 failure class avoided): a class-level
     # dir()/vocabulary check would never see an instance-level cap (e.g.
