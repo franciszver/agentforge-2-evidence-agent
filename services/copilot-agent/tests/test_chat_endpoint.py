@@ -16,6 +16,7 @@ from typing import Any
 
 import pydantic
 import pytest
+from fastapi import Header
 from fastapi.testclient import TestClient
 
 import app.chat as chat
@@ -34,7 +35,7 @@ from app.chat import (
     get_roster_cache,
     get_token_validator,
 )
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.extraction import ClaimExtractor
 from app.main import app
 from app.openemr_auth import IntrospectionResult
@@ -161,6 +162,23 @@ def _override_ok_validator() -> None:
 
 def _override_planner_factory(fake_planner: FakePlanner) -> None:
     app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: fake_planner)
+
+
+def _override_planner_factory_keyed_by_bearer_token(planners_by_token: dict[str, FakePlanner]) -> None:
+    """Unlike ``_override_planner_factory`` above (always the SAME planner,
+    regardless of caller) -- mirrors what the REAL ``get_planner_factory``
+    does with ``copilot_per_user_token_enabled`` ON (#124 Phase 4): a
+    DIFFERENT planner bound to EACH caller's own forwarded bearer token.
+    Needed to prove #174 Gate 2's authorization-scope fix, which is
+    specifically about caller A's cached fetch never being served to
+    caller B when the two are different principals (different tokens)."""
+
+    def factory_dependency(authorization: str | None = Header(default=None)):
+        token = authorization[len("Bearer ") :] if authorization and authorization.startswith("Bearer ") else ""
+        planner = planners_by_token[token]
+        return lambda patient_id: planner
+
+    app.dependency_overrides[get_planner_factory] = factory_dependency
 
 
 def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
@@ -697,6 +715,69 @@ def test_roster_is_resolved_once_and_shared_across_conversations_and_turns():
     # it shares the process-wide RosterCache with the first two calls.
     assert _conversation_id(third.text) != conversation_id
     assert fake_planner.roster_resolve_calls == 1
+
+
+def test_roster_cache_bypassed_per_caller_when_per_user_token_enabled():
+    """#174 Gate 2 (security) finding, CONFIRMED: ``RosterCache`` is a
+    single, process-wide, UNKEYED cache -- not keyed by token, scope, role,
+    or facility. With ``copilot_per_user_token_enabled`` ON, each request's
+    planner is bound to THAT request's own forwarded bearer
+    (``get_planner_factory``'s docstring: "OpenEMR maps every tool call to
+    that user -> per-user ACL"), and OpenEMR's REST authorization is role-
+    and resource-scoped (``docs/ARCHITECTURE.md``'s "Patient-context
+    binding" section; #124 Phase 4 documents an ``accountant``-role token
+    getting 403 where an ``admin`` token gets 200 on the SAME endpoint
+    shape). So sharing one cached roster across callers with DIFFERENT
+    tokens would serve caller B a roster fetched under caller A's
+    authorization -- caller B deciding cross-patient refusals using patient
+    identities caller B was never authorized to enumerate. This did NOT
+    exist pre-#174 (each conversation fetched its own, caller-scoped
+    roster) and must not be reintroduced by the #174 shared-cache fix.
+
+    Pairs with
+    ``test_roster_is_resolved_once_and_shared_across_conversations_and_turns``
+    above (flag OFF: sharing across DIFFERENT callers IS correct there,
+    because the dev-bridge default makes every caller provably the SAME
+    principal) to pin BOTH directions of this decision.
+
+    Before the Gate-2 fix (``RosterCache`` unconditionally shared, with no
+    ``enabled`` gate at all): caller B's request would be served caller A's
+    already-cached roster and ``planner_b.roster_resolve_calls`` would stay
+    0 -- this assertion fails.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        copilot_per_user_token_enabled=True, copilot_roster_cache_ttl_seconds=300.0
+    )
+
+    response_a = client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    response_b = client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
+    # Presence: the roster signal genuinely fired for BOTH callers (a
+    # refusal), so a low/zero fetch count below can't just mean the guard
+    # never ran.
+    assert "chart is currently open" in next(
+        data for name, data in _iter_sse_events(response_a.text) if name == "answer"
+    )
+    assert "chart is currently open" in next(
+        data for name, data in _iter_sse_events(response_b.text) if name == "answer"
+    )
+
+    # The authorization-scope assertion: caller B's own fetch actually
+    # happened -- caller B was NOT served caller A's cached roster.
+    assert planner_a.roster_resolve_calls == 1
+    assert planner_b.roster_resolve_calls == 1
 
 
 def test_roster_fetch_amplification_is_bounded_across_n_distinct_conversations():

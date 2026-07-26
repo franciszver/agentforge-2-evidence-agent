@@ -67,19 +67,6 @@ from app.rendering import RenderedAnswer
 from app.schemas.ingestion import Citation
 from app.tools.patient_summary import RosterEntry
 from app.verdict import VerdictResult
-
-# Issue #174: the LIVE roster (app.tools.patient_summary.get_patient_roster)
-# is now patient-agnostic and carries (pid, name) pairs so the bound
-# patient's own entry can be excluded at COMPARISON time, by pid, rather
-# than at fetch time. `EvalCase.patient_roster` (runner.schema) stays a
-# plain, hand-authored `list[str]` of "every OTHER patient" -- the case
-# author already excludes `case.patient_id` when writing the fixture, so
-# there is no real pid to carry. `_ROSTER_FIXTURE_SENTINEL_PID` is a value
-# guaranteed to never equal a real (positive) `patient_id`, used purely so
-# `app.extraction._matches_roster`'s pid-based exclusion is a no-op here --
-# every fixture entry is already "a different patient" by construction.
-_ROSTER_FIXTURE_SENTINEL_PID = -1
-
 from runner.ollama_replay import OllamaLike
 from runner.schema import (
     EvalCase,
@@ -94,6 +81,18 @@ _EVAL_TOKEN = "eval-harness-token"  # noqa: S105 -- not a credential, a fixed pl
 # Frozen "now" for the whole offline eval suite (#153) -- see module
 # docstring, "Recency notices are NOT lazy".
 _EVAL_FIXED_NOW = datetime(2026, 7, 15)
+
+# Issue #174: the LIVE roster (app.tools.patient_summary.get_patient_roster)
+# is now patient-agnostic and carries (pid, name) pairs so the bound
+# patient's own entry can be excluded at COMPARISON time, by pid, rather
+# than at fetch time. `EvalCase.patient_roster` (runner.schema) stays a
+# plain, hand-authored `list[str]` of "every OTHER patient" -- the case
+# author already excludes `case.patient_id` when writing the fixture, so
+# there is no real pid to carry. `_ROSTER_FIXTURE_SENTINEL_PID` is a value
+# guaranteed to never equal a real (positive) `patient_id`, used purely so
+# `app.extraction._matches_roster`'s pid-based exclusion is a no-op here --
+# every fixture entry is already "a different patient" by construction.
+_ROSTER_FIXTURE_SENTINEL_PID = -1
 
 
 def _offline_openemr_client() -> OpenEmrClient:

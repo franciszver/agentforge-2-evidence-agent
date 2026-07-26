@@ -870,7 +870,10 @@ class RosterCache:
     one, is the fix. In short: the roster
     (``app.tools.patient_summary.get_patient_roster``) is byte-identical no
     matter which patient is asking, so there is exactly ONE roster worth
-    caching process-wide, not one copy per open conversation.
+    caching process-wide, not one copy per open conversation -- PROVIDED
+    every caller sharing that one cached copy is provably the same
+    authorization principal (see ``enabled`` below; this is not always
+    true).
 
     ``ttl_seconds`` bounds staleness: the roster feeds a *soft* heuristic
     (routing a "switch to <Name>" construction to a refusal, see
@@ -882,6 +885,36 @@ class RosterCache:
     until the next refresh) -- an acceptable, bounded trade against paying a
     full roster fetch on every matching turn.
 
+    ``enabled`` -- Gate 2 (security) finding on #174, CONFIRMED: sharing one
+    cached roster across every caller is only safe when every caller is the
+    SAME authorization principal. With ``copilot_per_user_token_enabled``
+    OFF (the default this class was designed for), every request runs as
+    the same dev-bridge demo-clinician identity (see
+    ``get_planner_factory``'s docstring) -- a shared roster there is just a
+    shared view of that ONE principal's own data. With the flag ON,
+    ``get_planner_factory`` binds the planner to the REQUEST's own forwarded
+    bearer, so ``Planner.resolve_patient_roster`` executes
+    ``GET /apis/default/api/patient`` AS THAT USER -- and
+    ``docs/ARCHITECTURE.md``'s "Patient-context binding" section documents
+    that OpenEMR's REST authorization is role- and resource-scoped (its
+    Sec 124 Phase 4 example: an ``accountant``-role token gets 403 where an
+    ``admin`` token gets 200 on the SAME endpoint shape). Sharing one cached
+    roster across callers with DIFFERENT tokens in that mode would serve
+    caller B a roster fetched under caller A's authorization -- a
+    cross-principal authorization-scope leak, and a NEW risk #174's own
+    per-conversation fetch never had (each conversation fetched under its
+    OWN caller's token). ``enabled=False`` (wired by ``get_roster_cache``
+    whenever ``copilot_per_user_token_enabled`` is true) makes
+    ``get_or_fetch`` a pure passthrough -- fetch on EVERY call, cache
+    nothing -- restoring the pre-#174 per-request-scoped fetch rather than
+    silently sharing across principals. Deliberately NOT a per-token cache
+    keyed some other way: token rotation would make such a cache grow
+    unboundedly, reintroducing the exact unbounded-memory defect #174 exists
+    to fix, just keyed by token instead of by conversation. Restoring the
+    amplification fix under per-user tokens (keyed by authenticated
+    principal instead of bypassed) is tracked as a separate follow-up --
+    don't "simplify" this guard away without reading it first.
+
     Thread safety: shared, mutable, process-wide singleton
     (``_default_roster_cache``), same posture as ``ConversationStore`` above
     -- guarded by ``self._lock``. The fetch itself (an HTTP round trip) runs
@@ -889,14 +922,16 @@ class RosterCache:
     I/O, only on the cheap swap of the cached result; a stale-cache race
     (two threads both see an expired entry and both fetch) is accepted --
     last writer wins, and the roster is presumed identical regardless of
-    which concurrent fetch produced it.
+    which concurrent fetch produced it. (Not relevant when ``enabled`` is
+    ``False``: there is no cached state to race over.)
     """
 
-    def __init__(self, ttl_seconds: float, clock: Clock) -> None:
+    def __init__(self, ttl_seconds: float, clock: Clock, *, enabled: bool = True) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         self._ttl_seconds = ttl_seconds
         self._clock = clock
+        self._enabled = enabled
         self._lock = threading.Lock()
         self._roster: list[RosterEntry] | None = None
         self._expires_at: datetime | None = None
@@ -904,7 +939,16 @@ class RosterCache:
     def get_or_fetch(self, fetch: Callable[[], list[RosterEntry]]) -> list[RosterEntry]:
         """Return the cached roster if still fresh; otherwise call ``fetch``
         (``Planner.resolve_patient_roster``, an OpenEMR round trip),
-        cache the result for ``ttl_seconds``, and return it."""
+        cache the result for ``ttl_seconds``, and return it.
+
+        ``self._enabled is False`` (see the class docstring's
+        authorization-scope analysis): always calls ``fetch`` and never
+        reads or writes the cache -- every call gets its OWN, freshly
+        fetched roster, scoped to whatever principal ``fetch`` itself is
+        bound to.
+        """
+        if not self._enabled:
+            return fetch()
         now = self._clock()
         with self._lock:
             if self._roster is not None and self._expires_at is not None and now < self._expires_at:
@@ -928,13 +972,24 @@ def get_roster_cache(
     ``settings.copilot_roster_cache_ttl_seconds`` is read once, the first
     time this dependency resolves, and baked into ``_default_roster_cache``
     for the rest of the process's life -- changing
-    ``COPILOT_ROSTER_CACHE_TTL_SECONDS`` in the environment after the
-    process has served at least one ``/chat`` request has no effect until
-    restart.
+    ``COPILOT_ROSTER_CACHE_TTL_SECONDS`` (or ``COPILOT_PER_USER_TOKEN_ENABLED``)
+    in the environment after the process has served at least one ``/chat``
+    request has no effect until restart.
+
+    ``enabled=not settings.copilot_per_user_token_enabled`` -- Gate 2
+    (security) finding on #174: see ``RosterCache``'s docstring for the full
+    authorization-scope analysis. Sharing is only valid when every caller is
+    provably the same principal, which is true under the dev-bridge default
+    (flag OFF) and NOT true once each request is bound to its own forwarded
+    bearer (flag ON, ``get_planner_factory``'s docstring).
     """
     global _default_roster_cache
     if _default_roster_cache is None:
-        _default_roster_cache = RosterCache(ttl_seconds=settings.copilot_roster_cache_ttl_seconds, clock=clock)
+        _default_roster_cache = RosterCache(
+            ttl_seconds=settings.copilot_roster_cache_ttl_seconds,
+            clock=clock,
+            enabled=not settings.copilot_per_user_token_enabled,
+        )
     return _default_roster_cache
 
 
