@@ -873,14 +873,14 @@
     }
 
     // A FOURTH, TERMINAL state (agent-service #180): the agent's ownership
-    // check rejects this correlation id's feedback permanently (a 403 --
-    // e.g. the trace's REQUEST span was never recorded, or predates a
-    // trace-store reset such as an agent restart with no persistent
-    // /data). Unlike applyFeedbackErrorState, retrying can NEVER succeed
-    // for this correlation id, so this does NOT re-enable the buttons
-    // (that would invite a retry loop the user has no way to know is
-    // futile) and uses distinct copy so the clinician doesn't read a
-    // generic "try again" as a transient blip worth repeating.
+    // check rejects this correlation id's feedback permanently (e.g. the
+    // trace's REQUEST span was never recorded, or predates a trace-store
+    // reset such as an agent restart). Unlike applyFeedbackErrorState,
+    // retrying can NEVER succeed for this correlation id, so this does NOT
+    // re-enable the buttons (that would invite a retry loop the user has
+    // no way to know is futile) and uses distinct copy so the clinician
+    // doesn't read a generic "try again" as a transient blip worth
+    // repeating.
     function applyFeedbackUnavailableState(widget) {
         widget.upBtn.disabled = true;
         widget.downBtn.disabled = true;
@@ -888,6 +888,20 @@
         widget.commentWrap.classList.add('copilot-hidden');
         widget.status.textContent = 'This answer can no longer be rated.';
     }
+
+    // Gate 3 review finding on #180: the proxy (FeedbackProxyController.php)
+    // ALSO answers 403 for a stale/failed CSRF check, distinct from the
+    // agent's ownership rejection -- a recoverable case (reload the page)
+    // that must NOT be treated as the permanent one above, or a clinician
+    // whose session CSRF token went stale (re-login in another tab, a
+    // long-open panel in the never-reloaded main.php shell) would see
+    // their still-good answer permanently marked unrateable. So the
+    // terminal state is keyed on the agent's OWN response body (its
+    // `detail` field, app/feedback.py's exact string for this rejection),
+    // never the bare HTTP status -- a CSRF 403 has a different body
+    // (`{"error": "CSRF verification failed"}`, sendJsonError) and falls
+    // through to the ordinary retryable path instead.
+    var OWNERSHIP_REJECTED_DETAIL = 'caller does not own this correlation id';
 
     // Orchestration: wires the widget's buttons to POST public/feedback-proxy.php.
     // `options` needs `context`, `ensureToken` (the chat controller's cached
@@ -904,17 +918,27 @@
                     body: JSON.stringify(payload)
                 });
             }).then(function (resp) {
-                if (!resp.ok) {
-                    // Carry the HTTP status on the rejection so callers can
-                    // tell a permanent 403 (ownership check, #180 -- never
-                    // retryable) apart from a transient failure (worth a
-                    // retry). `resp.status` is undefined for a bare `{ ok:
-                    // false }` double with no status set, which the `=== 403`
-                    // check below correctly treats as the transient case.
-                    var err = new Error('feedback request failed');
-                    err.status = resp.status;
-                    throw err;
+                if (resp.ok) {
+                    return undefined;
                 }
+                // Read the body to distinguish a permanent ownership
+                // rejection from any other failure (transient agent error,
+                // or the proxy's own CSRF 403) -- see
+                // OWNERSHIP_REJECTED_DETAIL above. `resp.json` may not
+                // exist on a minimal test double, and the body may not be
+                // valid JSON either way, so both are tolerated: absence of
+                // a matching `detail` simply falls through to the
+                // retryable path, never the terminal one -- a false
+                // "unknown, so retryable" is far safer than a false
+                // "permanently unrateable."
+                var parseBody = typeof resp.json === 'function'
+                    ? resp.json().catch(function () { return {}; })
+                    : Promise.resolve({});
+                return parseBody.then(function (body) {
+                    var err = new Error('feedback request failed');
+                    err.detail = body && body.detail;
+                    throw err;
+                });
             });
         }
 
@@ -932,7 +956,7 @@
                     widget.commentWrap.classList.remove('copilot-hidden');
                 }
             }).catch(function (err) {
-                if (err && err.status === 403) {
+                if (err && err.detail === OWNERSHIP_REJECTED_DETAIL) {
                     state = 'unavailable';
                     applyFeedbackUnavailableState(widget);
                     return;
@@ -953,7 +977,7 @@
                 widget.commentWrap.classList.add('copilot-hidden');
                 widget.status.textContent = 'Thanks for the detail';
             }).catch(function (err) {
-                if (err && err.status === 403) {
+                if (err && err.detail === OWNERSHIP_REJECTED_DETAIL) {
                     state = 'unavailable';
                     applyFeedbackUnavailableState(widget);
                     return;

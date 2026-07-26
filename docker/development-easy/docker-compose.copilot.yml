@@ -260,21 +260,35 @@ services:
   agent:
     build:
       context: ../../services/copilot-agent
-    # #180 review finding: traces.db (app/config.py's trace_db_path,
-    # default /data/traces.db) backs the P4.5 dashboard and P4.9 review
-    # queue -- both meant to aggregate across many chat sessions over time,
-    # not just the sessions since the container last started. Without a
-    # named volume it lived on the container's writable layer with no
-    # declared mount here, so it (and every trace/feedback row in it) was
-    # already silently wiped on every container recreation, restart, or
-    # OOM-kill -- true before #180 too, just newly consequential now that a
-    # missing REQUEST span means a permanent 403 on /feedback instead of a
-    # merely-empty dashboard.
+    # #180 review finding: traces.db (app/config.py's trace_db_path) backs
+    # the P4.5 dashboard and P4.9 review queue -- both meant to aggregate
+    # across many chat sessions over time, not just the sessions since the
+    # container last started. Without a named volume it lived on the
+    # container's writable layer with no declared mount here, so it (and
+    # every trace/feedback row in it) was already silently wiped on every
+    # container recreation, restart, or OOM-kill -- true before #180 too,
+    # just newly consequential now that a missing REQUEST span means a
+    # permanent 403 on /feedback instead of a merely-empty dashboard.
+    #
+    # Mounted at /data/traces, NOT the whole /data (a second review-gate
+    # finding): /data also holds copilot_dev_client_creds_path /
+    # copilot_prod_client_creds_path (OAuth client secrets) and
+    # copilot_ingestion_base_dir (LocalIngestionStore's raw ingested source
+    # PDFs/intake forms and extracted patient facts, app/config.py).
+    # DEMO_SCRIPT.md's "dies with the container" note about that data is a
+    # DELIBERATE property this mount must not change -- a full demo/env
+    # reset (docs/TEST_PLAN.md Sec 7, docs/DEMO_SCRIPT.md's reset section)
+    # is supposed to wipe the previous run's patient documents and OAuth
+    # creds; only the trace store below is meant to survive a plain
+    # restart. TRACE_DB_PATH below repoints app/config.py's trace_db_path
+    # (default /data/traces.db) inside this scoped mount. See both reset
+    # recipes for the matching `docker volume rm agenttracedata` addition.
     volumes:
-      - agenttracedata:/data
+      - agenttracedata:/data/traces
     environment:
       OPENEMR_BASE_URL: https://openemr
       OLLAMA_BASE_URL: http://ollama:11434
+      TRACE_DB_PATH: /data/traces/traces.db
       # #180 review finding: TraceStore.hash_owner_token (services/copilot-agent
       # /app/trace_store.py) keys the /feedback ownership hash with this
       # secret. app/config.py's trace_args_hash_secret deliberately ships NO
@@ -291,9 +305,12 @@ services:
       # the clinician who legitimately owns it gets a 403 on their own
       # feedback. Required (no default) rather than silently falling back
       # to an empty-string secret, which would be weaker than no pinning at
-      # all -- set a real value in this stack's .env (see WT_* vars in
-      # docker-compose.yml for the established generated-.env convention).
-      TRACE_ARGS_HASH_SECRET: "${TRACE_ARGS_HASH_SECRET:?Set TRACE_ARGS_HASH_SECRET in your .env to a stable random value -- required now that traces.db persists in the agenttracedata volume across restarts; see app/config.py's trace_args_hash_secret docstring}"
+      # all. Copy docker/development-easy/.env.example to .env in that same
+      # directory and fill in a generated value -- see that file for the
+      # generation command. scripts/smoke.sh exports a throwaway value of
+      # its own before validating this compose file, since it starts no
+      # containers and never touches real trace data.
+      TRACE_ARGS_HASH_SECRET: "${TRACE_ARGS_HASH_SECRET:?Set TRACE_ARGS_HASH_SECRET -- copy docker/development-easy/.env.example to .env and fill in a generated value; see app/config.py's trace_args_hash_secret docstring}"
       # P3.10e (issue #73): default "llama_server" -- flip to "ollama" for
       # instant rollback of the answer/extract/reranker roles.
       COPILOT_LLM_ENGINE: llama_server

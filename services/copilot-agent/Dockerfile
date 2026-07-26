@@ -18,11 +18,22 @@ RUN pip install --no-cache-dir .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
 
-# Trace store lives at /data (trace_db_path in app/config.py); provision it
-# owned by appuser before dropping root. Mounting a volume over /data shadows
-# this ownership and would reintroduce the PermissionError from #111 — re-chown
-# after mount if persistence is ever added.
-RUN mkdir /data && chown appuser:appuser /data
+# /data holds client OAuth creds (copilot_dev/prod_client_creds_path) and
+# the raw document-ingestion store (copilot_ingestion_base_dir); the trace
+# store (trace_db_path) lives at /data/traces, a subdirectory, since #180
+# gave it its own named volume in docker-compose.copilot.yml (scoped so
+# the OAuth creds and ingested patient documents keep dying with the
+# container -- see that compose file's comment on the `agent` service).
+# Both provisioned owned by appuser before dropping root: #180's review
+# probed mounting a FRESH named volume over /data/traces and confirmed
+# Docker's copy-up behavior copies this directory's ownership into the
+# volume on first mount, so appuser keeps write access without a
+# re-chown step -- this does NOT reintroduce #111's PermissionError (a
+# prior version of this comment warned that mounting anything over /data
+# would; that was true for a MOUNT WITHOUT copy-up support, e.g. a bind
+# mount over a nonexistent path, not for a named volume over a path the
+# image already owns correctly).
+RUN mkdir -p /data/traces && chown -R appuser:appuser /data
 
 USER appuser
 

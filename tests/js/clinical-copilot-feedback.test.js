@@ -306,10 +306,22 @@ describe('attachFeedbackHandlers', () => {
         expect(widget.wrapper.classList.contains('copilot-feedback-submitted')).toBe(false);
     });
 
-    test('a 403 thumb submit applies the unavailable state, not the retryable error state', async () => {
+    /** A fetch double whose (failed) response has a JSON body, mirroring
+     * what a real 403 from either the agent or the proxy carries. */
+    function rejectedResponse(status, body) {
+        return {
+            ok: false,
+            status: status,
+            json: () => Promise.resolve(body)
+        };
+    }
+
+    test('an ownership-rejection 403 applies the unavailable state, not the retryable error state', async () => {
         const container = makeContainer();
         const widget = renderFeedbackWidget(container, 'corr-1');
-        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        const fetchImpl = jest.fn(() =>
+            Promise.resolve(rejectedResponse(403, { detail: 'caller does not own this correlation id' }))
+        );
         attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
 
         await attachFeedbackHandlersClick(widget.upBtn);
@@ -320,10 +332,12 @@ describe('attachFeedbackHandlers', () => {
         expect(widget.status.textContent.toLowerCase()).toMatch(/no longer be rated/);
     });
 
-    test('a 403 thumb submit is terminal: a later click never re-submits', async () => {
+    test('an ownership-rejection 403 is terminal: a later click never re-submits', async () => {
         const container = makeContainer();
         const widget = renderFeedbackWidget(container, 'corr-1');
-        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        const fetchImpl = jest.fn(() =>
+            Promise.resolve(rejectedResponse(403, { detail: 'caller does not own this correlation id' }))
+        );
         attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
 
         await attachFeedbackHandlersClick(widget.upBtn);
@@ -338,11 +352,13 @@ describe('attachFeedbackHandlers', () => {
         expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
-    test('a 403 comment submit applies the unavailable state, not the retryable error message', async () => {
+    test('an ownership-rejection 403 comment submit applies the unavailable state, not the retryable error message', async () => {
         const container = makeContainer();
         const widget = renderFeedbackWidget(container, 'corr-1');
         widget.commentWrap.classList.remove('copilot-hidden');
-        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
+        const fetchImpl = jest.fn(() =>
+            Promise.resolve(rejectedResponse(403, { detail: 'caller does not own this correlation id' }))
+        );
         attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
 
         widget.commentInput.value = 'Missed the recent A1C.';
@@ -355,16 +371,52 @@ describe('attachFeedbackHandlers', () => {
         expect(widget.status.textContent.toLowerCase()).toMatch(/no longer be rated/);
     });
 
-    // Presence pairing for the three 403 tests above: a non-403 failure
-    // (already covered by "a failed submit applies the error state and
-    // allows retry") is unaffected by the new branch -- still the
-    // retryable path, not the terminal one. Explicit here so a future
-    // change to the `err.status === 403` check can't silently widen to
-    // treat every failure as terminal.
+    // Presence pairing for the three ownership-403 tests above: a non-403
+    // failure (already covered by "a failed submit applies the error state
+    // and allows retry") is unaffected by the new branch -- still the
+    // retryable path, not the terminal one.
     test('a non-403 failure does NOT apply the terminal unavailable state', async () => {
         const container = makeContainer();
         const widget = renderFeedbackWidget(container, 'corr-1');
         const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 500 }));
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        await attachFeedbackHandlersClick(widget.upBtn);
+
+        expect(widget.upBtn.disabled).toBe(false);
+        expect(widget.status.textContent).toMatch(/try again/i);
+    });
+
+    // Gate 3 review finding: FeedbackProxyController.php ALSO answers 403
+    // for a stale/failed CSRF check (a recoverable case -- reload the
+    // page), distinct from the agent's ownership rejection (permanent).
+    // Both are HTTP 403, so the terminal state must be keyed on the
+    // response BODY's `detail`, never the bare status, or a clinician with
+    // a stale CSRF token (session re-login in another tab, a long-open
+    // panel) would see their still-ratable answer permanently locked out.
+    test('a CSRF-failure 403 (proxy-level, different body) stays retryable, not terminal', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        const fetchImpl = jest.fn(() =>
+            Promise.resolve(rejectedResponse(403, { error: 'CSRF verification failed' }))
+        );
+        attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
+
+        await attachFeedbackHandlersClick(widget.upBtn);
+
+        expect(widget.upBtn.disabled).toBe(false);
+        expect(widget.downBtn.disabled).toBe(false);
+        expect(widget.status.textContent).toMatch(/try again/i);
+        expect(widget.status.textContent.toLowerCase()).not.toMatch(/no longer be rated/);
+    });
+
+    // A 403 with NO body at all (a minimal double, or a body that fails to
+    // parse as JSON) must also fall through to retryable, not terminal --
+    // "unknown reason" must never default to the permanent state.
+    test('a 403 with no parseable body stays retryable, not terminal', async () => {
+        const container = makeContainer();
+        const widget = renderFeedbackWidget(container, 'corr-1');
+        const fetchImpl = jest.fn(() => Promise.resolve({ ok: false, status: 403 }));
         attachFeedbackHandlers(widget, 'corr-1', makeOptions({ fetchImpl: fetchImpl }));
 
         await attachFeedbackHandlersClick(widget.upBtn);

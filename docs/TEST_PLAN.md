@@ -175,12 +175,12 @@ Every suite runs against the pinned demo dataset (`DEMO_MODE=standard`; image pi
 
 A fresh clone gets the demo dataset automatically the first time the stack comes up on a clean volume — `DEMO_MODE=standard` (set by the copilot overlay, `docker-compose.copilot.yml`) drives OpenEMR's own install-time demo load against the current schema. `evals/fixtures/seed.py`'s job is only the canonical-state layering on top of that (§ below), not the base demo load. The fresh-clone quickstart (P5.6) exercises this same path.
 
-If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), or the demo data otherwise needs to be reset, recover by rebuilding the state that holds it, not by importing data into it. Remove exactly the database volume **and** the sites volume — the sites volume holds OpenEMR's install flag (`sites/default/sqlconf.php`), so leaving it behind gives a configured-but-empty stack where the demo load never re-runs; removing anything more (a blanket `down -v`) destroys `ollamamodels`, and the no-egress ollama service cannot re-pull the model without repeating the one-time provisioning step:
+If a stack was ever started before the demo-mode overlay applied (an empty `patient_data`), or the demo data otherwise needs to be reset, recover by rebuilding the state that holds it, not by importing data into it. Remove the database volume, the sites volume, **and** the agent's trace-store volume (`agenttracedata`, #180) — the sites volume holds OpenEMR's install flag (`sites/default/sqlconf.php`), so leaving it behind gives a configured-but-empty stack where the demo load never re-runs; leaving `agenttracedata` behind carries forward `/feedback`/dashboard rows keyed to patient/encounter ids the reset is about to replace, so the P4.5 dashboard and P4.9 review queue would show stale data pointing at records that no longer exist; removing anything more (a blanket `down -v`) destroys `ollamamodels`, and the no-egress ollama service cannot re-pull the model without repeating the one-time provisioning step. First time only, copy `docker/development-easy/.env.example` to `.env` and fill in `TRACE_ARGS_HASH_SECRET` (generation command in that file) -- the `agent` service's compose definition requires it:
 
 ```bash
 cd docker/development-easy
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml down
-docker volume rm development-easy_databasevolume development-easy_sitesvolume
+docker volume rm development-easy_databasevolume development-easy_sitesvolume development-easy_agenttracedata
 docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d
 ```
 
