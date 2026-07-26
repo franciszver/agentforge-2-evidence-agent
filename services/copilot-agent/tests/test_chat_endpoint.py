@@ -633,6 +633,68 @@ def test_roster_is_resolved_once_and_cached_across_turns():
     assert fake_planner.roster_resolve_calls == 1
 
 
+def test_roster_fetch_amplification_is_bounded_across_n_distinct_conversations():
+    """RED test for #174 (VULN: Conversation.patient_roster is a per-
+    conversation cache of every OTHER patient's name -- the dominant memory
+    term, ~2000x amplification against OpenEMR's patient API, and a privacy
+    problem independent of memory: see the issue for the full analysis).
+
+    N>=3 ``/chat`` POSTs, each with NO ``conversation_id`` (so each gets its
+    OWN, brand-new ``Conversation`` -- proven below by asserting N distinct
+    conversation_ids), all containing a "switch to <Name>" construction that
+    matches the roster. A correct fix makes the total number of roster
+    fetches converge to ~1 regardless of N, because the roster is
+    byte-identical across every conversation and belongs in ONE shared
+    cache, not N per-conversation copies.
+
+    Counter seam: ``fake_planner.roster_resolve_calls`` -- an attribute on
+    the ONE ``FakePlanner`` instance ``_override_planner_factory`` wires up
+    for every request via ``get_planner_factory`` (see that helper: the
+    override closure is ``lambda patient_id: fake_planner``, ignoring
+    ``patient_id`` and always returning the SAME object). This is the
+    honest seam because it mirrors the real amplification being fixed: in
+    production a fresh ``Planner`` IS built per request
+    (``_default_planner_factory``), so ``Planner.resolve_patient_roster()``
+    itself is never a persistent counter there either -- a correct fix
+    needs a cache SITTING IN FRONT of that call, not a change to the call
+    itself, and this test's counter (on the object actually being called)
+    is exactly what such a cache would need to shield.
+
+    Today (pre-fix): each of the N brand-new ``Conversation`` objects has
+    its own ``patient_roster is None`` starting state, so ALL N calls miss
+    and ``roster_resolve_calls`` ends at exactly N -- this assertion fails
+    at N==3.
+    """
+    fake_planner = FakePlannerWithRoster(trace=[], answer="ok", roster=["Bob Smith"])
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+
+    n = 3
+    conversation_ids: set[str] = set()
+    for _ in range(n):
+        response = client.post(
+            "/chat",
+            json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+            headers={"Authorization": "Bearer good-token"},
+        )
+        assert response.status_code == 200
+        conversation_ids.add(_conversation_id(response.text))
+        # Presence pair for the absence-style assertion below: the roster
+        # signal must have genuinely FIRED every single time (a refusal),
+        # not merely gone unexercised -- otherwise a low fetch count could
+        # just mean the guard never ran at all.
+        answer_data = next(data for name, data in _iter_sse_events(response.text) if name == "answer")
+        assert "chart is currently open" in answer_data
+
+    # Presence: N genuinely distinct Conversation objects were created, not
+    # one conversation_id accidentally reused across the loop.
+    assert len(conversation_ids) == n
+
+    # The amplification-reduction assertion: fewer fetches than
+    # conversations (today: fails, roster_resolve_calls == n).
+    assert 1 <= fake_planner.roster_resolve_calls < n
+
+
 def test_switch_to_message_does_not_crash_when_planner_has_no_roster_resolver():
     # FakePlanner (no resolve_patient_roster) -- the pre-#237 default double
     # used throughout this file -- must not break, and the roster signal is
