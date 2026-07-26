@@ -200,6 +200,18 @@ class Span:
     owner_token_hash: str | None = None
 
 
+def _keyed_digest(secret: str, data: str) -> str:
+    """HMAC-SHA256 hex digest of ``data``, keyed by ``secret``. The shared
+    primitive behind :func:`hash_args` and :func:`hash_owner_token` -- both
+    reduce to exactly this call once their own input is turned into a
+    string (``hash_args`` canonicalises a ``Mapping`` to JSON first;
+    ``hash_owner_token`` passes the token straight through), so the actual
+    HMAC construction lives in one place rather than being duplicated
+    identically in two.
+    """
+    return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
+
+
 def hash_args(args: Mapping[str, Any], secret: str) -> str:
     """HMAC-SHA256 hex digest of ``args``, keyed by ``secret``, order-independent.
 
@@ -210,7 +222,7 @@ def hash_args(args: Mapping[str, Any], secret: str) -> str:
     unkeyed hash is not a safe substitute for the raw value here.
     """
     canonical = json.dumps(dict(args), sort_keys=True, default=str)
-    return hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    return _keyed_digest(secret, canonical)
 
 
 def hash_owner_token(token: str, secret: str) -> str:
@@ -234,9 +246,20 @@ def hash_owner_token(token: str, secret: str) -> str:
     Keyed (not a bare hash) for the same reason as :func:`hash_args`: a
     bearer token is a secret-shaped value an attacker with read access to
     the trace store must not be able to dictionary-attack or correlate
-    across records via an unkeyed digest.
+    across records via an unkeyed digest. Inherited from that same keying
+    choice: ``Settings.trace_args_hash_secret`` has no committed default
+    (a random 32 bytes generated per process when unset), so if it is left
+    unset a service restart rotates the key and every trace recorded before
+    the restart becomes unownable -- ``caller_owns_trace`` will reject even
+    the legitimate original caller's token, since the stored hash was keyed
+    with the now-rotated secret. Fail-closed and consistent with
+    ``caller_owns_trace``'s stated direction (an unrecorded/unverifiable
+    owner is rejected, never treated as open), but it is an availability/UX
+    cost, not a new one: exactly the same rotation-on-restart behavior
+    already applies to ``args_hash`` today, this just adds a second
+    consumer of it.
     """
-    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+    return _keyed_digest(secret, token)
 
 
 def record_span_best_effort(logger: logging.Logger, operation: str, write: Callable[[], object]) -> None:
