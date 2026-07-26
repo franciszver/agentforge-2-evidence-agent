@@ -483,10 +483,13 @@ class TraceStore:
     ) -> int:
         """Record clinician feedback on a response (P4.3's ``/feedback``
         endpoint seam -- not wired here). ``feedback_comment`` is
-        user-authored text ABOUT THE RESPONSE, not patient record data, so
-        it is stored verbatim (see module docstring). Always ``ok`` --
-        writing a feedback span IS the success event; there is no
-        underlying operation for it to have failed."""
+        user-authored text ABOUT THE RESPONSE, not a patient record value
+        pulled from a tool, but it may incidentally contain PHI (a clinician
+        typed a patient detail inline) -- see the module docstring, #176. It
+        is still stored verbatim: persisting it here is permitted, only
+        rendering it is not. Always ``ok`` -- writing a feedback span IS the
+        success event; there is no underlying operation for it to have
+        failed."""
         return self._insert(
             span_type=SpanType.FEEDBACK,
             correlation_id=correlation_id,

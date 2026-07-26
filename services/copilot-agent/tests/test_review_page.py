@@ -167,7 +167,8 @@ def test_promote_returns_a_yaml_body_for_a_known_correlation_id(tmp_path: Path) 
     assert "corr-3" in response.text
     # #157: the raw clinician comment is scrubbed from the promoted export
     # (public evals/ repo) -- only a neutral TODO placeholder referencing the
-    # correlation id is emitted. The comment stays in the local /review view.
+    # correlation id is emitted. The comment is not shown on /review either
+    # (#176 redacts it there too) -- it remains only in the trace store.
     assert "missed an interaction" not in response.text
     assert "TODO" in response.text
 

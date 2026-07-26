@@ -52,7 +52,8 @@ default rejects every token, or -- dev-only -- the
 ``copilot_dev_accept_any_bearer_token`` stub accepts any) neither validator
 carries per-user identity, so such a check would still be theatre today.
 Given the corrected severity, this gap should not simply wait for the flag
-flip without being tracked on its own -- see issue #176's follow-up.
+flip without being tracked on its own -- see issue #180, filed for this
+re-derived severity.
 
 PHI note: the comment is user-authored text about the response, not a
 patient RECORD value pulled from a tool -- but it may incidentally contain
