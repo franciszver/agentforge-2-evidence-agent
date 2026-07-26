@@ -416,7 +416,7 @@ async def get_authenticated_token(
     both branches. The remaining flag-on introspection-triggered threadpool
     exposure is a pre-existing, separate concern -- pre-introspection rate
     limiting or negative caching there is intentionally NOT attempted by this
-    fix and is tracked separately (issue TBD).)
+    fix and is tracked separately (#188).)
 
     Pulling the check into its own dependency and making ``get_planner_factory``
     depend on IT (see that function) fixes the ordering structurally: FastAPI
