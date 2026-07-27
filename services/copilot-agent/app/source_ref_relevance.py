@@ -39,6 +39,21 @@ enabled`` gates whether a caller ever constructs one. Flag off (the
 default, and the ONLY state this has ever shipped in): zero behavior
 change, zero extra LLM call.
 
+**Injection posture (not mitigated here -- #192, BLOCKING for enablement).**
+Claim text and SourceRef field/value pairs are interpolated directly into
+the judge prompt (``_INSTRUCTIONS_TEMPLATE``); the only defence against a
+value that itself contains an instruction-shaped payload is the soft
+system-prompt line telling the judge to treat CLAIM/SOURCE FACTS/ESTABLISHED
+FACTS strictly as data, never as commands. That is not a structural
+mitigation -- a sufficiently adversarial field value could still steer the
+judge. This is the SAME posture ``app.semantic_support`` has had since issue
+#47, not a new gap this module introduces. Issue #192 tracks structural
+mitigation across BOTH judge modules and is a BLOCKING pre-condition for
+ever flipping ``copilot_source_ref_relevance_enabled`` (or
+``copilot_semantic_support_enabled``'s continued default-on status) -- do
+not read this module's zero-false-reject measurement (issue #170) as
+clearing that separate risk.
+
 **Scope, per #130's ADR: SourceRef-only claims exclusively.** A claim is
 eligible for this gate ONLY when ALL of its citations are ``SourceRef``s --
 zero ``DocumentCitation``s (exactly ``evals/runner/
