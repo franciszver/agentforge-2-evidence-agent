@@ -62,6 +62,62 @@ def _load_pinned_spec() -> dict[str, Any]:
     return json.loads(_SPEC_PATH.read_text(encoding="utf-8"))
 
 
+# #184: keys that are pure presentation/documentation metadata -- FastAPI and
+# pydantic derive these from docstrings/field names and their exact rendering
+# (wording, presence, ordering) has changed across versions without any
+# change to the actual contract. Stripping them never removes a `required`
+# entry, a `type`, an `enum` value, a `$ref`, or a path/parameter -- only
+# cosmetic text.
+_PRESENTATION_METADATA_KEYS = frozenset({"description", "title", "summary", "examples", "example"})
+
+# #184 diagnosis: reproduced the standing local failure with an older
+# fastapi/pydantic pin (fastapi==0.115.0, pydantic==2.9.0 vs. this repo's
+# fastapi==0.139.2, pydantic==2.13.4) and diffed the two schemas key-by-key.
+# The ENTIRE delta -- across all 8 paths and all 8 component schemas -- was
+# two optional properties on this one component: `ValidationError.properties`
+# gained `input`/`ctx` under newer pydantic. `ValidationError` is FastAPI's
+# own built-in request-validation-error model (confirmed via
+# `git grep ValidationError services/copilot-agent/app` -- no app module
+# defines or imports it), and its `required` list (`loc`, `msg`, `type`) is
+# identical across both versions tested, so this is a framework rendering
+# detail, not a change to anything this app authored. Scoped to this one
+# named schema (not a blanket "ignore extra optional properties" rule) so a
+# real optional-property change to one of OUR models (ChatRequest,
+# FeedbackRequest, etc.) still fails the drift guard.
+_FRAMEWORK_VERSION_DEPENDENT_SCHEMA_PROPERTIES = {
+    "ValidationError": frozenset({"input", "ctx"}),
+}
+
+
+def _strip_presentation_metadata(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {
+            key: _strip_presentation_metadata(value)
+            for key, value in node.items()
+            if key not in _PRESENTATION_METADATA_KEYS
+        }
+    if isinstance(node, list):
+        return [_strip_presentation_metadata(item) for item in node]
+    return node
+
+
+def _normalize_spec_for_comparison(spec: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an OpenAPI schema (dict) down to its structurally meaningful
+    contents for drift comparison (#184). See
+    ``test_pinned_spec_matches_live_schema``'s docstring for exactly what is
+    and is not compared after this normalization."""
+    normalized = _strip_presentation_metadata(spec)
+
+    schemas = normalized.get("components", {}).get("schemas", {})
+    for schema_name, volatile_keys in _FRAMEWORK_VERSION_DEPENDENT_SCHEMA_PROPERTIES.items():
+        properties = schemas.get(schema_name, {}).get("properties")
+        if isinstance(properties, dict):
+            for key in volatile_keys:
+                properties.pop(key, None)
+
+    return normalized
+
+
 def _ok_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200)
 
