@@ -33,15 +33,41 @@ Only non-PHI data is ever stored:
     reason (``app.review_page``'s ``/review`` redacts it; the P4.5 dashboard
     never rendered it; ``/review/promote`` never re-emits it into the public
     ``evals/`` repo, #157). It stays on disk here only.
-  * an ``owner_token_hash`` (#180, HMAC-SHA256 of the request's bearer
-    token, via :func:`hash_owner_token`) on the ``REQUEST`` span -- never
-    the raw token. Same keyed-hash discipline as ``args_hash`` (a bearer
-    token is a secret-shaped value, not PHI, but read access to this file
-    must not be enough to correlate/replay it), and the same
-    ``Settings.trace_args_hash_secret`` key. Lets ``caller_owns_trace``
-    (the ``POST /feedback`` ownership check, #180) verify a later caller
-    presented the SAME token without ever storing or comparing the raw
-    value.
+  * ownership, recorded on the ``REQUEST`` and ``FEEDBACK`` spans in ONE of
+    two mutually-exclusive regimes, explicitly tagged by ``owner_kind`` (see
+    :class:`OwnerKind`) so a reader never has to guess which one wrote a
+    given row:
+
+      - ``owner_kind=token_hash`` (#180, the ``copilot_per_user_token_enabled``
+        flag-OFF/dev-bridge regime): ``owner_token_hash`` is an HMAC-SHA256 of
+        the request's bearer token, via :func:`hash_owner_token` -- never the
+        raw token. Same keyed-hash discipline as ``args_hash`` (a bearer
+        token is a secret-shaped value, not PHI, but read access to this file
+        must not be enough to correlate/replay it), and the same
+        ``Settings.trace_args_hash_secret`` key. Chosen for this regime
+        because the dev bridge's ``username`` claim is forgeable (see
+        :func:`hash_owner_token`'s docstring) and no other checkable
+        principal is available.
+      - ``owner_kind=subject`` (#185, the ``copilot_per_user_token_enabled``
+        flag-ON regime): ``owner_subject`` is OpenEMR's signature-verified
+        introspection ``sub`` claim (``app.openemr_auth.IntrospectionResult.sub``)
+        stored VERBATIM, not hashed. Deliberately unkeyed, unlike every other
+        column in this list: ``sub`` is a stable per-user identifier, not a
+        secret an attacker could replay, so the keyed-hash discipline above
+        buys nothing here and would actively break the very case #185 exists
+        to fix -- a hash keyed by ``Settings.trace_args_hash_secret`` (which
+        has no committed default and is regenerated randomly on any restart
+        where it is left unset, see :func:`hash_owner_token`'s docstring)
+        would make subject-based ownership rot on every such restart exactly
+        like the token-hash regime does, defeating the whole point of
+        binding to a durable per-user identity instead of a per-process
+        secret.
+
+    ``caller_owns_trace`` (the ``POST /feedback`` ownership check) dispatches
+    on each row's own ``owner_kind`` -- see that method's docstring for the
+    full mixed-regime matrix (a row written under one regime is NEVER
+    claimable via the other, and an unrecorded/ambiguous owner is always
+    rejected, never treated as open).
 
 Raw tool args, raw tool results, the question/answer text, and any patient
 record value (drug names, allergy substances, lab values, free text) are
@@ -112,7 +138,9 @@ CREATE TABLE IF NOT EXISTS spans (
     parent_span_id TEXT,
     worker_name TEXT,
     sub_task_type TEXT,
-    owner_token_hash TEXT
+    owner_token_hash TEXT,
+    owner_kind TEXT,
+    owner_subject TEXT
 )
 """
 _INDEX = "CREATE INDEX IF NOT EXISTS idx_spans_correlation_id ON spans (correlation_id)"
@@ -141,6 +169,8 @@ _COLUMNS = (
     "worker_name",
     "sub_task_type",
     "owner_token_hash",
+    "owner_kind",
+    "owner_subject",
 )
 
 
@@ -171,6 +201,27 @@ class FeedbackThumb(StrEnum):
     DOWN = "down"
 
 
+class OwnerKind(StrEnum):
+    """Which ownership regime wrote a ``REQUEST``/``FEEDBACK`` span's owner
+    columns (#185). Explicit and persisted -- NOT inferred from which of
+    ``owner_token_hash``/``owner_subject`` happens to be non-``NULL`` -- so a
+    reader can never conflate "hash of a bearer token" (``TOKEN_HASH``, #180)
+    with "a signature-verified OpenEMR subject id" (``SUBJECT``, #185): the
+    two are different kinds of value with different security properties
+    (a token hash is keyed/secret-shaped and reissue-sensitive; a subject id
+    is a stable, non-secret identifier), and overloading one column to carry
+    either would make a mixed-regime DB ambiguous by construction. ``None``
+    on the ``Span`` (no ``owner_kind`` column value) means either no owner
+    was recorded at all, or the row predates #185 (see
+    ``TraceStore.caller_owns_trace``'s docstring for how that legacy case is
+    handled -- inferred as ``TOKEN_HASH`` only when ``owner_token_hash`` is
+    itself present, never treated as ``SUBJECT``).
+    """
+
+    TOKEN_HASH = "token_hash"
+    SUBJECT = "subject"
+
+
 @dataclass(frozen=True)
 class Span:
     """One persisted span row. Columns not meaningful for ``span_type`` are ``None``."""
@@ -198,6 +249,8 @@ class Span:
     worker_name: str | None = None
     sub_task_type: str | None = None
     owner_token_hash: str | None = None
+    owner_kind: str | None = None
+    owner_subject: str | None = None
 
 
 def _keyed_digest(secret: str, data: str) -> str:
@@ -230,25 +283,29 @@ def hash_owner_token(token: str, secret: str) -> str:
 
     Issue #180: the ``/feedback`` ownership check binds a feedback write to
     the SAME bearer token that originated the trace (``record_request_span``'s
-    ``owner_token`` argument), not to a claimed identity. Our
-    ``IntrospectionResult`` (``app.openemr_auth.introspect_token``) does not
-    parse the introspection response's ``sub`` claim today -- only
-    ``active``/``exp``/the SMART launch ``patient`` are kept, the rest of the
-    payload is dropped -- so it is not itself a checkable per-user principal
-    as things stand. That is a gap in what THIS service parses, not a
-    protocol limitation: OpenEMR's introspection response does carry a
-    signature-verified ``sub`` (see
-    ``src/Common/Auth/OpenIDConnect/JWT/JsonWebKeyParser.php`` and
-    ``TokenIntrospectionRestController``), and binding ownership to it once
-    ``copilot_per_user_token_enabled`` is on is real, available follow-up
-    work -- tracked separately, not solved here. The raw token itself is
-    the one caller-distinguishing value available TODAY at both ``/chat``
-    and ``/feedback``, and the front-end panel already caches ONE token per
-    browser session and reuses it for both (see
+    ``owner_token`` argument), not to a claimed identity. This is the ONLY
+    checkable per-user-session principal available in the
+    ``copilot_per_user_token_enabled`` flag-OFF / dev-bridge regime: the dev
+    token's ``username`` claim is HMAC'd with a per-session CSRF-derived
+    signing key this agent never verifies (``DevAgentToken.php``,
+    ``TokenBrokerController.php``), so it is forgeable and unusable for
+    authorization (see ``app.feedback``'s module docstring). The front-end
+    panel caches ONE token per browser session and reuses it for both
+    ``/chat`` and ``/feedback`` (see
     ``interface/.../public/assets/js/copilot-chat.js``'s token-broker
-    comment) -- so "same token" is exactly "same session that started this
-    trace", which is the ownership question ``/feedback`` needs answered
-    today.
+    comment), so "same token" is exactly "same session that started this
+    trace" -- the ownership question this regime needs answered.
+
+    Issue #185 replaces this with subject-based ownership
+    (``app.openemr_auth.IntrospectionResult.sub``, see that field's
+    docstring for the signature-verification chain and OpenEMR source lines)
+    once ``copilot_per_user_token_enabled`` is ON -- OpenEMR's introspection
+    response DOES carry ``sub``, and it survives token reissue and service
+    restart in ways a token hash structurally cannot (see below). This
+    function and the token-hash regime remain the correct, and only, choice
+    for the flag-off/dev-bridge case, where no verified subject is ever
+    obtainable -- see ``TraceStore.record_request_span``'s docstring for how
+    the two regimes are selected and kept apart on disk (``OwnerKind``).
 
     Keyed (not a bare hash) for the same reason as :func:`hash_args`: a
     bearer token is a secret-shaped value an attacker with read access to
@@ -439,6 +496,41 @@ class TraceStore:
         finally:
             connection.close()
 
+    def _owner_columns(
+        self, *, owner_token: str | None, owner_subject: str | None
+    ) -> dict[str, str | None]:
+        """Resolve the ``owner_kind``/``owner_token_hash``/``owner_subject``
+        columns for a ``REQUEST`` or ``FEEDBACK`` write (#185).
+
+        Exactly ONE regime is ever persisted per row, chosen here so
+        ``record_request_span`` and ``record_feedback_span`` can't drift
+        apart on the selection logic:
+
+        * ``owner_subject`` truthy -> ``OwnerKind.SUBJECT``: stored verbatim
+          (see module docstring for why this one is NOT hashed);
+          ``owner_token`` is ignored even if also supplied -- a row is never
+          allowed to carry both a subject and a token hash, which is exactly
+          the "overloaded column" ambiguity #185 exists to rule out.
+        * else ``owner_token`` truthy -> ``OwnerKind.TOKEN_HASH`` (#180):
+          hashed via :func:`hash_owner_token`, never the raw token.
+        * else (neither supplied) -> no owner recorded at all (``owner_kind``
+          ``None``); :meth:`caller_owns_trace` treats that as UNOWNABLE, not
+          open to anyone.
+        """
+        if owner_subject:
+            return {
+                "owner_kind": OwnerKind.SUBJECT.value,
+                "owner_subject": owner_subject,
+                "owner_token_hash": None,
+            }
+        if owner_token:
+            return {
+                "owner_kind": OwnerKind.TOKEN_HASH.value,
+                "owner_subject": None,
+                "owner_token_hash": hash_owner_token(owner_token, self._hash_secret),
+            }
+        return {"owner_kind": None, "owner_subject": None, "owner_token_hash": None}
+
     def record_request_span(
         self,
         *,
@@ -447,17 +539,26 @@ class TraceStore:
         end_ts: float,
         ok: bool,
         owner_token: str | None = None,
+        owner_subject: str | None = None,
     ) -> int:
         """Record the whole-invocation span (one per ``POST /chat`` call).
 
-        ``owner_token`` (#180): the caller's raw bearer token for THIS
-        invocation, hashed via :func:`hash_owner_token` and stored as
-        ``owner_token_hash`` -- never the raw token. This is what
-        :meth:`caller_owns_trace` later checks a ``/feedback`` caller's own
-        token against. ``None`` (the default) records no owner -- every
-        production call site (``app.chat._stream_chat``) always supplies
-        the request's token; ``None`` is only reachable from a caller that
-        predates #180 (a test, or -- deliberately -- nothing else), and
+        Ownership (#180/#185) is recorded in exactly ONE of two regimes --
+        see :meth:`_owner_columns` for the selection and ``OwnerKind`` /
+        the module docstring for why they are never mixed on one row:
+
+        * ``owner_subject`` (#185): OpenEMR's signature-verified
+          introspection ``sub`` claim, when ``copilot_per_user_token_enabled``
+          is on -- stored verbatim as ``owner_subject``.
+        * ``owner_token`` (#180): the caller's raw bearer token, hashed via
+          :func:`hash_owner_token` and stored as ``owner_token_hash`` --
+          never the raw token. Used for the flag-off/dev-bridge regime,
+          where no verified subject is available.
+
+        This is what :meth:`caller_owns_trace` later checks a ``/feedback``
+        caller's own token/subject against. Neither argument supplied
+        records no owner at all -- reachable from a caller that predates
+        #180 (a test, or -- deliberately -- nothing else in production), and
         ``caller_owns_trace`` treats a trace with no recorded owner as
         UNOWNABLE (rejects every claimant), not as open to anyone -- see
         that method's docstring.
@@ -468,30 +569,56 @@ class TraceStore:
             start_ts=start_ts,
             end_ts=end_ts,
             status=_status(ok),
-            owner_token_hash=hash_owner_token(owner_token, self._hash_secret) if owner_token else None,
+            **self._owner_columns(owner_token=owner_token, owner_subject=owner_subject),
         )
 
-    def caller_owns_trace(self, correlation_id: str, token: str) -> bool:
-        """#180: does ``token`` match the bearer token that originated
+    def caller_owns_trace(self, correlation_id: str, token: str, *, subject: str | None = None) -> bool:
+        """#180/#185: does this caller match the principal that originated
         ``correlation_id``'s trace?
 
-        Fail-closed in every direction that isn't a proven match:
+        ``token`` is always the caller's raw bearer token (the #180 proof of
+        session-possession). ``subject`` is the caller's OpenEMR introspection
+        ``sub`` (``app.openemr_auth.IntrospectionResult.sub``), passed by
+        ``app.feedback.feedback_endpoint`` when ``copilot_per_user_token_enabled``
+        is on and ``None`` otherwise (see ``app.chat.get_subject_resolver``).
 
-        * No ``REQUEST`` span at all for ``correlation_id`` (unknown,
-          purged, or the request span write itself failed -- best-effort,
-          see ``record_span_best_effort``) -> ``False``. An unrecorded
-          originator is never treated as fair game, only as unclaimable.
-        * A ``REQUEST`` span exists but carries no ``owner_token_hash``
-          (predates #180, or was recorded via a caller that passed no
-          ``owner_token``) -> ``False``, for the same reason: silently
-          falling back to "anyone may attach feedback" on legacy or
-          malformed data would resurrect exactly the gap #180 fixes.
-        * A recorded hash that does not match ``token`` (hashed the same
-          way) -> ``False``: a different bearer token, i.e. a different
-          browser session, presented it.
+        Dispatches on the ORIGINATING ``REQUEST`` span's own ``owner_kind`` --
+        never on the CURRENT caller's flag state or which argument they
+        supplied -- so a row written under one regime can only ever be
+        claimed under that SAME regime, regardless of what the flag does
+        later. This is the full mixed-regime matrix (#185):
 
-        Only an exact, constant-time (``hmac.compare_digest``) match
-        returns ``True``.
+        * ``owner_kind=subject`` row + caller has a ``subject`` (flag ON):
+          compared against ``owner_subject``. Two different tokens/sessions
+          for the SAME subject both match; a different subject never does.
+        * ``owner_kind=subject`` row + caller has NO ``subject`` (flag turned
+          back OFF): rejected outright, even for the original clinician --
+          there is nothing here for the flag-off regime to safely compare
+          (it has no verified subject at all), and falling back to a token
+          comparison would mean this row is claimable under either regime,
+          exactly the ambiguity #185 must not introduce. Fails closed.
+        * ``owner_kind=token_hash`` row (#180, or #185 with the flag off) --
+          ALWAYS compared via ``token``, regardless of the current flag or
+          whether the caller also supplied a ``subject``. A flag flipped ON
+          after this row was written does not make it subject-claimable (no
+          ``owner_subject`` was ever recorded for it, so no new claimant
+          becomes possible) -- it remains exactly as claimable as it always
+          was: by the original token holder, and no one else.
+        * ``owner_kind`` is ``None`` on the stored row (legacy): if
+          ``owner_token_hash`` is present, the row PREDATES #185's
+          ``owner_kind`` column (written by #180-era code, then migrated in
+          -- see ``_migrate_missing_columns``) and is treated exactly as
+          ``token_hash`` above, so upgrading to #185 never silently
+          re-litigates ownership of rows #180 already decided. If
+          ``owner_token_hash`` is ALSO absent, there is no recorded owner at
+          all (no ``REQUEST`` span, a write that failed, or a caller that
+          passed neither) -> rejected. An unrecorded/ambiguous originator is
+          never treated as fair game, only as unclaimable.
+
+        Only an exact, constant-time (``hmac.compare_digest``) match returns
+        ``True`` in either regime -- ``subject`` is not secret-shaped, but
+        comparing it the same way as the token hash costs nothing and keeps
+        one comparison discipline instead of two.
 
         First REQUEST span wins, by design -- security-load-bearing, not
         arbitrary. ``correlation_id`` is attacker-influenceable (an inbound
@@ -499,23 +626,30 @@ class TraceStore:
         ``app.correlation.CorrelationIdMiddleware``), so a caller with
         network access to this agent could ``POST /chat`` with a foreign,
         already-in-use correlation id and get a SECOND ``REQUEST`` span
-        appended for it, carrying their own ``owner_token_hash``. Taking
-        the LAST span here (mirroring ``app.review_queue``'s ``[-1]``
-        "most recent wins" convention for other span lookups) would let
-        that second span silently replace the original owner -- an
-        ownership-TAKEOVER primitive, not just a failed forgery. Taking the
-        FIRST span instead keeps the original ``/chat`` caller authoritative
-        forever, regardless of what a later request appends under the same
-        id. Do not "simplify" this to match ``review_queue``'s ``[-1]``
-        convention without re-reading this paragraph first.
+        appended for it, carrying their own owner columns. Taking the LAST
+        span here (mirroring ``app.review_queue``'s ``[-1]`` "most recent
+        wins" convention for other span lookups) would let that second span
+        silently replace the original owner -- an ownership-TAKEOVER
+        primitive, not just a failed forgery. Taking the FIRST span instead
+        keeps the original ``/chat`` caller authoritative forever, regardless
+        of what a later request appends under the same id. Do not
+        "simplify" this to match ``review_queue``'s ``[-1]`` convention
+        without re-reading this paragraph first.
         """
         request_spans = [span for span in self.get_spans(correlation_id) if span.span_type == SpanType.REQUEST]
         if not request_spans:
             return False
-        recorded_hash = request_spans[0].owner_token_hash
-        if not recorded_hash:
-            return False
-        return hmac.compare_digest(recorded_hash, hash_owner_token(token, self._hash_secret))
+        origin = request_spans[0]
+        effective_kind = origin.owner_kind or (OwnerKind.TOKEN_HASH.value if origin.owner_token_hash else None)
+        if effective_kind == OwnerKind.SUBJECT.value:
+            if not subject or not origin.owner_subject:
+                return False
+            return hmac.compare_digest(origin.owner_subject, subject)
+        if effective_kind == OwnerKind.TOKEN_HASH.value:
+            if not origin.owner_token_hash:
+                return False
+            return hmac.compare_digest(origin.owner_token_hash, hash_owner_token(token, self._hash_secret))
+        return False
 
     def record_tool_span(
         self,
@@ -648,25 +782,27 @@ class TraceStore:
         feedback_thumb: FeedbackThumb,
         feedback_comment: str | None,
         owner_token: str | None = None,
+        owner_subject: str | None = None,
     ) -> int:
         """Record clinician feedback on a response (P4.3's ``/feedback``
-        endpoint seam -- not wired here). ``feedback_comment`` is
-        user-authored text ABOUT THE RESPONSE, not a patient record value
-        pulled from a tool, but it may incidentally contain PHI (a clinician
-        typed a patient detail inline) -- see the module docstring, #176. It
-        is still stored verbatim: persisting it here is permitted, only
-        rendering it is not. Always ``ok`` -- writing a feedback span IS the
-        success event; there is no underlying operation for it to have
-        failed.
+        endpoint seam). ``feedback_comment`` is user-authored text ABOUT THE
+        RESPONSE, not a patient record value pulled from a tool, but it may
+        incidentally contain PHI (a clinician typed a patient detail inline)
+        -- see the module docstring, #176. It is still stored verbatim:
+        persisting it here is permitted, only rendering it is not. Always
+        ``ok`` -- writing a feedback span IS the success event; there is no
+        underlying operation for it to have failed.
 
-        ``owner_token`` (#180): the SAME token ``app.feedback.feedback_endpoint``
-        already checked via ``caller_owns_trace`` before calling this --
-        stored (hashed, never raw) on this FEEDBACK span too, purely for
-        attribution, not enforcement (ownership was already decided by the
-        time this is called). Without it, a post-#180 feedback row is
-        indistinguishable from a pre-#180 one in a DB upgraded in place, so
-        a triager reading a disputed comment has no way to tell which
-        regime produced it."""
+        ``owner_token``/``owner_subject`` (#180/#185): the SAME values
+        ``app.feedback.feedback_endpoint`` already checked via
+        ``caller_owns_trace`` before calling this -- resolved to exactly one
+        regime by :meth:`_owner_columns` (same logic as
+        ``record_request_span``) and stored on this FEEDBACK span too,
+        purely for attribution, not enforcement (ownership was already
+        decided by the time this is called). Without it, a feedback row
+        would be indistinguishable across regimes/eras in a DB upgraded in
+        place, so a triager reading a disputed comment has no way to tell
+        which regime produced it."""
         return self._insert(
             span_type=SpanType.FEEDBACK,
             correlation_id=correlation_id,
@@ -675,7 +811,7 @@ class TraceStore:
             status=SpanStatus.OK,
             feedback_thumb=feedback_thumb.value,
             feedback_comment=feedback_comment,
-            owner_token_hash=hash_owner_token(owner_token, self._hash_secret) if owner_token else None,
+            **self._owner_columns(owner_token=owner_token, owner_subject=owner_subject),
         )
 
     def get_spans(self, correlation_id: str) -> list[Span]:

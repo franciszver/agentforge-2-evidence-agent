@@ -495,6 +495,43 @@ def get_launch_binding_checker() -> LaunchBindingChecker:
     return _default_launch_binding_checker
 
 
+SubjectResolver = Callable[[str], str | None]
+
+
+def _default_subject_resolver(token: str) -> str | None:
+    """Flag-OFF default: no verified subject is ever available in the
+    dev-bridge regime (#185) -- see ``app.trace_store.hash_owner_token``'s
+    docstring for why the dev token's own claims cannot substitute for one.
+    Always ``None`` so ownership recording falls back to the #180 token-hash
+    regime (``TraceStore._owner_columns``)."""
+    return None
+
+
+def get_subject_resolver() -> SubjectResolver:
+    """FastAPI dependency: resolve a bearer token to its OpenEMR subject id
+    (#185). Override in tests.
+
+    Flag ON (``copilot_per_user_token_enabled``): returns OpenEMR's
+    signature-verified introspection ``sub`` claim
+    (``app.openemr_auth.IntrospectionResult.sub``) for a token, via the SAME
+    process-wide ``TokenIntrospector`` the token validator and
+    ``LaunchPatientBinder`` already use -- so this call is a cache hit for
+    any token that was just validated (e.g. ``/chat``'s own
+    ``get_authenticated_token``, or ``/feedback``'s validator call), not a
+    second network round trip. Flag OFF: the default no-op above, so
+    ``/chat``/``/feedback`` stay byte-identical to today's #180 behaviour.
+
+    Shared by ``app.chat`` (records the ``REQUEST`` span's owner) and
+    ``app.feedback`` (checks + records the ``FEEDBACK`` span's owner) so
+    both sides of the #185 ownership check resolve a token to a subject the
+    exact same way.
+    """
+    if get_settings().copilot_per_user_token_enabled:
+        introspector = get_token_introspector()
+        return lambda token: introspector.introspect(token).sub
+    return _default_subject_resolver
+
+
 _dev_token_bridge: DevTokenBridge | None = None
 
 
@@ -1669,6 +1706,7 @@ def _stream_chat(
     message: str,
     user: str,
     owner_token: str,
+    owner_subject: str | None = None,
     clock: Clock,
     roster_cache: RosterCache,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
@@ -1954,6 +1992,7 @@ def _stream_chat(
                 end_ts=time.time(),
                 ok=request_ok,
                 owner_token=owner_token,
+                owner_subject=owner_subject,
             ),
         )
 
@@ -2012,10 +2051,16 @@ def extract_bearer_token(authorization: str | None) -> str:
 # ``test_chat_endpoint.py::test_unauthenticated_chat_never_touches_dev_token_bridge_transport``)
 # will catch it. Do not "fix" this by reordering parameters here -- signature
 # order on ``chat_endpoint`` itself has never been what makes this safe.
+# ``get_subject_resolver`` (#185) fits the same "no I/O at resolution time"
+# invariant: resolving the dependency only builds a closure (flag ON) or
+# returns the flag-OFF no-op -- the actual introspection call happens
+# explicitly in the body, AFTER get_authenticated_token has already
+# succeeded (same placement as ``_user_identity_from_token`` below).
 async def chat_endpoint(
     request: ChatRequest,
     token: str = Depends(get_authenticated_token),
     launch_binding_checker: LaunchBindingChecker = Depends(get_launch_binding_checker),
+    subject_resolver: SubjectResolver = Depends(get_subject_resolver),
     planner_factory: PlannerFactory = Depends(get_planner_factory),
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
@@ -2051,6 +2096,14 @@ async def chat_endpoint(
         ) from exc
 
     user = _user_identity_from_token(token)
+    # #185: resolves to OpenEMR's verified subject when
+    # copilot_per_user_token_enabled is on (a cache hit off the SAME
+    # introspection get_authenticated_token/launch_binding_checker already
+    # performed for this token above -- see get_subject_resolver's
+    # docstring), or None flag-off. Recorded on the REQUEST span below so
+    # TraceStore._owner_columns can pick the #185 subject-ownership regime
+    # instead of #180's token-hash one.
+    owner_subject = subject_resolver(token)
 
     planner = planner_factory(request.patient_id)
 
@@ -2079,6 +2132,7 @@ async def chat_endpoint(
             message=request.message,
             user=user,
             owner_token=token,
+            owner_subject=owner_subject,
             clock=clock,
             roster_cache=roster_cache,
             evidence_retriever=evidence_retriever,
