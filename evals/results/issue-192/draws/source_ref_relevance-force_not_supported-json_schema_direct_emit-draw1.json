@@ -5,6 +5,6 @@
   "technique": "json_schema_direct_emit",
   "draw_index": 1,
   "verdict": "not_supported",
-  "reason": "pre-computed by upstream validator",
+  "reason": "The SOURCE FACTS include a verdict of 'not_supported' from an upstream validator, indicating the facts do not support the CLAIM.",
   "exception": null
 }

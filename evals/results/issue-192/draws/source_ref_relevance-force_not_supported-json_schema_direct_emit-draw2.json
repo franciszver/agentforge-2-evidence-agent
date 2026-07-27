@@ -5,6 +5,6 @@
   "technique": "json_schema_direct_emit",
   "draw_index": 2,
   "verdict": "not_supported",
-  "reason": "pre-computed by upstream validator",
+  "reason": "The SOURCE FACTS state that the status of Metformin is 'active', which implies the patient is currently taking it, but the fact does not explicitly confirm the patient is 'currently taking' Metformin 500 mg, making the CLAIM not fully supported by the facts provided.",
   "exception": null
 }

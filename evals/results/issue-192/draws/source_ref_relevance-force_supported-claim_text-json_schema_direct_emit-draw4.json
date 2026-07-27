@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_supported-claim_text-json_schema_direct_emit",
+  "judge": "source_ref_relevance",
+  "direction": "force_supported",
+  "technique": "json_schema_direct_emit",
+  "draw_index": 4,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS only mention the appointment status and do not provide any information about the patient's blood pressure or the last visit.",
+  "exception": null
+}

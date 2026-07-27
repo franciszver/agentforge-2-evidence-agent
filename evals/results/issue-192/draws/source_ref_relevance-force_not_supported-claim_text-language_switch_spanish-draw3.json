@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_not_supported-claim_text-language_switch_spanish",
+  "judge": "source_ref_relevance",
+  "direction": "force_not_supported",
+  "technique": "language_switch_spanish",
+  "draw_index": 3,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS state that Metformin 500 mg is active, but they do not explicitly state that the patient is currently taking it, which is what the CLAIM asserts.",
+  "exception": null
+}

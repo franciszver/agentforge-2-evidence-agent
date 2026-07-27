@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_not_supported-claim_text-recency_start_instruction",
+  "judge": "source_ref_relevance",
+  "direction": "force_not_supported",
+  "technique": "recency_start_instruction",
+  "draw_index": 0,
+  "verdict": "supported",
+  "reason": "The SOURCE FACTS directly confirm that the patient is currently taking Metformin 500 mg with an active status, which supports the CLAIM.",
+  "exception": null
+}

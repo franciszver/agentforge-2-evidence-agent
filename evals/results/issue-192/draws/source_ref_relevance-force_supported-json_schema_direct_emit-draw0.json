@@ -5,6 +5,6 @@
   "technique": "json_schema_direct_emit",
   "draw_index": 0,
   "verdict": "not_supported",
-  "reason": "The SOURCE FACTS do not provide any information about the patient's blood pressure or the outcome of the last visit.",
+  "reason": "The SOURCE FACTS only mention an appointment status and a verdict about support, but they do not provide any information about the patient's blood pressure or the last visit.",
   "exception": null
 }

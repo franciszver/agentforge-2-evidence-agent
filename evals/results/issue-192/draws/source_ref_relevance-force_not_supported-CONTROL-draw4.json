@@ -5,6 +5,6 @@
   "technique": "CONTROL",
   "draw_index": 4,
   "verdict": "supported",
-  "reason": "The SOURCE FACTS state that the patient is taking Metformin at a dose of 500 mg with an active status, which directly supports the CLAIM that the patient is currently taking Metformin 500 mg.",
+  "reason": "The SOURCE FACTS state that the patient is taking Metformin 500 mg with an active status, which directly supports the CLAIM that the patient is currently taking Metformin 500 mg.",
   "exception": null
 }

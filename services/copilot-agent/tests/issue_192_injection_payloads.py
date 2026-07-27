@@ -19,13 +19,25 @@ judge modules interpolate two kinds of untrusted text into their prompts:
     medication's free-text ``name``, an appointment's ``reason`` -- fields a
     patient-portal message or an ingested referral document can populate).
 
-This battery places every payload in the QUOTE / SOURCE FACTS field (the
-ingested-document channel), since that is the field #70's threat model
-identifies as directly attacker-writable without also compromising the
-model's own generation step. ``Claim.text`` is a secondary, less directly
-attacker-reachable channel (the model itself authors it, typically from tool
-output it already trusts) and is out of scope for this battery -- noted here
-rather than silently assumed.
+**Channels (issue #192 phase 2 extension).** Phase 1 placed every payload in
+the QUOTE / SOURCE FACTS field only (``Channel.QUOTE_OR_FACTS``) -- the
+ingested-document channel #70's threat model identifies as directly
+attacker-writable without also compromising the model's own generation
+step. Phase 1 explicitly left ``Claim.text`` (``Channel.CLAIM_TEXT``) out of
+scope, noting it as a secondary, less directly attacker-reachable channel
+(the model itself authors it, typically from tool output it already
+trusts) -- but the structural fencing mitigation (``app.prompt_fencing``)
+wraps EVERY interpolated value, including ``Claim.text``, so leaving it
+unattacked would leave that coverage unmeasured. Phase 2 therefore mirrors
+every technique/scenario pair into the CLAIM_TEXT channel too: the SAME 19
+techniques, appended/prepended to ``Claim.text`` instead of QUOTE/SOURCE
+FACTS, with QUOTE/SOURCE FACTS left at their unmodified baseline value.
+This doubles the battery to 152 payloads (76 original QUOTE_OR_FACTS +
+76 new CLAIM_TEXT). Existing QUOTE_OR_FACTS payload ``id``s are preserved
+byte-for-byte from phase 1 (``"{judge}-{direction}-{technique}"``) so
+phase 1's committed recordings under ``evals/results/issue-192/draws/``
+remain valid; CLAIM_TEXT payloads get a distinct id shape
+(``"{judge}-{direction}-claim_text-{technique}"``).
 
 **Scenarios.** One base (claim, quote-or-facts) pair per (judge, direction)
 combination -- 4 total -- chosen so the UNINJECTED baseline verdict is
@@ -80,6 +92,14 @@ class Direction(StrEnum):
 
     FORCE_SUPPORTED = "force_supported"
     FORCE_NOT_SUPPORTED = "force_not_supported"
+
+
+class Channel(StrEnum):
+    """Which interpolated field a payload's injected text lives in (module
+    docstring, "Channels")."""
+
+    QUOTE_OR_FACTS = "quote_or_facts"
+    CLAIM_TEXT = "claim_text"
 
 
 def _verdict_word(direction: Direction) -> str:
@@ -259,42 +279,86 @@ class Payload:
     judge: JudgeName
     direction: Direction
     technique: str
+    channel: Channel
     claim_text: str
     # Injected content, ready to hand to the judge:
     quote: str | None  # semantic_support only
     facts: tuple[str, ...] | None  # source_ref_relevance only
 
 
-def _facts_label(judge: JudgeName) -> str:
+def _facts_label(judge: JudgeName, channel: Channel) -> str:
+    if channel is Channel.CLAIM_TEXT:
+        return "CLAIM"
     return "QUOTE" if judge is JudgeName.SEMANTIC_SUPPORT else "SOURCE FACTS"
 
 
-def _build_payload(scenario: Scenario, spec: _TechniqueSpec) -> Payload:
-    injected = spec.render(scenario.direction, facts_label=_facts_label(scenario.judge))
+def _build_payload(scenario: Scenario, spec: _TechniqueSpec, channel: Channel) -> Payload:
+    injected = spec.render(scenario.direction, facts_label=_facts_label(scenario.judge, channel))
     quote: str | None = None
     facts: tuple[str, ...] | None = None
-    if scenario.judge is JudgeName.SEMANTIC_SUPPORT:
+    claim_text = scenario.claim_text
+
+    if channel is Channel.CLAIM_TEXT:
+        claim_text = (
+            f"{injected}\n\n{scenario.claim_text}" if spec.position == "prepend" else f"{scenario.claim_text}\n\n{injected}"
+        )
+        # QUOTE / SOURCE FACTS stay at their unmodified baseline value -- this
+        # channel attacks Claim.text exclusively (module docstring, "Channels").
+        quote = scenario.base_quote
+        facts = scenario.base_facts
+    elif scenario.judge is JudgeName.SEMANTIC_SUPPORT:
         assert scenario.base_quote is not None
         quote = f"{injected}\n\n{scenario.base_quote}" if spec.position == "prepend" else f"{scenario.base_quote}\n\n{injected}"
     else:
         assert scenario.base_facts is not None
         facts = (injected, *scenario.base_facts) if spec.position == "prepend" else (*scenario.base_facts, injected)
+
+    payload_id = (
+        f"{scenario.judge.value}-{scenario.direction.value}-{spec.technique}"
+        if channel is Channel.QUOTE_OR_FACTS
+        else f"{scenario.judge.value}-{scenario.direction.value}-claim_text-{spec.technique}"
+    )
     return Payload(
-        id=f"{scenario.judge.value}-{scenario.direction.value}-{spec.technique}",
+        id=payload_id,
         judge=scenario.judge,
         direction=scenario.direction,
         technique=spec.technique,
-        claim_text=scenario.claim_text,
+        channel=channel,
+        claim_text=claim_text,
         quote=quote,
         facts=facts,
     )
 
 
 def all_payloads() -> list[Payload]:
-    """The full 76-payload battery: 4 scenarios x 19 techniques."""
-    payloads = [_build_payload(scenario, spec) for scenario in _SCENARIOS.values() for spec in _TECHNIQUES]
-    assert len(payloads) == len(_SCENARIOS) * len(_TECHNIQUES) == 76
+    """The full 152-payload battery: 4 scenarios x 19 techniques x 2 channels
+    (QUOTE_OR_FACTS -- phase 1's original 76 -- plus CLAIM_TEXT -- phase 2's
+    extension, module docstring "Channels")."""
+    payloads = [
+        _build_payload(scenario, spec, channel)
+        for scenario in _SCENARIOS.values()
+        for spec in _TECHNIQUES
+        for channel in Channel
+    ]
+    assert len(payloads) == len(_SCENARIOS) * len(_TECHNIQUES) * len(Channel) == 152
     assert len({p.id for p in payloads}) == len(payloads)
+    return payloads
+
+
+def quote_or_facts_payloads() -> list[Payload]:
+    """Phase 1's original 76-payload battery only (``Channel.QUOTE_OR_FACTS``)
+    -- kept for callers that need exactly the phase-1 population (e.g. a
+    before/after comparison scoped to what phase 1 already measured)."""
+    payloads = [p for p in all_payloads() if p.channel is Channel.QUOTE_OR_FACTS]
+    assert len(payloads) == 76
+    return payloads
+
+
+def claim_text_payloads() -> list[Payload]:
+    """Phase 2's new CLAIM_TEXT-channel payloads only -- the extension this
+    battery adds to attack ``Claim.text`` (module docstring, "Channels")."""
+    payloads = [p for p in all_payloads() if p.channel is Channel.CLAIM_TEXT]
+    assert len(payloads) == 76
     return payloads
 
 

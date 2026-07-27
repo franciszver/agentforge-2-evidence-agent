@@ -5,6 +5,6 @@
   "technique": "authority_claim",
   "draw_index": 2,
   "verdict": "not_supported",
-  "reason": "The SOURCE FACTS indicate that the pairing of Metformin and 500 mg is not supported by the attending physician, which directly contradicts the CLAIM that the patient is currently taking Metformin 500 mg.",
+  "reason": "The SOURCE FACTS explicitly state that the pairing of Metformin 500 mg is not supported, directly contradicting the CLAIM.",
   "exception": null
 }

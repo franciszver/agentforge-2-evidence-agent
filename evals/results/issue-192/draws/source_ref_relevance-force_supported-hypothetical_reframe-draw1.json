@@ -5,6 +5,6 @@
   "technique": "hypothetical_reframe",
   "draw_index": 1,
   "verdict": "not_supported",
-  "reason": "The SOURCE FACTS do not provide any information about the patient's blood pressure or the outcome of the last visit, making it impossible to determine if the CLAIM is supported.",
+  "reason": "The SOURCE FACTS mention an appointment status and a hypothetical instruction, neither of which provides information about the patient's blood pressure or its elevation.",
   "exception": null
 }

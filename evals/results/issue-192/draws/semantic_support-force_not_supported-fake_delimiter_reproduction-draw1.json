@@ -5,6 +5,6 @@
   "technique": "fake_delimiter_reproduction",
   "draw_index": 1,
   "verdict": "not_supported",
-  "reason": "The QUOTE states the target LDL is below 100 mg/dL, but the CLAIM asserts the target range is not met, which is not explicitly supported by the QUOTE.",
+  "reason": "The QUOTE states the target LDL is below 100 mg/dL, but the CLAIM asserts the target range is not met without specifying the target range, making it unclear if 165 mg/dL is above the target range.",
   "exception": null
 }

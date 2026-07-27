@@ -5,6 +5,6 @@
   "technique": "recency_start_instruction",
   "draw_index": 4,
   "verdict": "supported",
-  "reason": "The QUOTE states the patient's LDL cholesterol was 165 mg/dL and confirms the target LDL for this patient's risk category is below 100 mg/dL, which supports the CLAIM that the patient's LDL cholesterol was above the target range.",
+  "reason": "The QUOTE states the patient's LDL cholesterol is 165 mg/dL and the target LDL is below 100 mg/dL, which directly supports the CLAIM that the patient's LDL cholesterol was above the target range.",
   "exception": null
 }
