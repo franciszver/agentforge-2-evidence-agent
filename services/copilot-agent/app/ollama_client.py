@@ -193,28 +193,90 @@ class OllamaError(LLMEngineError):
 # model isn't vision-capable: the escape hatch for a false rejection is
 # ``Settings.copilot_vision_model_capability_check`` (app/config.py), not a
 # growing enumeration of markers.
-_VISION_MODEL_NAME_MARKERS = ("vl", "vision", "llava", "moondream", "pixtral", "bakllava", "minicpm")
+#
+# Security gate finding on #204 (MAJOR): the previous implementation matched
+# these as raw case-insensitive SUBSTRINGS anywhere in the model string. The
+# bare "vl"/"vision" markers collide with ordinary English fragments inside
+# plausible operator-chosen model names -- ``med-supervision-4b``,
+# ``clinical-provision:2b``, ``notes-revision-4b``, ``envision-lite:1b``
+# (all contain "vision"), and ``wavlm-base``/``avle-test``/``uvloop-helper``
+# (all contain "vl") -- so a genuinely TEXT-ONLY model could pass this check
+# on name alone, and every ingested document page would go to a model that
+# cannot read images (the original #204 bug, with false confidence because
+# "the check passed"). ``is_vision_capable_model`` below is boundary-aware
+# instead of substring-containment to close that: this remains a NAME
+# HEURISTIC over an operator-set config value (``settings.ollama_model`` /
+# ``copilot_vision_model``), not a rule ever applied to model-generated
+# text, and near-miss names like the ones above are exactly why boundaries
+# are required rather than optional polish.
+_VISION_WORD_MARKERS = ("vision", "llava", "bakllava", "moondream", "pixtral", "minicpm")
+_TAG_DELIMITERS = "-_./:"
+
+
+def _has_word_marker(normalized: str, marker: str) -> bool:
+    """``marker`` occurs in ``normalized`` at start-of-string or right after
+    a tag delimiter (``-_./:``) -- e.g. ``vision`` matches the ``vision`` in
+    ``llama3.2-vision`` but not the one embedded in ``supervision``,
+    ``provision``, ``revision``, or ``envision``. No end-boundary check is
+    needed: these markers are long enough, and specific enough, that a
+    delimiter/start-anchored prefix match does not collide with real model
+    names (unlike the 2-char ``vl`` marker below, which needs both ends
+    anchored)."""
+    start = 0
+    while True:
+        idx = normalized.find(marker, start)
+        if idx == -1:
+            return False
+        if idx == 0 or normalized[idx - 1] in _TAG_DELIMITERS:
+            return True
+        start = idx + 1
+
+
+def _has_vl_marker(normalized: str) -> bool:
+    """The 2-char ``vl`` marker (``qwen2.5vl:7b``, ``qwen2-vl``) needs BOTH
+    ends anchored -- a digit or delimiter before it, and a delimiter or
+    end-of-string after it -- because as a bare 2-char fragment it collides
+    with ordinary text far more easily than the word markers above:
+    ``wavlm-base``, ``avle-test``, and ``uvloop-helper`` all contain "vl"
+    with real letters on at least one side and must be rejected."""
+    start = 0
+    while True:
+        idx = normalized.find("vl", start)
+        if idx == -1:
+            return False
+        end = idx + 2
+        preceded_ok = idx > 0 and (normalized[idx - 1].isdigit() or normalized[idx - 1] in _TAG_DELIMITERS)
+        followed_ok = end == len(normalized) or normalized[end] in _TAG_DELIMITERS
+        if preceded_ok and followed_ok:
+            return True
+        start = idx + 1
 
 
 def is_vision_capable_model(model: str) -> bool:
     """Best-effort, name-based check for whether ``model`` is vision-capable.
 
-    Matches Ollama tag substrings used by known vision-language models --
-    e.g. ``qwen2.5vl:7b``, ``llama3.2-vision``, ``llava``, ``moondream``,
-    ``pixtral``, ``bakllava``, ``minicpm-v`` -- case-insensitively, against
-    the full model string (name and tag). Returns ``False`` for anything
-    else, including text-only models like ``qwen3:4b``.
+    Matches boundary-anchored Ollama tag fragments used by known vision-
+    language models -- e.g. ``qwen2.5vl:7b``, ``qwen2-vl``,
+    ``llama3.2-vision``, ``llava``, ``moondream``, ``pixtral``,
+    ``bakllava``, ``minicpm-v`` -- case-insensitively, against the full
+    model string (name and tag). Returns ``False`` for anything else,
+    including text-only models like ``qwen3:4b`` AND near-miss names that
+    merely contain one of these fragments as a substring of an ordinary
+    word (``med-supervision-4b``, ``wavlm-base``, etc. -- see the
+    module-level comment above ``_VISION_WORD_MARKERS`` for why boundary
+    anchoring, not plain substring containment, is required here).
 
-    This is NOT a ground-truth capability list (see the module-level
-    comment above ``_VISION_MODEL_NAME_MARKERS``): a genuinely vision-
-    capable model with an unrecognized name (digest-pinned reference,
-    custom re-tag, or a VLM family not yet listed) will get a false
-    ``False`` here. Callers needing an escape hatch for that case should
-    consult ``Settings.copilot_vision_model_capability_check``, not extend
-    this function's matching.
+    This is a NAME HEURISTIC over an operator-set config value, not a
+    ground-truth capability list (see the module-level comment above
+    ``_VISION_WORD_MARKERS``): a genuinely vision-capable model with an
+    unrecognized name (digest-pinned reference, custom re-tag, or a VLM
+    family not yet listed) will get a false ``False`` here. Callers needing
+    an escape hatch for that case should consult
+    ``Settings.copilot_vision_model_capability_check``, not extend this
+    function's matching.
     """
     normalized = model.strip().lower()
-    return any(marker in normalized for marker in _VISION_MODEL_NAME_MARKERS)
+    return _has_vl_marker(normalized) or any(_has_word_marker(normalized, marker) for marker in _VISION_WORD_MARKERS)
 
 
 class OllamaClient:

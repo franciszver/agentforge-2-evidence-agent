@@ -959,6 +959,60 @@ def test_is_vision_capable_model_rejects_a_text_only_model():
     assert is_vision_capable_model("qwen3:4b") is False
 
 
+# --- is_vision_capable_model: boundary-aware matching (security gate, #204) --
+#
+# MAJOR finding: the plain substring matcher accepted TEXT-ONLY models whose
+# names merely contain "vl"/"vision" as a fragment of an ordinary word
+# (``med-supervision-4b``, ``wavlm-base``, ...) -- a false POSITIVE that lets
+# a text-only model silently pass the safety check on the default path, with
+# no override touched. A second, mirror-image gate finding showed the same
+# substring matcher wrongly REJECTING genuine VLM names that don't happen to
+# contain a listed marker as a bare fragment in the right spot. Each case
+# below is independently named so a failure identifies exactly which model
+# name regressed.
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("qwen2.5vl:7b", id="accept-qwen2.5vl-tag"),
+        pytest.param("qwen2-vl:7b", id="accept-qwen2-vl-dash-tag"),
+        pytest.param("llama3.2-vision", id="accept-llama-vision-no-tag"),
+        pytest.param("llama3.2-vision:11b", id="accept-llama-vision-with-tag"),
+        pytest.param("llava:13b", id="accept-llava-tag"),
+        pytest.param("llava-llama3", id="accept-llava-llama3"),
+        pytest.param("bakllava", id="accept-bakllava-bare"),
+        pytest.param("moondream", id="accept-moondream-bare"),
+        pytest.param("pixtral-12b", id="accept-pixtral-12b"),
+        pytest.param("minicpm-v", id="accept-minicpm-v-bare"),
+        pytest.param("minicpm-v:8b", id="accept-minicpm-v-tag"),
+    ],
+)
+def test_is_vision_capable_model_accepts_genuine_vlm_names(model: str):
+    assert is_vision_capable_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("qwen3:4b", id="reject-qwen3-text-only"),
+        pytest.param("med-supervision-4b", id="reject-supervision-near-miss"),
+        pytest.param("clinical-provision:2b", id="reject-provision-near-miss"),
+        pytest.param("notes-revision-4b", id="reject-revision-near-miss"),
+        pytest.param("envision-lite:1b", id="reject-envision-near-miss"),
+        pytest.param("wavlm-base", id="reject-wavlm-vl-near-miss"),
+        pytest.param("avle-test", id="reject-avle-vl-near-miss"),
+        pytest.param("uvloop-helper", id="reject-uvloop-vl-near-miss"),
+        pytest.param("llama3:8b", id="reject-llama3-text-only"),
+        pytest.param("mistral:7b", id="reject-mistral-text-only"),
+        pytest.param("television-model:1b", id="reject-television-vision-near-miss"),
+        pytest.param("devlin-base:1b", id="reject-devlin-vl-near-miss"),
+    ],
+)
+def test_is_vision_capable_model_rejects_text_only_and_near_miss_names(model: str):
+    assert is_vision_capable_model(model) is False
+
+
 # --- live integration: real qwen3:4b -----------------------------------
 #
 # Ollama is internal-only on the dev stack's docker network (no host port
