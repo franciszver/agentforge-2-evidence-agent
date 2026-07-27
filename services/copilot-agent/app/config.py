@@ -140,8 +140,14 @@ class Settings(BaseSettings):
     # with the text rollback path -- so a plain `docker compose ... up`,
     # with no per-call ``OLLAMA_MODEL`` override, wired ingestion to the
     # TEXT-ONLY ``qwen3:4b``. This is a dedicated setting instead, defaulting
-    # to the vision-capable model docs/DEMO_SCRIPT.md previously required an
-    # operator to remember as an env override. app.ollama_client.
+    # to the vision-capable model docs/DEMO_SCRIPT.md's setup step 5 used to
+    # require an operator to remember as a per-call ``OLLAMA_MODEL`` env
+    # override -- both that doc and scripts/ingest_demo_pdf.py /
+    # scripts/seed_demo_documents.py now dispatch through
+    # app.supervisor.IntakeExtractorWorker (the same worker class
+    # app.chat._build_evidence_workers builds for /chat), so the default and
+    # its guard are decided here, not re-derived at each call site.
+    # app.ollama_client.
     # is_vision_capable_model() is also consulted at ingestion-call time
     # (fail-closed) so a future misconfiguration of THIS setting can't
     # silently regress to the same bug.

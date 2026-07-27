@@ -209,7 +209,15 @@ class OllamaError(LLMEngineError):
 # ``copilot_vision_model``), not a rule ever applied to model-generated
 # text, and near-miss names like the ones above are exactly why boundaries
 # are required rather than optional polish.
-_VISION_WORD_MARKERS = ("vision", "llava", "bakllava", "moondream", "pixtral", "minicpm")
+#
+# Gate-3 finding on #204 (MODERATE): the bare ``minicpm`` marker admits the
+# TEXT-ONLY MiniCPM family too -- ``minicpm3:4b``, ``minicpm4:8b``,
+# ``minicpm:2b``, and ``minicpm-2b-sft`` are all real text-only LLMs that
+# would pass a bare ``minicpm`` prefix/delimiter check. Only the ``-v``
+# (vision) and ``-o`` (omni, which includes vision) suffixed variants are
+# actually vision-capable, so the markers below are ``minicpm-v`` and
+# ``minicpm-o`` specifically, never bare ``minicpm``.
+_VISION_WORD_MARKERS = ("vision", "llava", "bakllava", "moondream", "pixtral", "minicpm-v", "minicpm-o")
 _TAG_DELIMITERS = "-_./:"
 
 
@@ -218,10 +226,21 @@ def _has_word_marker(normalized: str, marker: str) -> bool:
     a tag delimiter (``-_./:``) -- e.g. ``vision`` matches the ``vision`` in
     ``llama3.2-vision`` but not the one embedded in ``supervision``,
     ``provision``, ``revision``, or ``envision``. No end-boundary check is
-    needed: these markers are long enough, and specific enough, that a
-    delimiter/start-anchored prefix match does not collide with real model
-    names (unlike the 2-char ``vl`` marker below, which needs both ends
-    anchored)."""
+    performed after the marker.
+
+    KNOWN LIMITATION (Gate-3 finding on #204, refuting an earlier version of
+    this docstring that claimed the opposite): a start/delimiter-anchored
+    prefix match on its own is NOT collision-proof. It still accepts
+    text-only names that happen to start with a marker followed by more
+    letters before the next delimiter -- ``minicpm3:4b``, ``minicpm4:8b``,
+    and ``minicpm-2b-sft`` all matched a bare ``minicpm`` marker before it
+    was narrowed to ``minicpm-v``/``minicpm-o`` (see
+    ``_VISION_WORD_MARKERS``'s comment) -- and unrelated names can coincide
+    the same way, e.g. ``pixtral-tokenizer-only``, ``moondreamer-text``,
+    ``llavage:1b``, ``visionary-7b`` (verified: all match a word marker here
+    and are all text-only-shaped names). Callers must not treat a ``True``
+    result as a ground-truth capability signal for exactly this reason --
+    see ``is_vision_capable_model``'s own docstring."""
     start = 0
     while True:
         idx = normalized.find(marker, start)
@@ -238,13 +257,31 @@ def _has_vl_marker(normalized: str) -> bool:
     end-of-string after it -- because as a bare 2-char fragment it collides
     with ordinary text far more easily than the word markers above:
     ``wavlm-base``, ``avle-test``, and ``uvloop-helper`` all contain "vl"
-    with real letters on at least one side and must be rejected."""
+    with real letters on at least one side and must be rejected.
+
+    Trailing digits between the ``vl`` marker and the next delimiter/
+    end-of-string are skipped before the end-boundary check (Gate-3 MINOR
+    finding on #204): ``deepseek-vl2`` and ``qwen2-vl2`` follow the same
+    ``vlN`` version-suffix convention as ``deepseek-vl`` (which already
+    matched) and must not be refused just because the version number wasn't
+    a delimiter. This does NOT rescue letter-adjacent names -- ``internvl2``,
+    ``cogvlm``, ``smolvlm`` remain unrecognized: they are structurally
+    indistinguishable from ``wavlm`` (a real letter immediately before
+    ``vl``), and loosening the preceding-side check to catch them would
+    reintroduce false accepts on ordinary text. Those names, and multimodal
+    models with no recognized marker at all (``gemma3``, ``paligemma``,
+    ``idefics2``, ``fuyu``, ``glm-4v``, ``llama4``), are NOT recognized by
+    this function and require ``copilot_vision_model_capability_check=false``
+    as the operator escape hatch -- see ``is_vision_capable_model``'s
+    docstring."""
     start = 0
     while True:
         idx = normalized.find("vl", start)
         if idx == -1:
             return False
         end = idx + 2
+        while end < len(normalized) and normalized[end].isdigit():
+            end += 1
         preceded_ok = idx > 0 and (normalized[idx - 1].isdigit() or normalized[idx - 1] in _TAG_DELIMITERS)
         followed_ok = end == len(normalized) or normalized[end] in _TAG_DELIMITERS
         if preceded_ok and followed_ok:
@@ -274,6 +311,21 @@ def is_vision_capable_model(model: str) -> bool:
     an escape hatch for that case should consult
     ``Settings.copilot_vision_model_capability_check``, not extend this
     function's matching.
+
+    KNOWN LIMITATIONS (Gate-3 findings on #204), the flip side of the
+    false-``False`` case above -- a false ``True``:
+      * Letter-adjacent ``vl`` names (``internvl2``, ``cogvlm``,
+        ``smolvlm``) and multimodal models with no recognized marker at all
+        (``gemma3``, ``paligemma``, ``idefics2``, ``fuyu``, ``glm-4v``,
+        ``llama4``) are NOT recognized -- correctly refused, but only
+        because they are indistinguishable from ordinary text-only names
+        like ``wavlm``, not because they were specifically identified.
+      * ``word2vl-embed`` and ``model2vl.gguf`` (a digit immediately before
+        ``vl``, a delimiter immediately after) falsely match ``_has_vl_marker``
+        despite being ordinary non-VLM names -- low real-world plausibility
+        (an operator-chosen model name coinciding with this exact shape),
+        left unfixed rather than tightening the digit-preceded case in a way
+        that would also reject genuine ``qwen2-vl``/``qwen2.5vl`` names.
     """
     normalized = model.strip().lower()
     return _has_vl_marker(normalized) or any(_has_word_marker(normalized, marker) for marker in _VISION_WORD_MARKERS)

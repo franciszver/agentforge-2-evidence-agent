@@ -986,6 +986,13 @@ def test_is_vision_capable_model_rejects_a_text_only_model():
         pytest.param("pixtral-12b", id="accept-pixtral-12b"),
         pytest.param("minicpm-v", id="accept-minicpm-v-bare"),
         pytest.param("minicpm-v:8b", id="accept-minicpm-v-tag"),
+        pytest.param("minicpm-o", id="accept-minicpm-o-bare"),
+        # MINOR-6 (#204 gate-3): trailing digits after the ``vl`` marker,
+        # before the next delimiter/end, must not defeat the boundary check
+        # -- ``deepseek-vl2``/``qwen2-vl2`` follow the same ``vlN``
+        # version-suffix convention as ``deepseek-vl`` (already accepted).
+        pytest.param("deepseek-vl2", id="accept-deepseek-vl2-digit-suffix"),
+        pytest.param("qwen2-vl2", id="accept-qwen2-vl2-digit-suffix"),
     ],
 )
 def test_is_vision_capable_model_accepts_genuine_vlm_names(model: str):
@@ -1007,6 +1014,29 @@ def test_is_vision_capable_model_accepts_genuine_vlm_names(model: str):
         pytest.param("mistral:7b", id="reject-mistral-text-only"),
         pytest.param("television-model:1b", id="reject-television-vision-near-miss"),
         pytest.param("devlin-base:1b", id="reject-devlin-vl-near-miss"),
+        # MODERATE-3 (#204 gate-3): bare "minicpm" wrongly admitted the
+        # text-only MiniCPM family -- these are real, non-vision LLMs and
+        # must be refused now that the marker is minicpm-v/minicpm-o only.
+        pytest.param("minicpm3:4b", id="reject-minicpm3-text-only"),
+        pytest.param("minicpm4:8b", id="reject-minicpm4-text-only"),
+        pytest.param("minicpm:2b", id="reject-minicpm-2b-text-only"),
+        pytest.param("minicpm-2b-sft", id="reject-minicpm-2b-sft-text-only"),
+        # MINOR-6 (#204 gate-3): letter-adjacent VL names are structurally
+        # indistinguishable from wavlm/avle/uvloop above and stay
+        # unrecognized by design -- pinned here so the limit is an explicit
+        # test, not folklore.
+        pytest.param("internvl2", id="not-recognized-internvl2-letter-adjacent"),
+        pytest.param("cogvlm", id="not-recognized-cogvlm-letter-adjacent"),
+        pytest.param("smolvlm", id="not-recognized-smolvlm-letter-adjacent"),
+        # Multimodal models with no marker this function knows about at
+        # all -- not recognized, override required (Settings.
+        # copilot_vision_model_capability_check=false).
+        pytest.param("gemma3:4b", id="not-recognized-gemma3-no-marker"),
+        pytest.param("paligemma:3b", id="not-recognized-paligemma-no-marker"),
+        pytest.param("idefics2:8b", id="not-recognized-idefics2-no-marker"),
+        pytest.param("fuyu:8b", id="not-recognized-fuyu-no-marker"),
+        pytest.param("glm-4v:9b", id="not-recognized-glm-4v-no-marker"),
+        pytest.param("llama4:8b", id="not-recognized-llama4-no-marker"),
     ],
 )
 def test_is_vision_capable_model_rejects_text_only_and_near_miss_names(model: str):

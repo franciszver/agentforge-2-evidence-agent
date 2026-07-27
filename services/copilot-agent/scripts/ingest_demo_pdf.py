@@ -16,9 +16,16 @@ can reach the internal-only ``ollama`` service and write to
 
 Run inside the ``agent`` container (``docs/DEMO_SCRIPT.md``'s setup step 5
 has the full command, including the required GPU stop/start bracketing
-around this call and the ``OLLAMA_MODEL`` override):
+around this call). No ``OLLAMA_MODEL`` override is needed: this script
+builds its own vision-role ``OllamaClient`` on
+``settings.copilot_vision_model`` (default ``qwen2.5vl:7b``, issue #204),
+the same setting/wiring ``app.chat._build_evidence_workers`` uses for
+``/chat``'s intake-extractor worker, so a plain
+``docker exec -w /app development-easy-agent-1 python
+/data/repo_ingest/ingest_demo_pdf.py <patient_id> <pdf_path>`` already gets
+a vision-capable model without any per-call env override:
 
-    docker exec -e OLLAMA_MODEL=qwen2.5vl:7b -w /app development-easy-agent-1 \\
+    docker exec -w /app development-easy-agent-1 \\
         python /data/repo_ingest/ingest_demo_pdf.py <patient_id> <pdf_path>
 
 The ``app.*`` imports below resolve via the ``copilot-agent`` package
@@ -31,6 +38,19 @@ above, not ``/app``) with no ``PYTHONPATH``/``sys.path`` setup of its own.
 **Idempotent.** Checks ``LocalIngestionStore.list_citations_for_patient``
 for an existing ``lab_pdf`` citation belonging to ``patient_id`` and skips
 the (re-)ingest call if one is already present.
+
+**Vision-model fail-closed (issue #204).** Ingestion is dispatched through
+``app.supervisor.IntakeExtractorWorker`` -- the SAME worker class
+``app.chat._build_evidence_workers`` builds for ``/chat`` -- rather than
+calling ``app.ingestion.attach_and_extract`` directly, so the vision-model
+default (``settings.copilot_vision_model``) and its name-based
+vision-capability guard (``app.ollama_client.is_vision_capable_model``,
+``settings.copilot_vision_model_capability_check``) are decided in exactly
+ONE place shared with production, not re-derived here. A misconfigured
+(non-vision) model raises ``VisionModelMisconfiguredError`` before any page
+is sent to the model; this script catches that and exits 1 with a
+diagnostic message rather than silently producing text-model output on
+page images it cannot read.
 """
 
 from __future__ import annotations
@@ -38,8 +58,9 @@ from __future__ import annotations
 import sys
 
 from app.config import get_settings
-from app.ingestion import LocalIngestionStore, attach_and_extract
+from app.ingestion import LocalIngestionStore
 from app.ollama_client import OllamaClient
+from app.supervisor import IngestSubTask, IntakeExtractorWorker, VisionModelMisconfiguredError
 
 
 def _already_ingested(store: LocalIngestionStore, patient_id: int) -> bool:
@@ -61,15 +82,18 @@ def main() -> int:
         print(f"Demo lab-report PDF already ingested for patient_id={patient_id} (idempotent skip).")
         return 0
 
-    ollama_client = OllamaClient.from_settings(settings)
-    result = attach_and_extract(
-        patient_id,
-        pdf_path,
-        "lab_pdf",
-        ollama_client=ollama_client,
+    vision_client = OllamaClient.from_settings(settings, model=settings.copilot_vision_model)
+    worker = IntakeExtractorWorker(
+        ollama_client=vision_client,
         document_store=store,
         fact_store=store,
+        vision_model_capability_check=settings.copilot_vision_model_capability_check,
     )
+    try:
+        result = worker.run(IngestSubTask(patient_id=patient_id, file_path=pdf_path, doc_type="lab_pdf"))
+    except VisionModelMisconfiguredError as exc:
+        print(f"lab PDF ingestion refused for patient_id={patient_id}: {exc}", file=sys.stderr)
+        return 1
     if result.failed_pages:
         print(
             f"lab PDF ingestion had failed pages {result.failed_pages} for patient_id={patient_id}",
