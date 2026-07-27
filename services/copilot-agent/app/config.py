@@ -33,6 +33,32 @@ DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
 # justification.
 DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 
+# Issue #182 (Gate 3 HIGH): cap on the total number of ROSTER ROWS
+# app.chat.RosterCache retains across every principal's entry at once, when
+# copilot_per_user_token_enabled is ON (see
+# Settings.copilot_roster_cache_max_rows's docstring for the full bound
+# analysis). Deliberately a ROW bound, not a principal-count bound (the
+# pre-fix ``max_principals`` this replaces): principal count is a proxy that
+# varies with how many clinicians a deployment has, but each cached roster
+# scales with TOTAL PATIENT COUNT
+# (``app.tools.patient_summary._fetch_all_patients`` pages nothing -- one
+# roster is the whole patient table), so a principal-count cap does not
+# bound bytes -- ``max_principals=512`` against a 50,000-patient roster is
+# ~4.12 GB, which alone exceeds the 2 GB container budget
+# (``docker/development-easy/docker-compose.copilot.yml``'s ``mem_limit``).
+# Measured ~173 bytes per ``app.tools.patient_summary.RosterEntry`` row
+# (``(pid: int, name: str)``) via ``tracemalloc`` over 250,000 realistic,
+# distinct ``(int, str)`` pairs -- NOT ``sys.getsizeof`` summed per object,
+# which ignores allocator/list-over-allocation overhead and understates the
+# true figure; 512 * 50,000 * ~173 B is the ~4.12 GB above, and 250,000 rows
+# at the same per-row figure is ~41 MB -- comfortably inside the 2 GB budget
+# alongside #167's ConversationStore (its own merged PR estimates ~1 GB
+# realistic worst case, see
+# ``docker/development-easy/docker-compose.copilot.yml``'s ``agent.mem_limit``
+# comment) -- while still covering any deployment-size patient panel this
+# service targets.
+DEFAULT_ROSTER_CACHE_MAX_ROWS = 250_000
+
 # Issue #173: default cap for app.body_size_limit.BodySizeLimitMiddleware --
 # the OUTERMOST-registered ASGI middleware (see app/main.py's
 # create_app -- Starlette applies add_middleware in REVERSE order of
@@ -344,6 +370,26 @@ class Settings(BaseSettings):
     # so a deployment with a rapidly-changing patient panel can shorten it,
     # or one prioritizing fewer OpenEMR round trips can lengthen it.
     copilot_roster_cache_ttl_seconds: float = DEFAULT_ROSTER_CACHE_TTL_SECONDS
+
+    # Issue #182: with copilot_per_user_token_enabled ON, app.chat.RosterCache
+    # is keyed by the authenticated PRINCIPAL (OpenEMR's introspected `sub`,
+    # not the raw bearer token -- a token rotates, so keying by token would
+    # make the cache grow unboundedly and reintroduce #174's own memory
+    # defect under a different key) instead of sharing one entry across every
+    # caller. Bounding entry COUNT alone does NOT bound bytes (Gate 3 HIGH):
+    # each principal's entry is a full roster copy that scales with TOTAL
+    # PATIENT COUNT, which no per-principal cap constrains -- a large-panel
+    # deployment times a large principal-count cap multiplies straight
+    # through. This bounds total retained ROSTER ROWS across every
+    # principal's entry instead -- deployment-size-insensitive, since it
+    # bounds bytes directly rather than via a count proxy. Once at capacity,
+    # entries are evicted (earliest expiry first, an already-tracked-
+    # timestamp approximation of LRU) until a new/updated entry fits; a
+    # single roster larger than the whole bound is not cached at all rather
+    # than evicting everything and still not fitting (see RosterCache's
+    # docstring). Irrelevant with the flag OFF (one shared, unkeyed entry, as
+    # before #182).
+    copilot_roster_cache_max_rows: int = DEFAULT_ROSTER_CACHE_MAX_ROWS
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose

@@ -11,7 +11,7 @@ import base64
 import datetime
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pydantic
@@ -36,6 +36,7 @@ from app.chat import (
     get_require_tool_call_scoping,
     get_roster_cache,
     get_source_ref_relevance_judge_provider,
+    get_subject_resolver,
     get_token_validator,
 )
 from app.config import Settings, get_settings
@@ -153,7 +154,7 @@ def _override_planner_factory_keyed_by_bearer_token(planners_by_token: dict[str,
     app.dependency_overrides[get_planner_factory] = factory_dependency
 
 
-def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
+def _override_roster_cache(ttl_seconds: float = 300.0, *, require_principal: bool = False) -> RosterCache:
     """A FRESH ``RosterCache`` per test (#174): ``get_roster_cache`` is a
     process-wide singleton by default (mirrors ``get_conversation_store``'s
     ``_default_store``), so any roster-fetch-COUNT assertion needs its own
@@ -161,10 +162,29 @@ def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
     could leak in. A real wall clock (not a fixed/injected one) is fine
     here: every test in this module completes in well under
     ``ttl_seconds``, so the default 300s never actually expires mid-test.
+
+    ``require_principal`` (#182): mirrors what ``get_roster_cache`` wires
+    from ``settings.copilot_per_user_token_enabled`` in production --
+    ``True`` for tests exercising principal-keyed isolation under per-user
+    tokens, ``False`` (default) for the flag-off shared-entry behavior.
     """
-    cache = RosterCache(ttl_seconds=ttl_seconds, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
+    cache = RosterCache(
+        ttl_seconds=ttl_seconds,
+        clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+        require_principal=require_principal,
+    )
     app.dependency_overrides[get_roster_cache] = lambda: cache
     return cache
+
+
+def _override_subject_resolver(mapping: dict[str, str | None]) -> None:
+    """Maps a bearer token to its (fake) resolved OpenEMR subject (#185),
+    mirroring ``test_subject_ownership.py``'s helper of the same name --
+    needed here to drive #182's principal-keyed ``RosterCache`` isolation
+    tests with two distinct, DETERMINISTIC identities rather than the real
+    ``_IntrospectionSubjectResolver`` (which would require a real
+    introspection double just to reach a fake ``sub``)."""
+    app.dependency_overrides[get_subject_resolver] = lambda: (lambda token: mapping.get(token))
 
 
 client = TestClient(app)
@@ -690,32 +710,35 @@ def test_roster_is_resolved_once_and_shared_across_conversations_and_turns():
 
 
 def test_roster_cache_bypassed_per_caller_when_per_user_token_enabled():
-    """#174 Gate 2 (security) finding, CONFIRMED: ``RosterCache`` is a
-    single, process-wide, UNKEYED cache -- not keyed by token, scope, role,
-    or facility. With ``copilot_per_user_token_enabled`` ON, each request's
-    planner is bound to THAT request's own forwarded bearer
-    (``get_planner_factory``'s docstring: "OpenEMR maps every tool call to
-    that user -> per-user ACL"), and OpenEMR's REST authorization is role-
-    and resource-scoped (``docs/ARCHITECTURE.md``'s "Patient-context
-    binding" section; #124 Phase 4 documents an ``accountant``-role token
-    getting 403 where an ``admin`` token gets 200 on the SAME endpoint
-    shape). So sharing one cached roster across callers with DIFFERENT
-    tokens would serve caller B a roster fetched under caller A's
-    authorization -- caller B deciding cross-patient refusals using patient
-    identities caller B was never authorized to enumerate. This did NOT
-    exist pre-#174 (each conversation fetched its own, caller-scoped
-    roster) and must not be reintroduced by the #174 shared-cache fix.
+    """End-to-end wiring check through the REAL (non-overridden)
+    ``get_roster_cache`` and ``get_subject_resolver`` dependencies -- unlike
+    every other roster-isolation test in this module, which overrides one
+    or both directly (``_override_roster_cache``, ``_override_subject_
+    resolver``) to drive the ``RosterCache`` mechanism deterministically.
+    This test's two bearer tokens ("token-a"/"token-b") are not real OpenEMR
+    tokens, so the REAL ``_IntrospectionSubjectResolver`` this wiring
+    resolves to fails introspection for both -- both calls take
+    ``RosterCache``'s unresolved-principal (``principal is None``) bypass
+    path (confirmed by instrumenting ``RosterCache.get_or_fetch`` directly:
+    both invocations observed ``principal=None``), NOT the principal-keyed
+    isolation path. It is therefore a duplicate, at the mechanism level, of
+    ``test_roster_cache_degrades_to_no_caching_never_to_sharing_when_
+    principal_unresolved`` below -- not a distinct proof that DIFFERENT
+    resolved principals get isolated cache entries (that is
+    ``test_roster_cache_is_shared_within_a_principal_but_isolated_across_
+    principals`` and ``test_roster_cache_never_serves_one_principals_
+    roster_content_to_another``). Kept anyway as the one test in this module
+    that exercises the PRODUCTION dependency-injection wiring end to end
+    (would catch e.g. ``chat_endpoint`` no longer resolving
+    ``get_roster_cache``/``get_subject_resolver`` at all, or
+    ``copilot_per_user_token_enabled`` no longer reaching ``RosterCache``'s
+    ``require_principal``) -- a regression class the override-based unit
+    tests below cannot see, since they bypass that wiring entirely.
 
-    Pairs with
-    ``test_roster_is_resolved_once_and_shared_across_conversations_and_turns``
-    above (flag OFF: sharing across DIFFERENT callers IS correct there,
-    because the dev-bridge default makes every caller provably the SAME
-    principal) to pin BOTH directions of this decision.
-
-    Before the Gate-2 fix (``RosterCache`` unconditionally shared, with no
-    ``enabled`` gate at all): caller B's request would be served caller A's
-    already-cached roster and ``planner_b.roster_resolve_calls`` would stay
-    0 -- this assertion fails.
+    Before the #174 Gate-2 fix (``RosterCache`` unconditionally shared, with
+    no ``require_principal`` gate at all): caller B's request would be
+    served caller A's already-cached roster and
+    ``planner_b.roster_resolve_calls`` would stay 0 -- this assertion fails.
     """
     planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
     planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
@@ -748,6 +771,138 @@ def test_roster_cache_bypassed_per_caller_when_per_user_token_enabled():
 
     # The authorization-scope assertion: caller B's own fetch actually
     # happened -- caller B was NOT served caller A's cached roster.
+    assert planner_a.roster_resolve_calls == 1
+    assert planner_b.roster_resolve_calls == 1
+
+
+# --------------------------------------------------------------------------
+# Issue #182: restore the #174 amplification fix under
+# ``copilot_per_user_token_enabled`` via a PRINCIPAL-keyed ``RosterCache``,
+# instead of the #174 Gate 2 guard's unconditional bypass proven above
+# (``test_roster_cache_bypassed_per_caller_when_per_user_token_enabled``).
+# Each test below wires ``require_principal=True`` directly on a fresh
+# ``RosterCache`` (mirrors what ``get_roster_cache`` derives from
+# ``settings.copilot_per_user_token_enabled`` in production) plus a fake
+# ``_override_subject_resolver`` mapping so two distinct bearer tokens
+# resolve to two distinct, deterministic principals -- the real
+# ``_IntrospectionSubjectResolver`` would need a real introspection double
+# just to reach a fake ``sub``.
+# --------------------------------------------------------------------------
+
+
+def test_roster_cache_is_shared_within_a_principal_but_isolated_across_principals():
+    """RED-FIRST for #182: two requests under DISTINCT authenticated
+    principals each cause their own fetch (isolation), and a THIRD request
+    under the FIRST principal is served from cache (amplification restored
+    -- no new fetch).
+
+    Before #182 (the #174 Gate-2 guard, ``require_principal`` gate absent /
+    always bypassing under the flag): every one of the three calls would
+    fetch fresh (``roster_resolve_calls`` would read ``[1, 1]`` for
+    ``planner_a``, i.e. it fetches on BOTH of caller A's calls) -- the
+    amplification fix would still be lost, just now for every principal
+    individually instead of unconditionally. #182's fix converges caller
+    A's fetch count to 1 across its two calls while caller B still gets its
+    own, independent fetch.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": "user-alpha", "token-b": "user-beta"})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    # Caller A, first turn: a cache MISS -- fetches under principal
+    # "user-alpha".
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    # Caller B, a DIFFERENT principal: must NOT be served caller A's entry.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+    # Caller A again, a brand-new conversation (no conversation_id): SAME
+    # principal as the first call -- must be served from cache, no new fetch.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+
+    assert planner_a.roster_resolve_calls == 1  # converged: 2 calls, 1 fetch
+    assert planner_b.roster_resolve_calls == 1  # its own, independent fetch
+
+
+def test_roster_cache_never_serves_one_principals_roster_content_to_another():
+    """Cross-principal isolation, pinned by CONTENT not just call count
+    (requirement 2 of #182): principal A's roster and principal B's roster
+    are DIFFERENT patients. If caller B's cache read ever returned caller
+    A's entry, B's "switch to <Name>" refusal would fire for a name that is
+    only on A's roster -- it must not.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=1, name="Alice Alpha")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=2, name="Bob Beta")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": "user-alpha", "token-b": "user-beta"})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    # Prime principal A's cache entry with Alice Alpha.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Alice Alpha and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+
+    # Principal B asks about "Alice Alpha" too -- a name that is on A's
+    # roster but NOT on B's. If B were served A's cached entry, this would
+    # match and refuse; served B's OWN roster (which doesn't contain
+    # "Alice Alpha"), it must dispatch normally instead.
+    response_b = client.post(
+        "/chat",
+        json={"message": "Switch to Alice Alpha and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
+    assert planner_b.roster_resolve_calls == 1
+    answer_b = next(data for name, data in _iter_sse_events(response_b.text) if name == "answer")
+    assert "chart is currently open" not in answer_b
+    assert planner_b.questions == ["Switch to Alice Alpha and check her allergies."]
+
+
+def test_roster_cache_degrades_to_no_caching_never_to_sharing_when_principal_unresolved():
+    """Requirement 3 of #182: when the principal cannot be determined
+    (subject resolution returns ``None`` -- #185's failed/miss path), the
+    cache degrades to NOT caching -- never to silently sharing the one
+    unkeyed entry. Two distinct callers, BOTH resolving to ``None``, must
+    each still get their OWN fetch -- if the ``None`` case fell back to the
+    shared entry, caller B's fetch count would read 0.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": None, "token-b": None})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
     assert planner_a.roster_resolve_calls == 1
     assert planner_b.roster_resolve_calls == 1
 
@@ -1173,7 +1328,7 @@ class _FakeTickingClock:
 
 def test_roster_cache_returns_cached_value_without_refetching_within_ttl():
     clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
-    cache = RosterCache(ttl_seconds=60.0, clock=clock)
+    cache = RosterCache(ttl_seconds=60.0, clock=clock, require_principal=False)
     fetch_calls = []
 
     def fetch() -> list[RosterEntry]:
@@ -1184,14 +1339,14 @@ def test_roster_cache_returns_cached_value_without_refetching_within_ttl():
     clock.advance(30.0)  # still within the 60s TTL
     second = cache.get_or_fetch(fetch)
 
-    assert first == [RosterEntry(pid=1, name="Bob Smith")]
+    assert first == (RosterEntry(pid=1, name="Bob Smith"),)
     assert second == first
     assert len(fetch_calls) == 1
 
 
 def test_roster_cache_refetches_after_ttl_expires():
     clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
-    cache = RosterCache(ttl_seconds=60.0, clock=clock)
+    cache = RosterCache(ttl_seconds=60.0, clock=clock, require_principal=False)
     fetch_calls = []
 
     def fetch() -> list[RosterEntry]:
@@ -1225,7 +1380,7 @@ def test_roster_cache_does_not_cache_a_failed_fetchs_empty_result():
     roster, not a cached ``[]``.
     """
     clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
-    cache = RosterCache(ttl_seconds=300.0, clock=clock)
+    cache = RosterCache(ttl_seconds=300.0, clock=clock, require_principal=False)
     responses: list[list[RosterEntry]] = [[], [RosterEntry(pid=1, name="Bob Smith")]]
     fetch_calls = []
 
@@ -1237,16 +1392,331 @@ def test_roster_cache_does_not_cache_a_failed_fetchs_empty_result():
     clock.advance(1.0)  # well within the 300s TTL -- a cache bug would serve the stale [] here
     second = cache.get_or_fetch(fetch)
 
-    assert first == []
+    assert first == ()
     # Presence: the second call actually reached `fetch` again (not served a
     # cached [] from the first call) and got the real, non-empty roster.
-    assert second == [RosterEntry(pid=1, name="Bob Smith")]
+    assert second == (RosterEntry(pid=1, name="Bob Smith"),)
     assert len(fetch_calls) == 2
+
+
+def test_roster_cache_refuses_to_share_when_given_a_real_principal_in_shared_mode():
+    """Gate 3 MINOR-3: a ``RosterCache`` built with ``require_principal=
+    False`` (shared mode) must refuse to serve or populate its one frozen
+    shared entry when ``get_or_fetch`` is ever called WITH a real
+    (non-``None``) ``principal`` -- fail closed to a bypass, never fall back
+    to sharing. Unreachable via the current production call site
+    (``_stream_chat``'s ``owner_subject`` is always ``None`` when the
+    per-user-token flag is off -- see ``get_subject_resolver``'s docstring),
+    but this guards a future call site, or a hypothetical mid-process mode
+    change against the frozen ``get_roster_cache`` singleton, from silently
+    sharing one principal's roster with another.
+
+    Proves the fail-closed direction two ways: (1) the shared entry, already
+    populated by a genuinely-shared call (``principal=None``), is NOT
+    returned when the SAME cache is then asked for a real principal -- a
+    fresh, uncached fetch happens instead; (2) that real-principal call
+    never WRITES into the shared entry either -- a subsequent genuinely-
+    shared call still sees the ORIGINAL shared content, not the real-
+    principal call's result.
+    """
+    clock = _FakeTickingClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    cache = RosterCache(ttl_seconds=60.0, clock=clock, require_principal=False)
+
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="Shared Roster")])  # populates the shared entry
+
+    real_principal_calls = 0
+
+    def fetch_for_real_principal() -> list[RosterEntry]:
+        nonlocal real_principal_calls
+        real_principal_calls += 1
+        return [RosterEntry(pid=2, name="Should Not Be Cached")]
+
+    result = cache.get_or_fetch(fetch_for_real_principal, principal="user-a")
+
+    # (1) Bypassed to a fresh fetch, not served the pre-existing shared entry.
+    assert real_principal_calls == 1
+    assert result == (RosterEntry(pid=2, name="Should Not Be Cached"),)
+
+    # (2) The shared entry (``principal=None`` callers) is untouched by the
+    # real-principal call above -- still the original content, and this call
+    # is still a cache hit (no new fetch).
+    shared_calls = 0
+
+    def counting_shared_fetch() -> list[RosterEntry]:
+        nonlocal shared_calls
+        shared_calls += 1
+        return [RosterEntry(pid=1, name="Shared Roster")]
+
+    shared_result = cache.get_or_fetch(counting_shared_fetch)
+    assert shared_calls == 0  # cache hit -- still the original shared entry
+    assert shared_result == (RosterEntry(pid=1, name="Shared Roster"),)
 
 
 def test_roster_cache_rejects_a_non_positive_ttl():
     with pytest.raises(ValueError):
-        RosterCache(ttl_seconds=0.0, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
+        RosterCache(
+            ttl_seconds=0.0,
+            clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+            require_principal=False,
+        )
+
+
+def test_roster_cache_rejects_a_non_positive_max_rows():
+    with pytest.raises(ValueError):
+        RosterCache(
+            ttl_seconds=60.0,
+            clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+            require_principal=False,
+            max_rows=0,
+        )
+
+
+def test_roster_cache_bounds_total_retained_rows_by_evicting_the_soonest_to_expire_principal():
+    """Gate 3 HIGH fix on #182: the bound is on total retained ROSTER ROWS,
+    not on the number of distinct principals tracked (the earlier, replaced
+    ``max_principals`` entry-count bound) -- see ``RosterCache``'s docstring
+    for why an entry-count bound alone does not bound bytes. Each principal
+    here has a 1-row roster, so a row cap of 2 is degenerate with a
+    (removed) entry-count cap of 2 in THIS test -- the row-bound-specific
+    behavior (different-sized rosters, a too-big single roster) is covered
+    by ``test_roster_cache_bounds_by_rows_not_entry_count_when_rosters_
+    differ_in_size`` and ``test_roster_cache_never_caches_a_single_roster_
+    larger_than_the_whole_row_bound`` below. Three principals, cap of 2
+    rows, clock advanced between each fetch so "soonest to expire" is
+    unambiguous."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=2)
+
+    def fetch(name: str) -> Callable[[], list[RosterEntry]]:
+        return lambda: [RosterEntry(pid=1, name=name)]
+
+    cache.get_or_fetch(fetch("Alice"), principal="user-a")
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(fetch("Bob"), principal="user-b")
+    # Cap reached (2/2). "user-a" expires soonest (fetched first) -- adding a
+    # THIRD principal must evict it, not "user-b".
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(fetch("Carol"), principal="user-c")
+
+    assert len(cache._entries) == 2
+    assert "user-a" not in cache._entries
+    assert "user-b" in cache._entries
+    assert "user-c" in cache._entries
+
+    # "user-b" and "user-c" (never evicted yet) are still cache hits.
+    b_calls = 0
+
+    def counting_fetch_b() -> list[RosterEntry]:
+        nonlocal b_calls
+        b_calls += 1
+        return [RosterEntry(pid=1, name="Bob")]
+
+    result_b = cache.get_or_fetch(counting_fetch_b, principal="user-b")
+    assert b_calls == 0  # cache hit
+    assert result_b == (RosterEntry(pid=1, name="Bob"),)
+
+    # "user-a" was evicted: re-fetching it must call fetch() again (a fresh
+    # roster), not return a stale hit.
+    a_calls = 0
+
+    def counting_fetch_a() -> list[RosterEntry]:
+        nonlocal a_calls
+        a_calls += 1
+        return [RosterEntry(pid=1, name="Alice")]
+
+    cache.get_or_fetch(counting_fetch_a, principal="user-a")
+    assert a_calls == 1  # evicted -> fresh fetch, not a cache hit
+
+
+def test_roster_cache_bounds_by_rows_not_entry_count_when_rosters_differ_in_size():
+    """Gate 3 HIGH fix on #182: the bound must track total ROWS, not entry
+    count, so it behaves differently once rosters are different sizes --
+    exactly the case a pure entry-count cap (the replaced ``max_principals``)
+    could never catch. ``max_rows=3``: "user-a"'s 2-row roster plus
+    "user-b"'s 2-row roster would be 4 rows (over budget) even though that
+    is only 2 entries -- admitting "user-b" must evict "user-a" (the only
+    entry) to fit, not stop at an entry-count check that would have allowed
+    both.
+    """
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=3)
+
+    two_row_roster = [RosterEntry(pid=1, name="Alice"), RosterEntry(pid=2, name="Alicia")]
+    cache.get_or_fetch(lambda: two_row_roster, principal="user-a")
+    assert "user-a" in cache._entries
+
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(lambda: two_row_roster, principal="user-b")
+
+    # "user-a" (2 rows) had to be evicted to admit "user-b" (2 rows) under a
+    # 3-row cap -- an entry-count cap of, say, 2 would have kept BOTH
+    # (4 rows total), which is exactly the bytes bound this fix closes.
+    assert "user-a" not in cache._entries
+    assert "user-b" in cache._entries
+    assert sum(len(roster) for roster, _ in cache._entries.values()) <= 3
+
+
+def test_roster_cache_never_caches_a_single_roster_larger_than_the_whole_row_bound():
+    """Gate 3 HIGH fix on #182: a single roster bigger than ``max_rows``
+    itself must not be cached at all -- there is no amount of eviction that
+    would make it fit, so the implementation must recognize this case
+    explicitly rather than evicting every other entry and then still
+    failing to admit it (which would silently discard every OTHER
+    principal's cache for nothing).
+    """
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=2)
+
+    # A pre-existing, unrelated entry that must survive untouched.
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="Bob")], principal="user-b")
+    assert "user-b" in cache._entries
+
+    oversized_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(5)]
+    result = cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+
+    # The caller still gets the full (uncached) roster back...
+    assert result == tuple(oversized_roster)
+    # ...but it was never admitted to the cache...
+    assert "user-a" not in cache._entries
+    # ...and the unrelated pre-existing entry was NOT sacrificed trying (and
+    # failing) to make room for it.
+    assert "user-b" in cache._entries
+
+    # Re-fetching "user-a" must call fetch() again -- confirms nothing was
+    # cached under it, not merely that the dict key is absent by coincidence.
+    calls = 0
+
+    def counting_fetch() -> list[RosterEntry]:
+        nonlocal calls
+        calls += 1
+        return oversized_roster
+
+    cache.get_or_fetch(counting_fetch, principal="user-a")
+    assert calls == 1
+
+
+def test_roster_cache_caches_a_roster_of_exactly_max_rows_but_not_one_row_more():
+    """M-1: pins the boundary the oversize short-circuit
+    (``new_rows > self._max_rows``) actually draws. A roster of exactly
+    ``max_rows`` is the LARGEST roster that can still be cached -- flipping
+    ``>`` to ``>=`` would reject that exact-fit case too, and nothing else
+    in this suite reaches the boundary itself (every other row-bound test
+    uses rosters clearly under or clearly over the cap)."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=3)
+
+    exact_fit_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(3)]
+    cache.get_or_fetch(lambda: exact_fit_roster, principal="user-a")
+
+    # Exactly at the bound: cached (a second call within the TTL is a cache
+    # hit -- fetch() is not called again).
+    exact_fit_calls = 0
+
+    def counting_exact_fit() -> list[RosterEntry]:
+        nonlocal exact_fit_calls
+        exact_fit_calls += 1
+        return exact_fit_roster
+
+    cache.get_or_fetch(counting_exact_fit, principal="user-a")
+    assert exact_fit_calls == 0  # cache hit -- the exact-fit roster WAS cached
+    assert "user-a" in cache._entries
+
+    now[0] += datetime.timedelta(seconds=1)
+    one_over_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(4)]
+    cache.get_or_fetch(lambda: one_over_roster, principal="user-b")
+
+    # One row over the bound: never cached at all.
+    assert "user-b" not in cache._entries
+
+
+def test_roster_cache_same_key_refresh_does_not_double_count_the_stale_entry():
+    """M-2: pins the ``del self._entries[key]`` that runs BEFORE the
+    eviction loop when refreshing an already-present key. Without it, the
+    refreshed entry's OWN stale rows would still be counted against the
+    budget (double-counted alongside the new rows), which can force an
+    eviction of an UNRELATED principal's entry that would otherwise fit.
+
+    ``max_rows=10``: "a" (1 row, never touched again) and "b" (5 rows) both
+    expire; "b" is then refreshed with 9 rows. 1 + 9 = 10 fits the bound
+    exactly if "b"'s stale 5 rows are correctly dropped first -- "a" must
+    survive. Without the ``del``, the accounting sees 1 + 5 (stale "b") + 9
+    (new "b") = 15 > 10, forcing "a" (the soonest-to-expire OTHER entry) to
+    be evicted for no reason -- it never needed the room.
+    """
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=10.0, clock=lambda: now[0], require_principal=True, max_rows=10)
+
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=i, name=f"B{i}") for i in range(5)], principal="b")
+
+    # Expire both entries, then refresh "b" only.
+    now[0] += datetime.timedelta(seconds=20)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=i, name=f"B{i}") for i in range(9)], principal="b")
+
+    assert "a" in cache._entries, "unrelated entry 'a' must survive a same-key refresh of 'b'"
+    assert "b" in cache._entries
+    assert len(cache._entries["a"][0]) == 1
+    assert len(cache._entries["b"][0]) == 9
+
+
+def test_roster_cache_requires_explicit_require_principal_kwarg():
+    """M-3: ``require_principal`` must have NO default -- a prior gate
+    (Gate 2, #174) found the fail-open ``require_principal: bool = False``
+    default unsafe once #182 added per-principal keying, and required every
+    caller to state its authorization posture explicitly. Restoring the
+    default would leave every existing call site green (they all already
+    pass the kwarg) -- only a constructor call that OMITS it, expecting a
+    ``TypeError``, catches a regression here."""
+    with pytest.raises(TypeError):
+        RosterCache(  # type: ignore[call-arg]
+            ttl_seconds=60.0,
+            clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+        )
+
+
+def test_roster_cache_warns_once_when_a_single_roster_exceeds_the_row_bound(caplog):
+    """M-7: an oversized roster (bigger than the whole ``max_rows`` bound)
+    disables caching for that roster PERMANENTLY (every matching call hits
+    the same short-circuit) -- #174's amplification fix silently goes dark
+    with no operator-visible signal unless something logs it. Must fire
+    exactly ONCE per cache instance, not once per call (no log spam on every
+    turn for the life of a deployment whose roster never shrinks)."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=2)
+    oversized_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(5)]
+
+    with caplog.at_level(logging.WARNING):
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+        now[0] += datetime.timedelta(seconds=1)
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+        now[0] += datetime.timedelta(seconds=1)
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+
+    oversize_warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(oversize_warnings) == 1
+
+
+def test_roster_cache_returns_an_immutable_tuple_that_a_caller_cannot_corrupt():
+    """M-6: the cached roster is returned as a ``tuple``, not a ``list`` --
+    a caller that mutates a returned ``list`` in place (e.g. ``.extend()``)
+    would silently desync the cache's own row-count bookkeeping from what
+    it actually holds. Storing/returning a ``tuple`` makes that mutation
+    impossible by construction: there is no in-place-mutating method to
+    call, and even attempting the ``list``-only ``.extend()`` API itself
+    must fail with ``AttributeError``."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=10)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+
+    got = cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+    assert isinstance(got, tuple)
+    with pytest.raises(AttributeError):
+        got.extend([RosterEntry(pid=99, name="Injected")])  # type: ignore[attr-defined]
+
+    # The cache's own accounting is unaffected by the caller's failed
+    # mutation attempt.
+    assert len(cache._entries["a"][0]) == 1
 
 
 def test_conversation_store_bounds_retained_conversations():
@@ -1372,6 +1842,37 @@ def test_get_roster_cache_builds_singleton_from_settings():
         cache_again = chat_module.get_roster_cache(settings_b, chat_module.get_clock())
         assert cache_again is cache  # singleton: not rebuilt
         assert cache_again._ttl_seconds == 7.0  # frozen at first use, NOT 999.0
+    finally:
+        chat_module._default_roster_cache = original_default_roster_cache
+
+
+def test_get_roster_cache_wires_require_principal_from_settings_flag():
+    """#182: ``get_roster_cache`` must derive ``require_principal`` from
+    ``settings.copilot_per_user_token_enabled`` -- ``False`` (the shared,
+    unkeyed entry -- requirement 5, flag-off behavior unchanged) when the
+    flag is off, ``True`` (principal-keyed isolation) when it is on. Every
+    other roster test in this module overrides ``get_roster_cache`` directly
+    (bypassing this wiring entirely), so this calls the real dependency
+    function -- the only test that would catch a regression here, e.g. the
+    flag-off default silently becoming keyed (which would make every
+    flag-off caller a distinct, uncached principal) or flag-on silently
+    staying unkeyed (which would reopen #174 Gate 2 under per-user
+    tokens)."""
+    import app.chat as chat_module
+
+    original_default_roster_cache = chat_module._default_roster_cache
+    try:
+        chat_module._default_roster_cache = None
+        off_cache = chat_module.get_roster_cache(
+            Settings(copilot_per_user_token_enabled=False), chat_module.get_clock()
+        )
+        assert off_cache._require_principal is False
+
+        chat_module._default_roster_cache = None
+        on_cache = chat_module.get_roster_cache(
+            Settings(copilot_per_user_token_enabled=True), chat_module.get_clock()
+        )
+        assert on_cache._require_principal is True
     finally:
         chat_module._default_roster_cache = original_default_roster_cache
 

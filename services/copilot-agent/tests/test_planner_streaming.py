@@ -343,7 +343,7 @@ def test_client_disconnect_mid_stream_closes_inner_generator_and_records_failed_
         user="unknown",
         owner_token="test-token",
         clock=_default_clock,
-        roster_cache=RosterCache(ttl_seconds=300.0, clock=_default_clock),
+        roster_cache=RosterCache(ttl_seconds=300.0, clock=_default_clock, require_principal=False),
     )
 
     # Pull the first two frames: the ``conversation`` frame, then the first
