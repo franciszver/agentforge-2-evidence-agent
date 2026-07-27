@@ -82,6 +82,44 @@ def test_seed_demo_documents_uses_the_dedicated_vision_model_not_ollama_model(
     assert len(factory.built_clients[0].extract_calls) == 2  # the fixture PDF's 2 pages
 
 
+def test_seed_demo_documents_raises_a_distinct_error_on_total_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #206: a TOTAL extraction failure (every page failed) now raises
+    ``IngestionError`` from ``attach_and_extract`` instead of returning a
+    zero-facts result. ``seed_demo_documents`` must catch it and raise
+    ``DemoDocumentSeedError`` with a message DISTINGUISHABLE from the
+    partial-failure case's ("had failed pages ..."). Asserting on the
+    message text is load-bearing: before this fix, a total failure also
+    raises ``DemoDocumentSeedError`` via the pre-existing
+    ``if result.failed_pages`` branch, so the exception type alone cannot
+    tell the two apart."""
+    settings = Settings(copilot_ingestion_base_dir=str(tmp_path))
+
+    class _AlwaysFailingVlm(_FakeVlmOllama):
+        def __init__(self) -> None:
+            super().__init__(error=True, model=settings.copilot_vision_model)
+
+    class _FailingFactory(_RecordingOllamaClientFactory):
+        def from_settings(self, settings: Settings, *, model: str | None = None) -> _FakeVlmOllama:
+            self.calls.append(model)
+            client = _AlwaysFailingVlm()
+            self.built_clients.append(client)
+            return client
+
+    monkeypatch.setattr(seed_demo_documents, "get_settings", lambda: settings)
+    monkeypatch.setattr(seed_demo_documents, "OllamaClient", _FailingFactory([]))
+    monkeypatch.setattr(seed_demo_documents, "get_pid_for_pubpid", lambda pubpid: _PATIENT_ID)
+
+    with pytest.raises(seed_demo_documents.DemoDocumentSeedError) as exc_info:
+        seed_demo_documents.seed_demo_documents()
+
+    assert "FAILED ENTIRELY" in str(exc_info.value)
+    assert "had failed pages" not in str(exc_info.value)
+    store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
+    assert store.list_citations_for_patient(_PATIENT_ID) == []
+
+
 def test_seed_demo_documents_refuses_a_non_vision_model_before_any_page_is_processed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

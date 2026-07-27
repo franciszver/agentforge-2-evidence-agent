@@ -22,6 +22,7 @@ never a live Ollama call.
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,8 @@ from typing import Any
 import pytest
 
 from app.correlation import correlation_scope
-from app.ingestion import LocalIngestionStore, attach_and_extract
+from app.ingestion import IngestionError, LocalIngestionStore, attach_and_extract
+from app.ollama_client import OllamaError
 from app.reranking import RERANKER_SCORES_PATH, RecordedRerankScorer, Reranker, retrieve_and_rerank
 from app.retrieval import CORPUS_DIR, HybridRetriever, build_retriever_from_corpus, recorded_query_vector
 from app.schemas.ingestion import LabPageExtraction
@@ -42,6 +44,7 @@ from app.supervisor import (
     SupervisorResult,
     VisionModelMisconfiguredError,
 )
+from app.trace_store import SpanStatus, SpanType, TraceStore
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
 from tests.test_ingestion import _FakeVlmOllama, _FIXTURE_PATH, _PAGE_1_ROWS, _PAGE_2_ROWS
 
@@ -209,6 +212,93 @@ def test_worker_failure_propagates_and_is_logged(caplog: pytest.LogCaptureFixtur
     assert failed, "a failed handoff must be logged, not silently swallowed"
     assert failed[0].worker == "evidence-retriever"
     assert failed[0].error_type == "_Boom"
+
+
+# --- issue #206: extraction spans recorded on ALL THREE ingestion outcomes
+
+
+@pytest.fixture
+def trace_store(tmp_path: Path) -> TraceStore:
+    return TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=secrets.token_hex(16))
+
+
+def test_successful_ingestion_records_an_extraction_span(tmp_path: Path, trace_store: TraceStore) -> None:
+    ollama = _FakeVlmOllama([LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)])
+    store = LocalIngestionStore(tmp_path / "ingestion")
+    intake = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
+    retriever = _FakeWorker(name="evidence-retriever")
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever, trace_store=trace_store)
+
+    with correlation_scope() as correlation_id:
+        supervisor.handle(IngestSubTask(patient_id=1, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf"))
+
+    extraction_spans = [s for s in trace_store.get_spans(correlation_id) if s.span_type == SpanType.EXTRACTION]
+    assert len(extraction_spans) == 1
+    span = extraction_spans[0]
+    assert span.status == SpanStatus.OK
+    assert span.pages_total == 2
+    assert span.pages_failed == 0
+
+
+def test_partial_failure_ingestion_records_an_extraction_span_with_failed_pages(
+    tmp_path: Path, trace_store: TraceStore
+) -> None:
+    class _MixedVlm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(
+            self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None
+        ) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                return LabPageExtraction(rows=_PAGE_1_ROWS)
+            raise OllamaError("scripted failure on page 2")
+
+    store = LocalIngestionStore(tmp_path / "ingestion")
+    intake = IntakeExtractorWorker(ollama_client=_MixedVlm(), document_store=store, fact_store=store)
+    retriever = _FakeWorker(name="evidence-retriever")
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever, trace_store=trace_store)
+
+    with correlation_scope() as correlation_id:
+        supervisor.handle(IngestSubTask(patient_id=1, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf"))
+
+    span = next(s for s in trace_store.get_spans(correlation_id) if s.span_type == SpanType.EXTRACTION)
+    assert span.status == SpanStatus.OK  # the handoff itself completed without raising
+    assert span.pages_total == 2
+    assert span.pages_failed == 1
+
+
+def test_total_failure_ingestion_records_an_extraction_span_then_propagates(
+    tmp_path: Path, trace_store: TraceStore
+) -> None:
+    failing_vlm = _FakeVlmOllama(error=True)
+    store = LocalIngestionStore(tmp_path / "ingestion")
+    intake = IntakeExtractorWorker(ollama_client=failing_vlm, document_store=store, fact_store=store)
+    retriever = _FakeWorker(name="evidence-retriever")
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever, trace_store=trace_store)
+
+    with correlation_scope() as correlation_id:
+        with pytest.raises(IngestionError):
+            supervisor.handle(IngestSubTask(patient_id=1, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf"))
+
+    span = next(s for s in trace_store.get_spans(correlation_id) if s.span_type == SpanType.EXTRACTION)
+    assert span.status == SpanStatus.FAIL
+    assert span.pages_total == 2
+    assert span.pages_failed == 2
+    assert span.error_category == "IngestionError"
+
+
+def test_retrieve_sub_task_never_records_an_extraction_span(trace_store: TraceStore) -> None:
+    intake = _FakeWorker(name="intake-extractor")
+    retriever = _FakeWorker(name="evidence-retriever", payload=["chunk"])
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever, trace_store=trace_store)
+
+    with correlation_scope() as correlation_id:
+        supervisor.handle(RetrieveSubTask(query="anything", k=1))
+
+    extraction_spans = [s for s in trace_store.get_spans(correlation_id) if s.span_type == SpanType.EXTRACTION]
+    assert extraction_spans == []
 
 
 # --- worker wrapper tests: real capability delegation, citations preserved

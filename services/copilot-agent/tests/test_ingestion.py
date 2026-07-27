@@ -284,20 +284,57 @@ def test_all_none_row_citation_quote_says_not_found():
     assert _quote_for_row(row, normalized_flag=None) == "Illegible Test: (not found)"
 
 
-def test_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
+def test_all_pages_failing_raises_ingestion_error_with_page_bookkeeping(store):
+    # Issue #206: a TOTAL extraction failure (every page failed) must raise,
+    # never return a zero-facts result silently -- before this fix, this
+    # scenario returned normally with facts == [], byte-identical on disk to
+    # a legitimately empty document (see the distinguishability test below).
     failing_vlm = _FakeVlmOllama(error=True)
 
-    result = attach_and_extract(
-        1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
-    )
+    with pytest.raises(IngestionError) as exc_info:
+        attach_and_extract(
+            1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
+        )
 
-    # Fails soft, but to EMPTY -- never fabricates rows for a page the VLM
-    # couldn't process at all -- AND every page is recorded in failed_pages,
-    # so this stays distinguishable from "every page legitimately had zero
-    # rows" (see IngestionResult.failed_pages's docstring).
-    assert result.facts == []
-    assert result.failed_pages == [1, 2]
-    assert result.pages_total == 2
+    assert exc_info.value.pages_total == 2
+    assert exc_info.value.failed_pages == [1, 2]
+
+
+def test_all_pages_failing_writes_no_facts_sidecar(store, tmp_path):
+    # The source document artifact stays (an honest record of what was
+    # attempted), but no facts sidecar is written for a total failure --
+    # save_facts is never called.
+    failing_vlm = _FakeVlmOllama(error=True)
+
+    with pytest.raises(IngestionError):
+        attach_and_extract(
+            1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
+        )
+
+    facts_dir = tmp_path / "ingestion" / "facts"
+    assert list(facts_dir.glob("*.json")) == []
+    documents_dir = tmp_path / "ingestion" / "documents"
+    assert len(list(documents_dir.glob("*.pdf"))) == 1  # the source document IS still stored
+
+
+def test_total_failure_stays_distinguishable_from_an_empty_document(store):
+    """Issue #206's Done-when: a fully-failed ingestion must never again be
+    indistinguishable from a legitimately empty document. Before the fix,
+    both a total VLM failure and a document with zero legible rows returned
+    the exact same ``IngestionResult(facts=[], failed_pages=[...])`` shape
+    with no way to tell them apart from the caller's side. This test FAILS
+    if that regresses: a total failure must raise, not return."""
+    failing_vlm = _FakeVlmOllama(error=True)
+
+    raised = False
+    try:
+        attach_and_extract(
+            1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
+        )
+    except IngestionError:
+        raised = True
+
+    assert raised, "total extraction failure must raise IngestionError, not return normally"
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +364,34 @@ def test_local_store_persists_facts_as_json(tmp_path: Path, fake_vlm):
     assert payload["source_id"] == result.source_id
     assert len(payload["facts"]) == 8
     assert payload["facts"][0]["citation"]["source_type"] == "lab_pdf"
+    # Issue #206: the sidecar also records page bookkeeping, so a later
+    # reader of the sidecar alone (not just the in-process IngestionResult)
+    # can tell a fully-succeeded document from a partially-failed one.
+    assert payload["pages_total"] == 2
+    assert payload["failed_pages"] == []
+
+
+def test_local_store_persists_partial_failure_page_bookkeeping(tmp_path: Path):
+    store = LocalIngestionStore(base_dir=tmp_path / "ingestion")
+
+    class _MixedVlm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                return LabPageExtraction(rows=_PAGE_1_ROWS)
+            raise OllamaError("scripted failure on page 2")
+
+    result = attach_and_extract(
+        1, _FIXTURE_PATH, "lab_pdf", ollama_client=_MixedVlm(), document_store=store, fact_store=store
+    )
+
+    saved = tmp_path / "ingestion" / "facts" / f"{result.source_id}.json"
+    payload = json.loads(saved.read_text())
+    assert payload["pages_total"] == 2
+    assert payload["failed_pages"] == [2]
 
 
 def test_local_store_generates_distinct_source_ids(tmp_path: Path):
@@ -618,16 +683,18 @@ def test_intake_form_empty_string_fields_normalize_to_not_found(store):
         assert segment.strip() != ""  # no empty list items/sections leaked into the quote
 
 
-def test_intake_form_all_pages_failing_yields_no_facts_and_marks_every_page_failed(store):
+def test_intake_form_all_pages_failing_raises_ingestion_error_with_page_bookkeeping(store):
+    # Issue #206: same total-failure raise as the lab_pdf doc type -- both
+    # doc types share attach_and_extract's page loop/bookkeeping.
     failing_vlm = _FakeVlmOllama(error=True)
 
-    result = attach_and_extract(
-        1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=failing_vlm, document_store=store, fact_store=store
-    )
+    with pytest.raises(IngestionError) as exc_info:
+        attach_and_extract(
+            1, _INTAKE_FIXTURE_PATH, "intake_form", ollama_client=failing_vlm, document_store=store, fact_store=store
+        )
 
-    assert result.facts == []
-    assert result.failed_pages == [1, 2]
-    assert result.pages_total == 2
+    assert exc_info.value.pages_total == 2
+    assert exc_info.value.failed_pages == [1, 2]
 
 
 def test_intake_form_mixed_outcome_keeps_succeeded_page_facts_and_marks_only_the_failed_page(store):
@@ -723,6 +790,23 @@ def test_list_citations_for_patient_never_returns_a_different_patients_citations
 
 def test_list_citations_for_patient_with_no_ingested_documents_returns_empty(store):
     assert store.list_citations_for_patient(999) == []
+
+
+def test_list_citations_for_patient_tolerates_a_total_failure_with_no_facts_sidecar(store):
+    """Issue #206: a total-failure ingestion writes NO facts sidecar (see
+    ``test_all_pages_failing_writes_no_facts_sidecar``). A later
+    ``list_citations_for_patient`` call for that patient must still work
+    normally -- it simply has nothing to find for that document, not a
+    crash on a missing sidecar (the glob over ``facts/*.json`` never even
+    sees a file that was never written)."""
+    failing_vlm = _FakeVlmOllama(error=True)
+
+    with pytest.raises(IngestionError):
+        attach_and_extract(
+            1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
+        )
+
+    assert store.list_citations_for_patient(1) == []
 
 
 def test_list_citations_for_patient_requires_a_type_strict_int_match(tmp_path: Path):

@@ -207,3 +207,35 @@ def test_feedback_dedup_does_not_collapse_different_correlation_ids(store: Trace
     metrics = compute_dashboard_metrics(db_path)
 
     assert metrics.feedback_up_count == 5
+
+
+def test_extraction_failure_rate_none_with_no_extraction_spans(store: TraceStore, db_path: str) -> None:
+    metrics = compute_dashboard_metrics(db_path)
+
+    assert metrics.extraction_failure_rate is None
+
+
+def test_extraction_failure_rate_computed_as_failed_pages_over_total_pages(store: TraceStore, db_path: str) -> None:
+    # Issue #206: aggregated across every extraction span -- 2 documents,
+    # one fully clean (0/3 failed), one partially failed (2/2 failed) ->
+    # 2 failed / 5 total pages.
+    store.record_extraction_span(
+        correlation_id="c1", start_ts=0.0, end_ts=1.0, ok=True, pages_total=3, pages_failed=0
+    )
+    store.record_extraction_span(
+        correlation_id="c2", start_ts=0.0, end_ts=1.0, ok=False, pages_total=2, pages_failed=2
+    )
+
+    metrics = compute_dashboard_metrics(db_path)
+
+    assert metrics.extraction_failure_rate == pytest.approx(2 / 5)
+
+
+def test_extraction_failure_rate_all_pages_succeeding_is_zero_not_none(store: TraceStore, db_path: str) -> None:
+    store.record_extraction_span(
+        correlation_id="c1", start_ts=0.0, end_ts=1.0, ok=True, pages_total=4, pages_failed=0
+    )
+
+    metrics = compute_dashboard_metrics(db_path)
+
+    assert metrics.extraction_failure_rate == 0.0

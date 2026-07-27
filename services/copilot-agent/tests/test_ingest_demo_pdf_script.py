@@ -92,6 +92,41 @@ def test_ingest_demo_pdf_uses_the_dedicated_vision_model_not_ollama_model(
     assert len(factory.built_clients[0].extract_calls) == 1
 
 
+def test_ingest_demo_pdf_exits_nonzero_with_a_distinct_message_on_total_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture_pdf: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #206: a TOTAL extraction failure (every page failed) now raises
+    ``IngestionError`` from ``attach_and_extract`` instead of returning a
+    zero-facts result -- the script must catch it and exit non-zero with a
+    message DISTINGUISHABLE from the partial-failure case's ("lab PDF
+    ingestion had failed pages ..."). Asserting on the message text (not
+    just the exit code) is load-bearing here: before this fix, a total
+    failure ALSO exits 1 via the pre-existing ``if result.failed_pages``
+    branch, so the exit code alone cannot tell the two apart."""
+    settings = Settings(copilot_ingestion_base_dir=str(tmp_path))
+
+    class _AlwaysFailingVlm(_FakeVlmOllama):
+        def __init__(self) -> None:
+            super().__init__(error=True, model=settings.copilot_vision_model)
+
+    class _FailingFactory(_RecordingOllamaClientFactory):
+        def from_settings(self, settings: Settings, *, model: str | None = None) -> _FakeVlmOllama:
+            self.calls.append(model)
+            client = _AlwaysFailingVlm()
+            self.built_clients.append(client)
+            return client
+
+    failing_factory = _FailingFactory([])
+    rc = _run_main(monkeypatch, settings, failing_factory, fixture_pdf)
+
+    assert rc == 1
+    stderr = capsys.readouterr().err
+    assert "FAILED ENTIRELY" in stderr
+    assert "had failed pages" not in stderr  # the distinct, partial-failure-only message
+    store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
+    assert store.list_citations_for_patient(1) == []
+
+
 def test_ingest_demo_pdf_refuses_a_non_vision_model_before_any_page_is_processed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture_pdf: Path
 ) -> None:
