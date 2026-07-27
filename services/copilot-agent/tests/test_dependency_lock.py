@@ -1,4 +1,4 @@
-"""Guards issue #213's fix: the container build is hash-locked and reproducible.
+"""Guards issue 213's fix: the container build is hash-locked and reproducible.
 
 pyproject.toml's floor/ceiling ranges (#196) describe the human-facing
 contract -- what versions are acceptable -- but two builds from the same
@@ -77,7 +77,7 @@ def _load_logical_lines() -> list[str]:
 def test_requirements_lockfile_exists() -> None:
     assert REQUIREMENTS_PATH.exists(), (
         "services/copilot-agent/requirements.txt is missing -- generate it with "
-        "scripts/lock-deps.sh (issue #213)."
+        "scripts/lock-deps.sh (issue 213)."
     )
 
 

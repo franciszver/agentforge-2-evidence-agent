@@ -2,7 +2,12 @@ FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7e
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml requirements.txt ./
+# requirements.txt (scripts/lock-deps.sh, issue #213) hash-pins the entire
+# production runtime closure -- transitives included -- so every build from
+# this commit resolves byte-identical dependencies, not just something
+# inside pyproject.toml's floor/ceiling ranges.
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY app ./app
 # app/retrieval.py's CORPUS_DIR (P3.9 guideline-corpus evidence retrieval)
 # resolves to ./corpus at runtime -- without this, build_retriever_from_corpus
@@ -14,7 +19,13 @@ COPY app ./app
 # unreachable in every built image, not just flag-gated off.
 COPY corpus ./corpus
 
-RUN pip install --no-cache-dir .
+# --no-deps: the runtime closure is already installed and hash-verified
+# above; reinstalling deps here would resolve against pyproject's ranges
+# again, bypassing the lock. --no-build-isolation: skips fetching a fresh,
+# unpinned setuptools/wheel from PyPI for the build backend -- it reuses
+# the base image's own pinned setuptools/pip (fixed by this Dockerfile's
+# digest-pinned FROM line), keeping the build-backend closure locked too.
+RUN pip install --no-cache-dir --no-deps --no-build-isolation .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
 
