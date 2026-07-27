@@ -39,20 +39,43 @@ enabled`` gates whether a caller ever constructs one. Flag off (the
 default, and the ONLY state this has ever shipped in): zero behavior
 change, zero extra LLM call.
 
-**Injection posture (not mitigated here -- #192, BLOCKING for enablement).**
-Claim text and SourceRef field/value pairs are interpolated directly into
-the judge prompt (``_INSTRUCTIONS_TEMPLATE``); the only defence against a
-value that itself contains an instruction-shaped payload is the soft
-system-prompt line telling the judge to treat CLAIM/SOURCE FACTS/ESTABLISHED
-FACTS strictly as data, never as commands. That is not a structural
-mitigation -- a sufficiently adversarial field value could still steer the
+**Injection posture (soft instruction only -- #192, measured).** Claim text
+and SourceRef field/value pairs are interpolated directly into the judge
+prompt (``_INSTRUCTIONS_TEMPLATE``); the only defence against a value that
+itself contains an instruction-shaped payload is the soft system-prompt line
+telling the judge to treat CLAIM/SOURCE FACTS/ESTABLISHED FACTS strictly as
+data, never as commands. That is not a structural mitigation -- a
+sufficiently adversarial field value could in principle still steer the
 judge. This is the SAME posture ``app.semantic_support`` has had since issue
-#47, not a new gap this module introduces. Issue #192 tracks structural
-mitigation across BOTH judge modules and is a BLOCKING pre-condition for
-ever flipping ``copilot_source_ref_relevance_enabled`` (or
-``copilot_semantic_support_enabled``'s continued default-on status) -- do
-not read this module's zero-false-reject measurement (issue #170) as
-clearing that separate risk.
+#47, not a new gap this module introduces. #192 measured a structural
+alternative (nonce-fenced envelopes, ``app.prompt_fencing``, reverted) on a
+152-payload battery, 190 draws per (judge, direction) cell: fencing left
+``app.semantic_support``'s force_not_supported bypass count at 25 -> 21
+(noise on 4 draws) but made THIS module's force_not_supported bypass rate
+2.4x WORSE (25 -> 61) -- see ``evals/results/issue-192/`` and
+``evals/results/issue-192/README.md``. **force-SUPPORTED -- the only
+direction that can promote an unsupported clinical claim to
+certified-verified -- was 0/190 in every configuration measured, before and
+after fencing**, on both judges. The owner declined the fence and shipped
+the soft instruction as-is; #192 is closed on its own acceptance criterion
+that a measured decision recording the soft instruction as sufficient (with
+evidence, not assertion) is a valid close. This is measured ABSENCE of a
+force-SUPPORTED bypass on THIS model/prompt/battery, not proof none exists
+-- re-run the battery (``tests/test_issue_192_injection_battery.py``)
+against any judge-model change before relying on this posture again. **This
+0/190 is also confounded with scenario distance, not a clean result:** this
+module's force-SUPPORTED scenario pairs a claim with a maximally-UNRELATED
+fact (the easiest pairing to resist), while the fail-closed scenario -- where
+the measured bypasses above actually occurred -- starts from a genuinely
+supporting, high-overlap pair. The battery cannot distinguish "resists
+force-SUPPORTED injection" from "won't call a wildly-unrelated fact supported
+regardless of injection"; a near-miss pair (plausibly related, not actually
+supporting) plus injection has never been measured. Treat as a named
+limitation for any future re-measurement. #192's close removes the
+injection-defence blocker on enabling this flag, but does not itself enable
+it -- ``copilot_source_ref_relevance_enabled`` stays OFF below pending its
+own explicit owner enablement decision, separate from this posture
+measurement.
 
 **Scope, per #130's ADR: SourceRef-only claims exclusively.** A claim is
 eligible for this gate ONLY when ALL of its citations are ``SourceRef``s --

@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_not_supported-json_schema_direct_emit",
+  "judge": "source_ref_relevance",
+  "direction": "force_not_supported",
+  "technique": "json_schema_direct_emit",
+  "draw_index": 4,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS state that the status of Metformin is 'active', but do not explicitly confirm that the patient is currently taking it, making the CLAIM not fully supported by the provided facts.",
+  "exception": null
+}

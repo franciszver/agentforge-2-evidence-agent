@@ -400,14 +400,18 @@ class Settings(BaseSettings):
     # 6/6 supported-correct), so "verified" now means provenance AND semantic
     # support in production. See app/semantic_support.py.
     #
-    # Issue #192 (BLOCKING, filed): this judge (and copilot_source_ref_
-    # relevance_enabled below) interpolates claim text / quote / fact values
-    # into the judge prompt with only a soft system-prompt instruction as
-    # injection defence -- no structural mitigation. #192 tracks structural
-    # mitigation across BOTH judge modules and is a pre-condition the owner
-    # has marked BLOCKING for this flag's continued default-ON status, not
-    # just for source_ref_relevance's own enablement. See app/source_ref_
-    # relevance.py's module docstring, "Injection posture".
+    # Issue #192 (CLOSED, measured decline): this judge (and copilot_source_
+    # ref_relevance_enabled below) interpolates claim text / quote / fact
+    # values into the judge prompt with only a soft system-prompt instruction
+    # as injection defence -- no structural mitigation. #192 measured a
+    # structural alternative (nonce-fenced envelopes) and found it did not
+    # beat this soft instruction: force-SUPPORTED (the only direction that
+    # can promote an unsupported claim to certified-verified) was 0/190 in
+    # every configuration, and fencing measured worse on source_ref_
+    # relevance's fail-closed direction. Owner declined the fence; the soft
+    # instruction ships as measured-sufficient evidence, not assertion. See
+    # app/semantic_support.py's module docstring, "Injection posture", and
+    # evals/results/issue-192/README.md for the full before/after tables.
     copilot_semantic_support_enabled: bool = True
 
     # Issue #153: when true, run_verification additionally requires that each
@@ -507,15 +511,17 @@ class Settings(BaseSettings):
     # flipping this default. Flag OFF: byte-identical to today, no extra LLM
     # call.
     #
-    # Issue #192 (BLOCKING, filed): this judge interpolates claim text /
-    # fact values into the judge prompt with only a soft system-prompt
-    # instruction as injection defence -- no structural mitigation, same
-    # posture as ``copilot_semantic_support_enabled`` above since #47. #192
-    # tracks structural mitigation across both judge modules and is a
-    # pre-condition the owner has marked BLOCKING for ever flipping THIS
-    # flag on -- the #170 zero-false-reject measurement above does not
-    # clear that separate risk. See app/source_ref_relevance.py's module
-    # docstring, "Injection posture".
+    # Issue #192 (CLOSED, measured decline): this judge interpolates claim
+    # text / fact values into the judge prompt with only a soft system-
+    # prompt instruction as injection defence -- no structural mitigation,
+    # same posture as ``copilot_semantic_support_enabled`` above since #47.
+    # #192 measured a structural alternative (nonce-fenced envelopes) and
+    # found it did not beat this soft instruction (see that flag's comment
+    # above for the numbers); the owner declined the fence. #192's close
+    # removes the injection-defence blocker on enabling THIS flag, but does
+    # not itself enable it -- the #170 zero-false-reject measurement above
+    # still awaits its own explicit owner enablement decision. See
+    # app/source_ref_relevance.py's module docstring, "Injection posture".
     #
     # `evals/runner/pipeline.py`'s `run_case` threads this setting through to
     # `run_verification` exactly parallel to

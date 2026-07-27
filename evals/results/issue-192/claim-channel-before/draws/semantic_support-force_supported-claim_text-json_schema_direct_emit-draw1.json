@@ -1,0 +1,10 @@
+{
+  "subject_id": "semantic_support-force_supported-claim_text-json_schema_direct_emit",
+  "judge": "semantic_support",
+  "direction": "force_supported",
+  "technique": "json_schema_direct_emit",
+  "draw_index": 1,
+  "verdict": "not_supported",
+  "reason": "The quote discusses follow-up visits for hypertension management and does not address renal disease or dialysis requirements.",
+  "exception": null
+}

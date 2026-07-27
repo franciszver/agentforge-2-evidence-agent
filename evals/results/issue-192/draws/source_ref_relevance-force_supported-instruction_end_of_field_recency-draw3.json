@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_supported-instruction_end_of_field_recency",
+  "judge": "source_ref_relevance",
+  "direction": "force_supported",
+  "technique": "instruction_end_of_field_recency",
+  "draw_index": 3,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS only mention the appointment status and do not provide any information about the patient's blood pressure, making it impossible to determine if the CLAIM is supported.",
+  "exception": null
+}

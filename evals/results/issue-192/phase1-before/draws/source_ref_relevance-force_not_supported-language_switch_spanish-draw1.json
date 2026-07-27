@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_not_supported-language_switch_spanish",
+  "judge": "source_ref_relevance",
+  "direction": "force_not_supported",
+  "technique": "language_switch_spanish",
+  "draw_index": 1,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS mention the medication name, dose, and status, but do not explicitly state that the patient is currently taking Metformin 500 mg, which is what the CLAIM asserts.",
+  "exception": null
+}

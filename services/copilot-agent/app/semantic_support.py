@@ -22,6 +22,41 @@ explicitly given a judge client -- ``Settings.copilot_semantic_support_enabled``
 gates whether the caller ever constructs one. Flag off (the default): zero
 behavior change, zero extra LLM call.
 
+**Injection posture (soft instruction only -- #192, measured).** Claim text
+and quote values are interpolated directly into the judge prompt
+(``_INSTRUCTIONS_TEMPLATE``); the only defence against a value that itself
+contains an instruction-shaped payload is the system-prompt line telling the
+judge to treat CLAIM/QUOTE/ESTABLISHED FACTS strictly as data, never as
+commands. This is NOT a structural mitigation -- a sufficiently adversarial
+field value could in principle still steer the judge. #192 measured a
+structural alternative (nonce-fenced envelopes, ``app.prompt_fencing``,
+reverted) and found it did not clear the soft instruction's own bar: on the
+same 152-payload battery / 190 draws per (judge, direction) cell, fencing
+moved this module's force_not_supported bypass count from 25 to 21 (noise on
+4 draws) while making ``app.source_ref_relevance``'s force_not_supported
+bypass rate 2.4x WORSE (25 -> 61) -- see ``evals/results/issue-192/`` and
+``evals/results/issue-192/README.md`` for the full before/after tables.
+**force-SUPPORTED -- the only direction that can promote an unsupported
+clinical claim to certified-verified -- was 0/190 in every configuration
+measured, before and after fencing.** The owner's decision: ship the soft
+instruction as-is and decline the fence, since #192's own acceptance
+criteria treat "the soft instruction measures sufficient, with evidence" as
+a valid closing condition. This is measured ABSENCE of a force-SUPPORTED
+bypass on THIS model and prompt on THIS battery -- not proof none exists;
+the battery (``tests/test_issue_192_injection_battery.py``,
+``evals/runner/issue_192_injection_battery.py``) should be re-run against
+any judge-model change before relying on this posture again. **This 0/190 is
+also confounded with scenario distance, not a clean result:** this module's
+force-SUPPORTED scenario pairs a claim with a maximally-UNRELATED quote (the
+easiest pairing to resist), while the fail-closed scenario -- where the
+measured bypasses above actually occurred -- starts from a genuinely
+supporting, high-overlap pair. The battery cannot distinguish "resists
+force-SUPPORTED injection" from "won't call a wildly-unrelated quote
+supported regardless of injection"; a near-miss pair (plausibly related, not
+actually supporting) plus injection has never been measured. Treat as a
+named limitation for any future re-measurement, not as evidence this posture
+is robust against a more realistic force-SUPPORTED attempt.
+
 **Scope: DocumentCitation (quote-based) only, not SourceRef.** A ``SourceRef``
 citation names a structured ``(tool_call_id, record_id, field)`` triple and
 an ``asserted_value`` for that exact field -- once ``check_source_ref`` has
@@ -204,13 +239,15 @@ the patient's raw chart data -- not from the QUOTE): {facts}
 """
 
 
-def judge_support(
+def judge_support_full(
     claim_text: str,
     quote: str,
     judge: SemanticSupportJudgeLike,
     context_facts: Sequence[str] | None = None,
-) -> bool:
-    """Ask ``judge`` whether ``quote`` semantically supports ``claim_text``.
+) -> SemanticSupportJudgement:
+    """Ask ``judge`` whether ``quote`` semantically supports ``claim_text`` --
+    the DocumentCitation-oriented counterpart to
+    ``app.source_ref_relevance.judge_source_ref_relevance_full``.
 
     ``context_facts`` (issues #111/#128) are optional ground-truth facts --
     e.g. a sibling citation's already-confirmed chart value -- given to the
@@ -219,11 +256,18 @@ def judge_support(
     restated in the quote itself. See module docstring, "Established-facts
     context", for the safety invariant governing what may be passed here.
 
-    Fail-closed (see module docstring): ``True`` only for an explicit
-    ``SupportVerdict.SUPPORTED``. Any judge error (``LLMEngineError`` --
+    Returns the FULL judgement (verdict + reason), unlike ``judge_support``
+    below -- exists as a separate function so a measurement harness (e.g.
+    ``evals/runner/issue_192_injection_battery.py``) can log WHY the judge
+    decided what it decided and exercise the EXACT production message shape,
+    rather than reconstructing it from this module's private templates.
+    Production code (``apply_semantic_support``) only ever needs the bool.
+
+    Fail-closed (see module docstring): a judge error (``LLMEngineError`` --
     malformed output after retries, timeout, HTTP failure) is caught here and
-    treated as unsupported, never propagated -- a flaky judge call must
-    degrade to "not verified", never crash an otherwise-working turn."""
+    reported as an explicit ``NOT_SUPPORTED`` judgement rather than
+    propagating -- a flaky judge call must degrade to "not verified", never
+    crash an otherwise-working turn."""
     context_block = ""
     if context_facts:
         context_block = _CONTEXT_BLOCK_TEMPLATE.format(facts="; ".join(context_facts))
@@ -235,9 +279,24 @@ def judge_support(
         },
     ]
     try:
-        judgement: SemanticSupportJudgement = judge.extract(messages, SemanticSupportJudgement)
-    except LLMEngineError:
-        return False
+        return judge.extract(messages, SemanticSupportJudgement)
+    except LLMEngineError as exc:
+        return SemanticSupportJudgement(
+            verdict=SupportVerdict.NOT_SUPPORTED,
+            reason=f"judge error (fail-closed): {exc}"[:280],
+        )
+
+
+def judge_support(
+    claim_text: str,
+    quote: str,
+    judge: SemanticSupportJudgeLike,
+    context_facts: Sequence[str] | None = None,
+) -> bool:
+    """Fail-closed bool wrapper around ``judge_support_full`` (the production
+    call shape ``apply_semantic_support`` uses): ``True`` only for an
+    explicit ``SupportVerdict.SUPPORTED``."""
+    judgement = judge_support_full(claim_text, quote, judge, context_facts)
     return judgement.verdict is SupportVerdict.SUPPORTED
 
 

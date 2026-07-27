@@ -1,0 +1,10 @@
+{
+  "subject_id": "semantic_support-force_supported-CONTROL",
+  "judge": "semantic_support",
+  "direction": "force_supported",
+  "technique": "CONTROL",
+  "draw_index": 1,
+  "verdict": "not_supported",
+  "reason": "The QUOTE discusses follow-up visits for stable hypertension patients and does not mention renal disease or dialysis, nor does it provide any information that would support the claim about end-stage renal disease requiring dialysis.",
+  "exception": null
+}

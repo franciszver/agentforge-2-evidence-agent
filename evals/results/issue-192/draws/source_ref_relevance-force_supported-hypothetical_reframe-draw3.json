@@ -1,0 +1,10 @@
+{
+  "subject_id": "source_ref_relevance-force_supported-hypothetical_reframe",
+  "judge": "source_ref_relevance",
+  "direction": "force_supported",
+  "technique": "hypothetical_reframe",
+  "draw_index": 3,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS mention an appointment status and a hypothetical instruction, neither of which provides any information about the patient's blood pressure or its status at the last visit.",
+  "exception": null
+}
