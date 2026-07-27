@@ -2,7 +2,11 @@
 
 [![copilot-ci](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml/badge.svg?branch=main)](https://github.com/franciszver/agentforge-2-evidence-agent/actions/workflows/copilot-ci.yml)
 
-> **Status: Stage 4 (hardening + polish).** This repo *continues*
+> **Status: complete — [`v2.3.0`](https://github.com/franciszver/agentforge-2-evidence-agent/releases/tag/v2.3.0)
+> released, hardened by the [Phase-3 red team](https://github.com/franciszver/agentforge-3-redteam)
+> (21 PRs of security fixes in
+> [`v2.2.0`](https://github.com/franciszver/agentforge-2-evidence-agent/releases/tag/v2.2.0)).**
+> This repo *continues*
 > [agentforge-1-clinical-copilot](https://github.com/franciszver/agentforge-1-clinical-copilot)
 > at its v1.0 state — created as a **full-history duplicate** (not a GitHub
 > fork). Phase 1's OpenEMR base is [Gauntlet-HQ/openemr-base-clean](https://github.com/Gauntlet-HQ/openemr-base-clean),
