@@ -444,9 +444,9 @@ Stated plainly, in order of what would need to change:
 
    **Why accepted rather than mitigated.** Two preconditions keep this
    inert today: `copilot_per_user_token_enabled` defaults `False`
-   (`app/config.py:196`) and is set by neither compose file — the shipped
-   dev stack's `docker-compose.copilot.yml` only *mentions* the env var in
-   an explanatory comment, never sets it — and the agent service has no
+   (`app/config.py:196`) and is set by no compose file in the repo — the
+   shipped dev stack's `docker-compose.copilot.yml` only *mentions* the env
+   var in an explanatory comment, never sets it — and the agent service has no
    `ports:` mapping and sits solely on the `internal: true`
    `copilot_internal` network, the same "unreachable from outside the
    Docker host" precondition every other finding in this batch relies on.
