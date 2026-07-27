@@ -1,4 +1,4 @@
-"""Cached OpenEMR token introspection for the agent (#124 Phase 4).
+"""Cached OpenEMR token introspection for the agent (Phase 1 #124 Phase 4).
 
 Wraps the low-level :func:`app.openemr_auth.introspect_token` primitive with a
 short-TTL, hash-keyed cache so the per-``/chat`` introspection round-trip does
@@ -135,7 +135,7 @@ class TokenIntrospector:
     def peek_cached(self, token: str) -> IntrospectionResult | None:
         """Return a still-fresh cached result for ``token``, or ``None`` on a
         cache miss -- WITHOUT ever making the upstream introspection call
-        (#185).
+        (Phase 1 #185).
 
         Pure in-memory (a hash + dict lookup under the existing lock) -- safe
         to call directly from an event-loop thread. This is the fast path
@@ -150,7 +150,7 @@ class TokenIntrospector:
         """Return a still-fresh cached result for ``token``, or ``None``.
 
         Shared by ``introspect`` (hit-or-fetch) and ``peek_cached``
-        (hit-only, #185) so both stay in sync on cache-key/TTL semantics.
+        (hit-only, Phase 1 #185) so both stay in sync on cache-key/TTL semantics.
         """
         key = hashlib.sha256(token.encode()).hexdigest()
         with self._lock:

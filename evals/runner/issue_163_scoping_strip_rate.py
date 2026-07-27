@@ -75,7 +75,7 @@ no seam to grab the ``PlannerResult`` in between and call verification a
 second time on it. Rather than reshape ``pipeline.py`` (out of scope for a
 measurement script, and every existing caller of ``run_case`` depends on its
 current one-shot shape), ``_run_planner`` below duplicates exactly
-``run_case``'s pre-verification section (the #223 cross-patient guard, the
+``run_case``'s pre-verification section (the Phase 1 #223 cross-patient guard, the
 fake registry + ``Planner.run`` call, ``apply_subject_check``, ``clarify_
 unresolvable_referent``, ``apply_recency_notice``) -- same duplication
 discipline ``issue_154_stability_harness.py``'s ``_agent_root_candidates``/

@@ -14,14 +14,14 @@ into one ``VerdictResult`` + ``RenderedAnswer`` for the P3.8 SSE frame:
       -> app.verdict.compute_verdict   (+ allergy + interaction folds)
       -> (VerdictResult, RenderedAnswer)
 
-``apply_recency_notice`` (#153) is a separate, deterministic step over the
+``apply_recency_notice`` (Phase 1 #153) is a separate, deterministic step over the
 same ``PlannerResult`` -- see its own docstring and ``app.verification``'s
 "Recency notices" section for why it is NOT wired into the pipeline above:
 it must not depend on the (LLM, lazily-invoked) extraction stage.
 
-**The security boundary (refined #130).** #130's invariant was originally
+**The security boundary (refined Phase 1 #130).** Phase 1 #130's invariant was originally
 stated as "raw values never reach ANY LLM prompt." That is imprecise, and
-this module resolves it. The REASON quarantine (#130 / P2.9) exists is to
+this module resolves it. The REASON quarantine (Phase 1 #130 / P2.9) exists is to
 protect the tool-SELECTING **planner** LLM from prompt-injection in raw
 free-text: a steered planner could call tools or exfiltrate across patients.
 The refined, precise boundary is:
@@ -336,7 +336,7 @@ class ClaimExtractor:
     @property
     def llm_calls(self) -> list[LlmCallStats]:
         """Every LLM call made through this extractor's ``OllamaClient``, for
-        the P4/#149 ``llm`` trace span. ``getattr``-defensive: a hermetic
+        the P4/Phase 1 #149 ``llm`` trace span. ``getattr``-defensive: a hermetic
         test double passed as ``_Extractor`` need not model ``call_stats``."""
         return list(getattr(self._ollama, "call_stats", []))
 
@@ -663,7 +663,7 @@ def collect_medications(
 ) -> list[MedicationItem]:
     """The medication records mentioned in this conversation, parsed from the
     ``get_medications`` raw result(s). Deterministic; feeds the allergy /
-    interaction folds (raw -> deterministic check is safe, same as #130)."""
+    interaction folds (raw -> deterministic check is safe, same as Phase 1 #130)."""
     medications: list[MedicationItem] = []
     for tool, result in zip(tools, raw_results):
         if tool is ToolName.GET_MEDICATIONS and result is not None:
@@ -925,7 +925,7 @@ def _with_answer(
 
 def apply_recency_notice(result: PlannerResult, *, now: datetime) -> PlannerResult:
     """Append deterministic recency notices (``app.verification
-    .recency_notices``, #153) to ``result.answer`` for every stale record
+    .recency_notices``, Phase 1 #153) to ``result.answer`` for every stale record
     returned this turn.
 
     Deliberately independent of ``run_verification``/claim extraction -- see
@@ -996,7 +996,7 @@ _PATIENT_NUMBER_RE = re.compile(r"\bpatient\s*(?:id\s*)?#?\s*(\d+)\b", re.IGNORE
 # subject-check signal when the question itself ties it to an explicit
 # foreign patient number, never when it merely appears somewhere in the text
 # (that would be indistinguishable from a legitimately-named provider or
-# family member -- see #194's scoping discussion).
+# family member -- see Phase 1 #194's scoping discussion).
 _PAIRED_NAME_NUMBER_RE = re.compile(
     # Only "patient" is matched case-insensitively (scoped inline flag, py3.11+)
     # -- the name-capture group's [A-Z] stays case-SENSITIVE, so a lowercase
@@ -1047,7 +1047,7 @@ def _answer_attributes_to_foreign(answer: str, numbers: set[str], names: set[str
       - immediately followed by a subject verb ("999 has ...", "999 is on ...").
     A bare number-subject with none of these (e.g. "999, no meds") is
     deliberately out of scope -- catching it reliably needs exactly the
-    fragile NLP #194 rules out, and the common real forms are "patient N ..."
+    fragile NLP Phase 1 #194 rules out, and the common real forms are "patient N ..."
     and the paired name."""
     for name in names:
         if re.search(rf"\b{re.escape(name)}\b", answer, re.IGNORECASE):
@@ -1066,13 +1066,13 @@ def _answer_attributes_to_foreign(answer: str, numbers: set[str], names: set[str
 
 def apply_subject_check(result: PlannerResult, *, question: str, patient_id: int) -> PlannerResult:
     """Deterministic post-answer guard against cross-patient misattribution
-    (#194, follow-up to #121). #121 found that a small model can answer a
+    (Phase 1 #194, follow-up to Phase 1 #121). Phase 1 #121 found that a small model can answer a
     cross-patient question by verbally attributing the BOUND patient's
     (possibly empty) result to a different, unqueried patient -- e.g. bound
     to patient 1, asked about "Bob (patient 999)", answering "Bob has no
     medications." No PHI necessarily leaks (the fetch, if any, still only
     ever ran against the bound patient -- P2.16), but the prose is a false
-    claim about a patient the agent never looked at. #121's fix was prompt
+    claim about a patient the agent never looked at. Phase 1 #121's fix was prompt
     hardening, which is inherently non-deterministic on a small local model;
     this is the model-independent backstop.
 
@@ -1103,7 +1103,7 @@ def apply_subject_check(result: PlannerResult, *, question: str, patient_id: int
     refusal that merely *mentions* the foreign patient in subject position
     while declining (e.g. "I cannot discuss patient 999"). Both are replaced
     uniformly -- re-deriving that distinction would require exactly the
-    NLP-ish, false-positive-prone heuristics #194 rules out, and the
+    NLP-ish, false-positive-prone heuristics Phase 1 #194 rules out, and the
     replacement is itself always a valid refusal either way.
 
     Deliberately independent of ``run_verification``/claim extraction, same
@@ -1155,22 +1155,22 @@ _DOSING_NOUNS = (
     r"doses?|times|puffs?|drops?|days?|weeks?|months?"
 )
 
-# The guard's OWN foreign-patient-number pattern: identical to #194's
+# The guard's OWN foreign-patient-number pattern: identical to Phase 1 #194's
 # ``_PATIENT_NUMBER_RE`` but with a trailing negative lookahead so a
 # "patient <N>" whose number is immediately followed by a dosing/quantity
 # noun (a dosing instruction, not a patient reference) does NOT match. Kept
-# SEPARATE from ``_PATIENT_NUMBER_RE`` deliberately -- #194's
+# SEPARATE from ``_PATIENT_NUMBER_RE`` deliberately -- Phase 1 #194's
 # ``apply_subject_check`` runs POST-answer and only ever rewrites text, so
 # its looser number match is harmless there; this guard runs PRE-dispatch and
 # a false positive here hard-refuses a legitimate question, so it must be
-# tighter. Sharing one pattern would force #194's tests and this guard's to
+# tighter. Sharing one pattern would force Phase 1 #194's tests and this guard's to
 # move in lockstep for no benefit.
 _GUARD_PATIENT_NUMBER_RE = re.compile(
     rf"\bpatient\s*(?:id\s*)?#?\s*(\d+)\b(?!\s+(?:{_DOSING_NOUNS})\b)",
     re.IGNORECASE,
 )
 
-# #224 name-binding: a NAME the question introduces via "patient <Name>" --
+# Phase 1 #224 name-binding: a NAME the question introduces via "patient <Name>" --
 # up to three capitalized words. Nobody says "patient Lisinopril" (a lowercase
 # clinical shorthand almost never follows the bare word "patient" the way a
 # person's name does), so this construction is treated as a genuine patient
@@ -1216,13 +1216,13 @@ def _is_foreign_named_patient(question: str, bound_patient_name: str | None) -> 
     )
 
 
-# #237 roster-based cross-patient detection: the "switch (over) to <Name>"
-# construction #223 originally had to drop and #224 could not safely revive
+# Phase 1 #237 roster-based cross-patient detection: the "switch (over) to <Name>"
+# construction Phase 1 #223 originally had to drop and Phase 1 #224 could not safely revive
 # by SHAPE alone (see ``detect_foreign_patient_reference``'s docstring) --
 # resurrected here as a CONSTRUCTION regex only. Requires 2-3 capitalized
-# words (same shape #224's draft used), which excludes virtually every real
+# words (same shape Phase 1 #224's draft used), which excludes virtually every real
 # drug name in casual clinical shorthand (single tokens: Lisinopril,
-# Coumadin, Metformin, ...) -- but unlike #224's draft, whether a MATCHED
+# Coumadin, Metformin, ...) -- but unlike Phase 1 #224's draft, whether a MATCHED
 # 2-3 word candidate actually triggers a refusal is now decided by a patient
 # ROSTER (``_matches_roster`` below), never by requiring a following
 # possessive clinical phrase.
@@ -1336,11 +1336,11 @@ def detect_foreign_patient_reference(
     bound_patient_name: str | None = None,
     roster_provider: Callable[[], Sequence[RosterEntry]] | None = None,
 ) -> bool:
-    """Deterministic PRE-dispatch guard (#223, extended by #224 and #237):
+    """Deterministic PRE-dispatch guard (Phase 1 #223, extended by Phase 1 #224 and Phase 1 #237):
     does ``question`` explicitly reference a DIFFERENT patient than
     ``bound_patient_id``/``bound_patient_name``?
 
-    This hardens #194's ``apply_subject_check`` above, which only runs AFTER
+    This hardens Phase 1 #194's ``apply_subject_check`` above, which only runs AFTER
     ``Planner.run()`` has already dispatched tools and can merely rewrite the
     answer TEXT. That is structurally too late to satisfy the eval suite's
     ``must_refuse`` (the forbidden tool must NEVER dispatch) and ``no_phi``
@@ -1354,7 +1354,7 @@ def detect_foreign_patient_reference(
       1. An explicit foreign patient NUMBER ("patient 999", "patient #999",
          "patient id 999") whose value differs from the bound id, via
          ``_GUARD_PATIENT_NUMBER_RE`` (which excludes dosing forms like "give
-         patient 2 tablets"). Unconditional -- #223's original signal,
+         patient 2 tablets"). Unconditional -- Phase 1 #223's original signal,
          unchanged, needs no name.
       2. "patient <Name>" (``_is_foreign_named_patient`` /
          ``_PATIENT_NAMED_RE``) whose name is NOT the bound patient -- safe
@@ -1364,14 +1364,14 @@ def detect_foreign_patient_reference(
          (resolved once per conversation -- see ``app.chat``'s
          conversation-creation wiring and ``runner.pipeline.run_case``'s
          ``case.patient_name``); with no bound name to compare against it is
-         skipped and this function's behavior is byte-identical to #223
-         (numeric only). Needs no roster -- unaffected by #237.
+         skipped and this function's behavior is byte-identical to Phase 1 #223
+         (numeric only). Needs no roster -- unaffected by Phase 1 #237.
       3. "switch (over) to <Name>" (``_is_foreign_switch_to_name`` /
          ``_SWITCH_TO_NAME_RE``) whose captured name is NOT the bound patient
-         AND matches a real DIFFERENT patient on ``roster_provider()`` (#237
-         -- see that function's docstring). This is the construction #223
+         AND matches a real DIFFERENT patient on ``roster_provider()`` (Phase 1 #237
+         -- see that function's docstring). This is the construction Phase 1 #223
          had to drop entirely (a bare capitalized word collides with a drug
-         name, "switch to Lisinopril") and #224 could not safely revive by
+         name, "switch to Lisinopril") and Phase 1 #224 could not safely revive by
          requiring only a 2-3 word name plus a following possessive clinical
          phrase -- that gate's own FP probe still misfired on ~6 of 7
          realistic two-word drug-BRAND switches ("switch to Advair Diskus and
@@ -1415,7 +1415,7 @@ _CROSS_PATIENT_REFUSAL_ANSWER = (
 
 def cross_patient_refusal_result() -> PlannerResult:
     """The refusal ``PlannerResult`` for ``detect_foreign_patient_reference``
-    (#223): empty trace, empty raw_results, empty llm_calls -- no tool was
+    (Phase 1 #223): empty trace, empty raw_results, empty llm_calls -- no tool was
     ever dispatched and no model was ever called -- carrying a clean, generic
     decline that names neither the foreign patient nor the bound one."""
     return PlannerResult(answer=_CROSS_PATIENT_REFUSAL_ANSWER, trace=[], raw_results=[], llm_calls=[])
@@ -1455,7 +1455,7 @@ _CLARIFY_UNRESOLVABLE_REFERENT_ANSWER = (
 def clarify_unresolvable_referent(
     result: PlannerResult, *, question: str, has_prior_turns: bool
 ) -> PlannerResult:
-    """Deterministic post-answer guard (#225) against confident-guessing on
+    """Deterministic post-answer guard (Phase 1 #225) against confident-guessing on
     an unresolvable demonstrative medication reference -- e.g. bound to a
     patient, asked "Did she start that new medication?", nothing in the
     conversation names a medication. A small model is prone to silently
@@ -1486,7 +1486,7 @@ def clarify_unresolvable_referent(
     referent against prior turns (that would need real coreference
     resolution, well beyond a deterministic regex guard); it stays
     conservative and simply never fires once history exists, exactly the
-    same fail-closed-toward-not-interrupting posture #223's guard takes
+    same fail-closed-toward-not-interrupting posture Phase 1 #223's guard takes
     toward not wrongly refusing ordinary dosing questions. The caller
     passes ``has_prior_turns=False`` unconditionally for the eval harness
     (single-turn by construction, so the condition always evaluates true)
@@ -1497,7 +1497,7 @@ def clarify_unresolvable_referent(
     pattern of ``apply_subject_check``/``cross_patient_refusal_result``.
 
     **Ordering vs the other deterministic guards.** Callers must NOT invoke
-    this when ``detect_foreign_patient_reference`` (#223) already
+    this when ``detect_foreign_patient_reference`` (Phase 1 #223) already
     short-circuited to ``cross_patient_refusal_result()`` -- that is a
     different question class (cross-patient authorization, not referent
     ambiguity), and it takes priority: overriding an already-correct

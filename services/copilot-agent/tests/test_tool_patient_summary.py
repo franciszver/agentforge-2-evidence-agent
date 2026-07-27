@@ -191,7 +191,7 @@ def test_patient_not_found_raises_not_found(make_openemr_client):
 
 
 # --------------------------------------------------------------------------
-# get_patient_name (#224 name-binding) -- a single demographics-only round
+# get_patient_name (Phase 1 #224 name-binding) -- a single demographics-only round
 # trip (reuses the same roster fetch + client-side pid select as
 # get_patient_summary's ``_fetch_demographics``), not the full summary's 7
 # concurrent section-count calls. Used to resolve the bound patient's own
@@ -234,7 +234,7 @@ def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
 
 
 # --------------------------------------------------------------------------
-# get_patient_roster (#237 roster-based cross-patient detection) -- the same
+# get_patient_roster (Phase 1 #237 roster-based cross-patient detection) -- the same
 # roster fetch/select pattern as get_patient_name, but returning (pid, name)
 # pairs for EVERY patient -- feeds
 # app.extraction.detect_foreign_patient_reference's "switch to <Name>" signal

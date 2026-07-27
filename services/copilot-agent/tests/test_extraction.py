@@ -7,7 +7,7 @@ real Ollama call. These tests pin four things the pipeline must guarantee:
      risk class as ``app.quarantine.QuarantinedSummarizer``: constructed with
      ONLY an extraction-capable client, holding no tool registry / OpenEMR
      client / token, and the module imports none of them. This is the
-     load-bearing half of the refined #130 boundary (the extraction LLM may
+     load-bearing half of the refined Phase 1 #130 boundary (the extraction LLM may
      see raw values BECAUSE it is tool-less + constrained + deterministically
      validated -- see the module docstring of ``app.extraction``).
   2. **Value-omitted catalog** -- the extraction prompt's citation catalog
@@ -159,7 +159,7 @@ def _vitals_raw() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# 1. Structural tool-less isolation (the refined #130 boundary)
+# 1. Structural tool-less isolation (the refined Phase 1 #130 boundary)
 # --------------------------------------------------------------------------
 
 
@@ -1524,7 +1524,7 @@ def test_tool_call_scoping_catches_a_narrower_variant_when_answer_never_mentions
 
 
 # --------------------------------------------------------------------------
-# 6. apply_recency_notice (#153) -- deterministic, no LLM, no claims needed
+# 6. apply_recency_notice (Phase 1 #153) -- deterministic, no LLM, no claims needed
 # --------------------------------------------------------------------------
 
 _NOW = datetime.datetime(2026, 7, 15)
@@ -1559,7 +1559,7 @@ def test_apply_recency_notice_does_not_fire_for_a_fresh_record():
 
 
 # --------------------------------------------------------------------------
-# 7. apply_subject_check (#194) -- deterministic, no LLM, post-answer
+# 7. apply_subject_check (Phase 1 #194) -- deterministic, no LLM, post-answer
 #    cross-patient misattribution guard. See its docstring for the scoping
 #    rule: a foreign patient NUMBER the question explicitly introduces
 #    ("patient 999"), or a NAME the question binds to such a number via
@@ -1776,7 +1776,7 @@ def test_apply_subject_check_fires_on_a_foreign_number_in_patient_prefixed_posit
 
 def test_apply_subject_check_untouched_when_question_names_a_foreign_patient_but_answer_does_not_echo_it():
     # Mirrors the real committed recording for cross-patient-medications.yaml
-    # (#194 investigation): the question names a foreign patient number, but
+    # (Phase 1 #194 investigation): the question names a foreign patient number, but
     # the answer never echoes it (nor any paired name) -- e.g. "The patient
     # is currently taking X." The signal is present in the question but not
     # detected in the answer, so this must be a no-op.
@@ -1818,20 +1818,20 @@ def test_apply_subject_check_also_normalizes_an_answer_that_already_refuses():
 
 
 # --------------------------------------------------------------------------
-# 8. detect_foreign_patient_reference (#223) -- deterministic, no LLM,
+# 8. detect_foreign_patient_reference (Phase 1 #223) -- deterministic, no LLM,
 #    PRE-dispatch cross-patient refusal guard. Unlike apply_subject_check
-#    (#194, above), which runs AFTER the planner has already run and can only
+#    (Phase 1 #194, above), which runs AFTER the planner has already run and can only
 #    scrub the answer TEXT, this function is evaluated BEFORE the planner
 #    runs at all, so callers can short-circuit to a refusal before any tool
 #    dispatch or model call -- the only way to satisfy the eval suite's
 #    must_refuse (forbidden tool never dispatched) and no_phi (which also
 #    scans the quarantined tool-call trace) assertions. The tests in this
-#    section exercise the ORIGINAL #223 signal (an explicit foreign patient
+#    section exercise the ORIGINAL Phase 1 #223 signal (an explicit foreign patient
 #    NUMBER) with no bound name and no roster supplied -- byte-identical to
-#    #223. The number match excludes dosing forms ("give patient 2 tablets")
+#    Phase 1 #223. The number match excludes dosing forms ("give patient 2 tablets")
 #    so a routine dosing question is never wrongly refused. See section 8b
-#    for the "patient <Name>" signal (#224) and section 8c for the
-#    roster-based "switch to <Name>" signal (#237).
+#    for the "patient <Name>" signal (Phase 1 #224) and section 8c for the
+#    roster-based "switch to <Name>" signal (Phase 1 #237).
 # --------------------------------------------------------------------------
 
 
@@ -1872,8 +1872,8 @@ def test_detect_foreign_patient_reference_false_for_a_milligram_dosing_instructi
 
 
 def test_detect_foreign_patient_reference_does_not_fire_on_a_name_based_retarget():
-    # With no roster_provider supplied, the "switch to <Name>" signal (#237)
-    # is skipped entirely -- byte-identical to pre-#237 (#223 numeric-only):
+    # With no roster_provider supplied, the "switch to <Name>" signal (Phase 1 #237)
+    # is skipped entirely -- byte-identical to pre-Phase 1 #237 (Phase 1 #223 numeric-only):
     # an ordinary clinical medication switch phrased as "switch to <Drug>"
     # must never be refused, and without a roster to confirm the referenced
     # name is a real different patient, this function cannot tell it apart
@@ -1883,11 +1883,11 @@ def test_detect_foreign_patient_reference_does_not_fire_on_a_name_based_retarget
 
 
 # --------------------------------------------------------------------------
-# 8b. detect_foreign_patient_reference NAME-based signal (#224 name-binding).
+# 8b. detect_foreign_patient_reference NAME-based signal (Phase 1 #224 name-binding).
 #
 # ONE principled, general construction, evaluated only once the caller
 # supplies the bound patient's own name (``bound_patient_name``) -- with no
-# bound name it is skipped entirely and behavior is byte-identical to #223
+# bound name it is skipped entirely and behavior is byte-identical to Phase 1 #223
 # (see the tests above, which pass no third argument and must keep passing
 # unchanged):
 #
@@ -1898,13 +1898,13 @@ def test_detect_foreign_patient_reference_does_not_fire_on_a_name_based_retarget
 #   differs from the bound patient's own name.
 #
 # A "switch (over) to <Name>" signal was DELIBERATELY NOT added here: the
-# #224 gate's FP probe showed it misfires on ~6/7 realistic two-word
+# Phase 1 #224 gate's FP probe showed it misfires on ~6/7 realistic two-word
 # drug-BRAND switches ("switch to Advair Diskus and check her allergies",
-# ...) -- the exact clinical false positive that forced #223 to drop its own
+# ...) -- the exact clinical false positive that forced Phase 1 #223 to drop its own
 # name path. The tests below re-verify those "switch to <drug>" phrasings
-# never fire even with NO roster_provider supplied (mirroring #223/#224's
+# never fire even with NO roster_provider supplied (mirroring Phase 1 #223/Phase 1 #224's
 # behavior exactly). Section 8c brings the "switch to <Name>" construction
-# back safely, gated on a patient ROSTER rather than shape (#237).
+# back safely, gated on a patient ROSTER rather than shape (Phase 1 #237).
 # --------------------------------------------------------------------------
 
 
@@ -1928,15 +1928,15 @@ def test_detect_foreign_patient_reference_false_for_the_bound_patients_own_first
 
 def test_detect_foreign_patient_reference_named_signal_is_skipped_when_bound_name_is_unknown():
     # Fail-safe: without a resolved bound name, the named signal never fires --
-    # identical behavior to pre-#224 (#223 numeric-only).
+    # identical behavior to pre-Phase 1 #224 (Phase 1 #223 numeric-only).
     assert not detect_foreign_patient_reference("Does patient Maria Lopez have any lab abnormalities?", 3)
 
 
-# The #223 false-positive bar, re-verified with a bound name now KNOWN and
+# The Phase 1 #223 false-positive bar, re-verified with a bound name now KNOWN and
 # PASSED, and with NO roster_provider supplied -- name-binding being active
-# must never resurrect the clinical med-switch false positive that #223
+# must never resurrect the clinical med-switch false positive that Phase 1 #223
 # itself had to walk back. Section 8c re-verifies this same battery WITH a
-# roster present (the actual #237 fix), which is the harder bar.
+# roster present (the actual Phase 1 #237 fix), which is the harder bar.
 def test_detect_foreign_patient_reference_still_false_for_medication_switches_with_bound_name_known():
     assert not detect_foreign_patient_reference("Switch to Lisinopril.", 1, "Wanda Moore")
     assert not detect_foreign_patient_reference("Switch to Metformin.", 1, "Wanda Moore")
@@ -1953,11 +1953,11 @@ def test_detect_foreign_patient_reference_false_when_question_only_names_the_bou
 
 
 # --------------------------------------------------------------------------
-# 8c. detect_foreign_patient_reference ROSTER-based signal (#237, closes the
+# 8c. detect_foreign_patient_reference ROSTER-based signal (Phase 1 #237, closes the
 #     last eval xfail: authorization_probe/cross-patient-allergies.yaml).
 #
-# #223's bare "switch to <Name>" regex refused ordinary drug switches
-# ("switch to Lisinopril"); #224's narrowed 2-3-word + possessive version
+# Phase 1 #223's bare "switch to <Name>" regex refused ordinary drug switches
+# ("switch to Lisinopril"); Phase 1 #224's narrowed 2-3-word + possessive version
 # still misfired on 6/7 two-word BRAND phrasings ("switch to Advair Diskus
 # and check her allergies") and was dropped (section 8b above). Neither
 # problem is solvable by SHAPE alone -- a two-word person name and a
@@ -2066,12 +2066,12 @@ def test_detect_foreign_patient_reference_partial_first_name_match_on_roster_is_
     )
 
 
-# --- possessive suffix (#237 gate finding): "switch to Bob Smith's chart"
+# --- possessive suffix (Phase 1 #237 gate finding): "switch to Bob Smith's chart"
 #     must strip the trailing 's before BOTH the bound-name and roster
 #     comparisons. The ASCII apostrophe is inside _SWITCH_TO_NAME_RE's
 #     trailing char class, so without stripping, the captured candidate is
 #     "Bob Smith's" -- which fails the exact roster match against "Bob
-#     Smith" and silently bypasses the refusal (a #121-style misattribution
+#     Smith" and silently bypasses the refusal (a Phase 1 #121-style misattribution
 #     recurrence via the most keyboard-natural phrasing there is). ----------
 
 
@@ -2176,7 +2176,7 @@ def test_detect_foreign_patient_reference_false_for_a_possessive_drug_brand_swit
     )
 
 
-# --- the #223/#224 FP battery, re-verified WITH a roster present (the
+# --- the Phase 1 #223/Phase 1 #224 FP battery, re-verified WITH a roster present (the
 #     harder bar than section 8b's "no roster" re-verification above) ------
 
 
@@ -2241,12 +2241,12 @@ def test_cross_patient_refusal_result_has_no_dispatch_and_no_pii():
 
 
 # --------------------------------------------------------------------------
-# 9. clarify_unresolvable_referent (#225) -- deterministic, no LLM,
+# 9. clarify_unresolvable_referent (Phase 1 #225) -- deterministic, no LLM,
 #    post-answer guard against confident-guessing on an unresolvable
 #    demonstrative medication reference ("that new medication") with no
 #    prior conversation turn to anchor it. The multi-turn-safety test below
 #    (``..._untouched_when_prior_turns_exist``) is load-bearing: it is the
-#    guard against the #223-class defect of fixing the eval while breaking a
+#    guard against the Phase 1 #223-class defect of fixing the eval while breaking a
 #    real, legitimate multi-turn conversation.
 # --------------------------------------------------------------------------
 
@@ -2289,7 +2289,7 @@ def test_clarify_unresolvable_referent_untouched_when_prior_turns_exist():
     # LOAD-BEARING: the same ambiguous question, but WITH prior conversation
     # history -- an earlier turn may have already established what "that new
     # medication" refers to. Firing here would interrupt a legitimate
-    # multi-turn conversation, exactly the class of defect #223's gate
+    # multi-turn conversation, exactly the class of defect Phase 1 #223's gate
     # caught ("fixes the eval but breaks real usage"). Must be a no-op.
     result = _planner_result(
         "Yes, she started the medication, as it is currently active in her list "

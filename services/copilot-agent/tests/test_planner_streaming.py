@@ -1,5 +1,5 @@
-"""Hermetic tests for incremental ``tool_call`` emission (#212, sub-issue B of
-epic #209 -- #211 already streams the SSE relay itself).
+"""Hermetic tests for incremental ``tool_call`` emission (Phase 1 #212, sub-issue B of
+epic Phase 1 #209 -- Phase 1 #211 already streams the SSE relay itself).
 
 Today ``Planner.run()`` runs the whole tool loop to completion and returns a
 finished ``PlannerResult``; ``app.chat._stream_chat`` then REPLAYS
@@ -209,7 +209,7 @@ def test_streaming_path_still_applies_recency_notice_to_answer_frame() -> None:
 
     answer, tool_calls = _answer_and_tool_call_frames(response.text)
 
-    # Recency notice (#153): the stale record's date is surfaced.
+    # Recency notice (Phase 1 #153): the stale record's date is surfaced.
     assert "may not reflect the patient's current status" in answer
     assert "2014-02-01" in answer
     # The tool_call frame the streaming path emitted live still made it
@@ -219,9 +219,9 @@ def test_streaming_path_still_applies_recency_notice_to_answer_frame() -> None:
 
 
 def test_streaming_path_pre_dispatch_guard_refuses_before_any_tool_dispatch() -> None:
-    # #223: the deterministic PRE-dispatch cross-patient guard now intercepts
+    # Phase 1 #223: the deterministic PRE-dispatch cross-patient guard now intercepts
     # a cross-patient question BEFORE the streaming planner ever runs -- this
-    # supersedes (and is strictly earlier/stronger than) #194's
+    # supersedes (and is strictly earlier/stronger than) Phase 1 #194's
     # apply_subject_check, which could only rewrite the answer AFTER a
     # streaming planner had already dispatched tools. The fake streaming
     # planner below would yield a ToolDispatched event if it were ever

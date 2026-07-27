@@ -11,8 +11,8 @@ tool-selection case's recording therefore only has to carry the planner's own
 turns, not an unused claim-extraction call -- judgment call documented in
 ``runner.schema``'s module docstring.
 
-**None of recency notices (#153), the cross-patient subject-check (#194), or
-the unresolvable-referent guard (#225) are lazy**, unlike verification above
+**None of recency notices (Phase 1 #153), the cross-patient subject-check (Phase 1 #194), or
+the unresolvable-referent guard (Phase 1 #225) are lazy**, unlike verification above
 -- every case runs ``app.extraction.apply_subject_check`` then
 ``app.extraction.clarify_unresolvable_referent`` then ``app.extraction
 .apply_recency_notice`` unconditionally, right after the planner turn (see
@@ -31,15 +31,15 @@ authored date (mid-2026) so every OTHER category's freshly-dated fixtures
 stay "fresh" while ``stale_data``'s 2014 fixtures are unambiguously stale.
 
 **Even earlier than the subject-check: the PRE-dispatch cross-patient guard
-(#223, extended by #224).** ``app.extraction.detect_foreign_patient_reference``
+(Phase 1 #223, extended by Phase 1 #224).** ``app.extraction.detect_foreign_patient_reference``
 is checked BEFORE the fake registry / ``Planner`` are even constructed --
-unlike #194's subject-check, which runs after the planner has already
+unlike Phase 1 #194's subject-check, which runs after the planner has already
 dispatched tools and can only rewrite the answer text, this hardens the
 actual dispatch: a detected foreign-patient reference short-circuits straight
 to ``app.extraction.cross_patient_refusal_result()`` (empty trace, no tool
 ever run, no model ever called), which is what lets ``must_refuse``/``no_phi``
 actually pass -- both require the forbidden tool to NEVER dispatch. The
-case's optional ``patient_name`` (#224 name-binding) is passed through so the
+case's optional ``patient_name`` (Phase 1 #224 name-binding) is passed through so the
 guard's named signals are exercised the same as the live ``app.chat`` path --
 absent, the guard falls back to numeric-only detection.
 """
@@ -78,7 +78,7 @@ from runner.tool_stub import build_fake_registry
 
 _EVAL_TOKEN = "eval-harness-token"  # noqa: S105 -- not a credential, a fixed placeholder bearer value
 
-# Frozen "now" for the whole offline eval suite (#153) -- see module
+# Frozen "now" for the whole offline eval suite (Phase 1 #153) -- see module
 # docstring, "Recency notices are NOT lazy".
 _EVAL_FIXED_NOW = datetime(2026, 7, 15)
 
@@ -189,10 +189,10 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
     """Run ``case`` end to end: the real ``Planner`` loop, then (if needed)
     the real claim-extraction + verification stack. ``ollama_client`` is
     whatever satisfies ``OllamaLike`` -- the live model, or a replay."""
-    # #223: PRE-dispatch cross-patient guard, checked BEFORE the fake
+    # Phase 1 #223: PRE-dispatch cross-patient guard, checked BEFORE the fake
     # registry / Planner are even constructed -- see module docstring. A
     # detected foreign-patient reference never reaches a tool dispatch or a
-    # model call. ``case.patient_roster`` (#237) feeds the roster-based
+    # model call. ``case.patient_roster`` (Phase 1 #237) feeds the roster-based
     # "switch to <Name>" signal the same way ``case.patient_name`` feeds the
     # "patient <Name>" signal; already fully in-memory (no I/O), so no
     # laziness concern here unlike the live app.chat wiring.
@@ -242,8 +242,8 @@ def run_case(case: EvalCase, ollama_client: OllamaLike) -> CaseResult:
         # app.chat's wiring comment for why (it must only ever scan the
         # model's own prose, never text a later deterministic step appends).
         planner_result = apply_subject_check(planner_result, question=case.question, patient_id=case.patient_id)
-        # #225: clarify_unresolvable_referent, inside this same else branch
-        # (never reached when the #223 guard above fired) -- see its
+        # Phase 1 #225: clarify_unresolvable_referent, inside this same else branch
+        # (never reached when the Phase 1 #223 guard above fired) -- see its
         # docstring for why it must not run on a cross-patient refusal. The
         # eval harness's cases are single-turn by construction (module
         # docstring), so ``has_prior_turns`` is always False here.

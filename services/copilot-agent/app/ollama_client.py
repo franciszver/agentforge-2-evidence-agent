@@ -135,7 +135,7 @@ _THINK_CLOSE = "</think>"
 
 @dataclass(frozen=True)
 class LlmCallStats:
-    """Timing + token counts for one completed call to Ollama (P4/#149).
+    """Timing + token counts for one completed call to Ollama (P4/Phase 1 #149).
 
     Appended to ``OllamaClient.call_stats`` for every underlying request the
     client makes -- one per ``chat()`` call, and one per ``extract()``

@@ -57,7 +57,7 @@ _SEX_MAP = {"male": Sex.MALE, "female": Sex.FEMALE, "other": Sex.OTHER}
 
 class RosterEntry(NamedTuple):
     """One patient's (pid, "First Last" display name) pair, as returned by
-    ``get_patient_roster`` (#237, made patient-agnostic by #174).
+    ``get_patient_roster`` (Phase 1 #237, made patient-agnostic by #174).
 
     A plain ``NamedTuple``, not a ``ToolSchemaModel`` -- this never crosses
     the tool-output JSON boundary (``app.schemas.tools``); it is purely an
@@ -113,7 +113,7 @@ def get_patient_name(client: OpenEmrClient, token: str, patient_id: int) -> str 
     A single demographics-only round trip via ``_fetch_demographics`` --
     NOT the full ``get_patient_summary``, which additionally fans out 7
     concurrent section-count calls this caller has no use for. Used to
-    resolve the bound patient's own display name for the #224 name-binding
+    resolve the bound patient's own display name for the Phase 1 #224 name-binding
     cross-patient guard (``app.extraction.detect_foreign_patient_reference``);
     callers there treat ``None`` as "name-binding unavailable" and fall back
     to numeric-only detection rather than treating this as a hard failure.
@@ -130,7 +130,7 @@ def get_patient_name(client: OpenEmrClient, token: str, patient_id: int) -> str 
 def _fetch_all_patients(client: OpenEmrClient, token: str) -> list[dict[str, Any]]:
     """Fetch the full REST patient roster (``GET /apis/default/api/patient``),
     unfiltered. Shared by ``_fetch_demographics`` (select one pid) and
-    ``get_patient_roster`` (#237 -- collect every OTHER patient's name)."""
+    ``get_patient_roster`` (Phase 1 #237 -- collect every OTHER patient's name)."""
     payload = client.get_rest("patient", token=token)
     records = payload.get("data") if isinstance(payload, dict) else None
     return [record for record in records or [] if isinstance(record, dict)]

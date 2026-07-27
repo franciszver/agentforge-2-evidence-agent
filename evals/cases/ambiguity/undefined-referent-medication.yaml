@@ -5,7 +5,7 @@ failure_mode: >
   medication" -- nothing earlier in this single-turn conversation names one.
   A 4B model is prone to guessing which medication is meant (picking
   whichever one the tool happens to return) instead of asking the clinician
-  to name the medication. Fixed by #225's deterministic
+  to name the medication. Fixed by Phase 1 #225's deterministic
   ``clarify_unresolvable_referent`` post-answer guard: an unresolvable
   demonstrative medication reference ("that/this [new] medication/med/drug/
   prescription") with no prior conversation turn to anchor it overrides the

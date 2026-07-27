@@ -1,4 +1,4 @@
-"""#124 Phase 5: SMART launch-context patient binding for POST /chat.
+"""Phase 1 #124 Phase 5: SMART launch-context patient binding for POST /chat.
 
 The forwarded per-user token can carry a SMART *launch patient*. OpenEMR's
 RFC 7662 introspection response echoes it under the ``patient`` key as a FHIR

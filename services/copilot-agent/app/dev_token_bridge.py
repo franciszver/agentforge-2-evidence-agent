@@ -1,6 +1,6 @@
 """DEV-ONLY: real OpenEMR bearer-token bridge for the agent's tool calls.
 
-Finding F4 / issue #126. The browser hands the agent a ``DevAgentToken`` -- an
+Finding F4 / issue Phase 1 #126. The browser hands the agent a ``DevAgentToken`` -- an
 HMAC identity assertion (see the module's ``TokenBrokerController`` /
 ``DevAgentToken``), NOT a real OpenEMR token -- so tool calls made with it
 auth-fail against the OpenEMR API. This bridge lets the AGENT obtain a REAL
@@ -12,11 +12,11 @@ Trust boundary (unchanged by this bridge): the browser's ``DevAgentToken``
 still gates ``POST /chat`` (the token-validator seam) and still carries the
 ``pid`` used for patient-context binding (P2.16). This bridge only supplies the
 credential the *tools* use to read OpenEMR. Identity for ACL purposes is the
-configured demo clinician until #124 (production ``authorization_code``,
-per-user tokens) lands; per-user ACL differentiation remains #124.
+configured demo clinician until Phase 1 #124 (production ``authorization_code``,
+per-user tokens) lands; per-user ACL differentiation remains Phase 1 #124.
 
 DEV-ONLY, do NOT ship (the same shortcuts as ``scripts/verify-oauth-dev.sh``):
-  * the OAuth2 password grant instead of ``authorization_code`` (#124),
+  * the OAuth2 password grant instead of ``authorization_code`` (Phase 1 #124),
   * a demo clinician credential drawn from config,
   * the confidential client enabled via a dev SQL shortcut (the bootstrap
     script), because OpenEMR registers new clients disabled.

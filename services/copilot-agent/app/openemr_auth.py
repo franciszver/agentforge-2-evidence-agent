@@ -85,7 +85,7 @@ class IntrospectionResult:
     ``False`` -- the caller treats anything that is not a positive ``active:
     true`` as an invalid token. ``exp`` (epoch seconds, when present) lets the
     caller reject a token whose expiry has already passed and bound any cache
-    TTL to it. ``patient`` (#124 Phase 5) is the SMART launch patient the token
+    TTL to it. ``patient`` (Phase 1 #124 Phase 5) is the SMART launch patient the token
     was issued for -- a FHIR **UUID** string echoed verbatim by OpenEMR's
     introspection ``patient`` key (see ``TokenIntrospectionRestController``);
     ``None`` when the token carries no launch context.

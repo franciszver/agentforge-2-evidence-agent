@@ -146,7 +146,7 @@ def test_tool_failure_rate_just_above_threshold_fires() -> None:
 def test_tool_failure_rate_zero_tool_calls_does_not_fire() -> None:
     # tool_call_count == 0 -> rate is None (undefined), not 0.0 -- must not
     # fire even though retry_count is also 0. This is the P4.6 "dormant
-    # until #149" case: production currently always has tool_call_count == 0.
+    # until Phase 1 #149" case: production currently always has tool_call_count == 0.
     metrics = _metrics(tool_call_count=0, retry_count=0)
     assert evaluate_alerts(metrics) == []
 

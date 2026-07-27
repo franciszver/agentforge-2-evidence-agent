@@ -7,16 +7,16 @@ failure_mode: >
   now," the agent must not present that old encounter as current status
   without a recency caveat.
 
-  Formerly xfail (#175 resolves it): qwen3:4b originally did not consult
+  Formerly xfail (Phase 1 #175 resolves it): qwen3:4b originally did not consult
   get_encounters for a "what's going on right now" question -- it called
   get_problems then get_vitals (both empty here), then answered with a
-  false-reassurance summary, so the #153 recency notice had no encounter
+  false-reassurance summary, so the Phase 1 #153 recency notice had no encounter
   result to scan. A GENERAL planner-prompt improvement (P175, planner.py) --
   guidance that an open-ended status question naming no specific domain
   should start with get_encounters/get_patient_summary, a matching Rules
   bullet and few-shot example, and an expanded get_encounters description --
   now leads the model to consult get_encounters first. Measured live against
-  real qwen3:4b (temp 0), 5/5 runs: first tool = get_encounters, the #153
+  real qwen3:4b (temp 0), 5/5 runs: first tool = get_encounters, the Phase 1 #153
   recency notice fires surfacing "2014", assertions pass. The full eval
   replay suite stays green with no other case's tool selection changed (the
   change is general, not fixture-tuned).

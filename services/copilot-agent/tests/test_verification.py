@@ -527,7 +527,7 @@ def test_check_claims_reports_mixed_pass_fail_for_multiple_claims():
 
 
 # ---------------------------------------------------------------------------
-# stale_record_date / recency_notices (#153) -- deterministic recency check
+# stale_record_date / recency_notices (Phase 1 #153) -- deterministic recency check
 #
 # See the module docstring's "Recency notices" section for why this scans
 # every record actually returned this turn (``PlannerResult.raw_results``)
@@ -656,7 +656,7 @@ def test_recency_notices_dedupes_multiple_records_with_the_same_stale_date():
 
 
 # ---------------------------------------------------------------------------
-# Timezone safety (#153): real OpenEMR/FHIR record dates can be tz-AWARE
+# Timezone safety (Phase 1 #153): real OpenEMR/FHIR record dates can be tz-AWARE
 # (offset-qualified), while an injected ``now`` may be naive (the eval's fixed
 # clock) or aware (production ``datetime.now(timezone.utc)``). Comparing a
 # naive against an aware datetime raises ``TypeError`` -- which would crash a

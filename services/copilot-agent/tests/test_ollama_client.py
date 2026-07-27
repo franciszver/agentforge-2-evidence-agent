@@ -420,12 +420,12 @@ def test_chat_maps_timeout_to_ollama_error():
         client.chat([{"role": "user", "content": "hi"}])
 
 
-# --- chat_stream: incremental reasoning deltas (#213) -----------------------
+# --- chat_stream: incremental reasoning deltas (Phase 1 #213) -----------------------
 #
 # ``chat_stream`` yields the same post-strip content ``chat()`` would return,
 # but incrementally instead of assembled -- the reasoning half of the
 # planner's two-call final-answer step (P2.9) streams into a UI "thinking"
-# zone token-by-token (#213) instead of popping in all at once. The hard
+# zone token-by-token (Phase 1 #213) instead of popping in all at once. The hard
 # safety constraint: qwen3:4b's leaked chain-of-thought preamble (see the
 # module docstring's "Live-verified quirk" note) must NEVER reach a caller,
 # even one token of it -- so nothing is yielded until the ``</think>``
@@ -612,7 +612,7 @@ def test_from_settings_builds_client_targeting_configured_base_url_and_model():
     assert client._base_url == "http://ollama.example:11434"
 
 
-# --- call_stats: per-call token counts + timing (#149 span emission) --------
+# --- call_stats: per-call token counts + timing (Phase 1 #149 span emission) --------
 #
 # ``record_llm_span`` (app.trace_store) needs a model name, token counts, and
 # timing per Ollama call, but chat()/extract() only ever returned the

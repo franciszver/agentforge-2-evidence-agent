@@ -1,4 +1,4 @@
-"""Hermetic tests for the DEV-ONLY real-token bridge (issue #126, finding F4).
+"""Hermetic tests for the DEV-ONLY real-token bridge (issue Phase 1 #126, finding F4).
 
 All HTTP is served by ``httpx.MockTransport`` -- no network is touched. These
 tests pin the token-acquisition + caching behavior the agent relies on to make

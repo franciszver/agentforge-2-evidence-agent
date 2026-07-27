@@ -133,7 +133,7 @@ def test_thumbs_down_comment_is_scrubbed_from_promoted_export(tmp_path: Path) ->
     # The sentinel (standing in for free-text PHI) is absent from the whole
     # export, not just the parsed field.
     assert "SENTINEL_COMMENT_TEXT" not in text
-    # failure_mode stays a non-empty required field (#155), points at the cid,
+    # failure_mode stays a non-empty required field (Phase 1 #155), points at the cid,
     # and is marked as a TODO for a human to complete.
     assert case.failure_mode
     assert "TODO" in case.failure_mode

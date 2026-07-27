@@ -2,7 +2,7 @@
 
 The factory builds the real ``OllamaClient``/``OpenEmrClient`` from
 ``Settings`` and a ``Planner`` bound to the request's ``patient_id``. Since
-issue #126 (finding F4), the token the Planner uses for OpenEMR tool calls is
+issue Phase 1 #126 (finding F4), the token the Planner uses for OpenEMR tool calls is
 NOT the browser's ``DevAgentToken`` (an identity assertion, not a real OpenEMR
 token) -- it is a REAL OpenEMR token obtained server-side by the
 ``DevTokenBridge``. This test pins that wiring: ``get_planner_factory`` pulls

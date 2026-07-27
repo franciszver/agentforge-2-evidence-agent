@@ -290,24 +290,24 @@ class EvalCase(BaseModel):
     patient_name: str | None = Field(
         default=None,
         description=(
-            "The bound patient's own display name (#224 name-binding), fed "
+            "The bound patient's own display name (Phase 1 #224 name-binding), fed "
             "into app.extraction.detect_foreign_patient_reference's named "
             "cross-patient signals -- mirrors what app.chat resolves live via "
             "Planner.resolve_patient_name(). Absent (None) for cases that "
             "don't need it -- the guard then falls back to numeric-only "
-            "detection, byte-identical to the pre-#224 harness."
+            "detection, byte-identical to the pre-Phase 1 #224 harness."
         ),
     )
     patient_roster: list[str] | None = Field(
         default=None,
         description=(
-            "Every OTHER patient's display name (#237 roster-based "
+            "Every OTHER patient's display name (Phase 1 #237 roster-based "
             "cross-patient detection), fed into app.extraction"
             ".detect_foreign_patient_reference's roster-based 'switch to "
             "<Name>' signal -- mirrors what app.chat resolves live via "
             "Planner.resolve_patient_roster(). Absent (None) for cases "
             "that don't need it -- the signal is then skipped entirely, "
-            "byte-identical to the pre-#237 harness. Issue #174 made the "
+            "byte-identical to the pre-Phase 1 #237 harness. Issue #174 made the "
             "LIVE roster patient-agnostic (pid+name pairs, no fetch-time "
             "exclusion) -- this fixture stays plain names, hand-authored as "
             "already excluding `patient_id`, and `runner.pipeline.run_case` "

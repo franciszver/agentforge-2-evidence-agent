@@ -1,4 +1,4 @@
-"""Hermetic tests for #124 Phase 4 token introspection.
+"""Hermetic tests for Phase 1 #124 Phase 4 token introspection.
 
 All HTTP is served by ``httpx.MockTransport`` -- the suite never touches the
 network. Covers the low-level ``introspect_token`` primitive (active / inactive

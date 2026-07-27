@@ -57,7 +57,7 @@ class _ScriptedOllamaClient:
         self.calls: list[list[dict[str, str]]] = []
         self.chat_calls: list[list[dict[str, str]]] = []
         self._last_final_answer = ""
-        # Mirrors the real ``OllamaClient.call_stats`` side channel (#149) so
+        # Mirrors the real ``OllamaClient.call_stats`` side channel (Phase 1 #149) so
         # tests can assert ``PlannerResult.llm_calls`` is read from it.
         self.call_stats: list[LlmCallStats] = []
 
@@ -312,7 +312,7 @@ def test_few_shot_examples_include_a_vitals_domain_example():
     assert "blood pressure" in _FEW_SHOT_EXAMPLES.lower()
 
 
-# --- verifier-only raw channel + safety boundary (P3.2 / #130) -----------------
+# --- verifier-only raw channel + safety boundary (P3.2 / Phase 1 #130) -----------------
 
 
 def test_raw_results_carry_unredacted_values_while_trace_stays_quarantined():
@@ -368,7 +368,7 @@ def test_raw_results_hold_none_for_a_refused_call_keeping_positional_alignment()
     assert result.trace[0].error == "patient_binding_violation"
 
 
-# --- span emission: tool timing + llm call stats (#149) ------------------------
+# --- span emission: tool timing + llm call stats (Phase 1 #149) ------------------------
 
 
 def test_tool_call_trace_carries_start_and_end_timestamps_for_a_successful_dispatch():
@@ -468,10 +468,10 @@ def test_planner_result_llm_calls_defaults_to_empty_list_for_a_client_without_ca
     assert result.llm_calls == []
 
 
-# --- resolve_patient_name (#224 name-binding) --------------------------------
+# --- resolve_patient_name (Phase 1 #224 name-binding) --------------------------------
 #
 # Best-effort resolution of the bound patient's own display name, for the
-# #224 cross-patient guard signals (app.extraction
+# Phase 1 #224 cross-patient guard signals (app.extraction
 # .detect_foreign_patient_reference). A single demographics-only round trip
 # (app.tools.patient_summary.get_patient_name) via the planner's own
 # openemr_client/token/patient_id -- no new capability, just a getattr-duck-
@@ -529,7 +529,7 @@ def test_resolve_patient_name_returns_none_when_patient_not_found(make_openemr_c
     assert planner.resolve_patient_name() is None
 
 
-# --- resolve_patient_roster (#237 roster-based cross-patient detection) -----
+# --- resolve_patient_roster (Phase 1 #237 roster-based cross-patient detection) -----
 #
 # Best-effort (pid, display name) pairs for every patient, for the
 # roster-based "switch to <Name>" signal
