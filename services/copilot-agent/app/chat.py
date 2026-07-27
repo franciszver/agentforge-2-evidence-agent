@@ -352,6 +352,16 @@ async def _validate_token(validator: TokenValidator, token: str) -> None:
     if peek_cached is None or peek_cached(token) is not None:
         validator(token)
         return
+    # #188 (documented accept, docs/ARCHITECTURE.md "Path to Production" item
+    # 2): with copilot_per_user_token_enabled ON, an attacker-chosen token is
+    # a guaranteed peek_cached miss (only POSITIVE results are cached -- see
+    # app/introspection.py), so an unauthenticated flood lands here on every
+    # request and occupies one bounded, shared threadpool worker per request
+    # for up to openemr_api_timeout_seconds each, with no rate limit and no
+    # negative caching. Not exploitable in the shipped default (flag OFF,
+    # this branch is unreachable) -- REOPENS as a blocking pre-condition if
+    # copilot_per_user_token_enabled is ever flipped ON; see the doc section
+    # above for the measured numbers and mitigation options.
     await run_in_threadpool(validator, token)
 
 

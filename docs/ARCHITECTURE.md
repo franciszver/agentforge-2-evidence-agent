@@ -411,6 +411,77 @@ Stated plainly, in order of what would need to change:
    built and exercised live; it is selected when the per-user flow above is
    enabled, and it supersedes the earlier `DevAgentToken`-validation plan
    (#127).
+
+   **Residual exposure, accepted (#188): unauthenticated threadpool
+   occupancy via introspection, once the flag above is ON.** `_validate_token`
+   (`app/chat.py:334-355`) dispatches to `run_in_threadpool` on a
+   `peek_cached` miss. Per `app/introspection.py`'s own docstring, only
+   *positive* (`active: true`) introspection results are cached — an
+   attacker-chosen token is a guaranteed miss on every request, so an
+   unauthenticated flood drives one real, blocking OpenEMR introspection
+   HTTP call per request, each bounded only by `openemr_api_timeout_seconds`
+   (10s default), through FastAPI's threadpool. That pool is anyio's
+   process-wide *default* thread limiter (capacity 40; no override exists
+   anywhere in `app/` or `tests/`) and is shared by every other sync
+   dependency/endpoint in the process: `/health`, `/dashboard`, `/review`,
+   `/review/promote`, `/feedback`, `/documents/{source_id}`,
+   `get_planner_factory` (`chat.py:567`), plus
+   `_resolve_conversation_patient_name` (`chat.py:1951`, itself `async def`
+   but dispatches its own blocking resolve via `run_in_threadpool` at
+   `chat.py:1971`). Only `/ready` and `POST /chat`'s own body are otherwise
+   async. Measured: 40 concurrent unauthenticated requests drove 40/40
+   concurrent validator calls (watermark == pool capacity); with the pool
+   saturated, `/health` (sync, shares the pool) measured +1.25s of added
+   latency while a pure-async control route measured 0.0000s added — 2
+   control endpoints exercised, 1 affected, cleanly separated by
+   sync-vs-async as the mechanism predicts. At 80 requests (2x capacity),
+   all 80 queued with zero errors and tail latency ≈ 2x the introspection
+   timeout. Same shape as the dev-token-bridge exposure item 1 above
+   describes for the flag-OFF path (#177's fix removed that one); this is
+   the flag-ON counterpart, and it is a strict *improvement* over pre-#177
+   behavior, which burned two threadpool slots per unauthenticated request
+   instead of this one.
+
+   **Why accepted rather than mitigated.** Two preconditions keep this
+   inert today: `copilot_per_user_token_enabled` defaults `False`
+   (`app/config.py:196`) and is set by neither compose file — the shipped
+   dev stack's `docker-compose.copilot.yml` only *mentions* the env var in
+   an explanatory comment, never sets it — and the agent service has no
+   `ports:` mapping and sits solely on the `internal: true`
+   `copilot_internal` network, the same "unreachable from outside the
+   Docker host" precondition every other finding in this batch relies on.
+   With the flag off, `get_token_validator` returns the fail-closed or
+   dev-permissive stub, neither of which exposes `peek_cached` or does any
+   I/O — this code path is unreachable in the shipped default.
+
+   **Mitigation options considered, none implemented (accept, not defer):**
+   1. *Negative caching of failed introspections* — a short TTL on "this
+      token is not active" would collapse a flood of repeated attempts;
+      an attacker rotating tokens per request defeats it by design, and it
+      adds a second cache with its own invalidation/timing considerations.
+   2. *Rate limiting ahead of introspection*, per source or globally — caps
+      unauthenticated volume before it reaches the threadpool, at the cost
+      of new stateful infrastructure (a limiter, a store) for a path that
+      is inert today.
+   3. *A dedicated bounded executor for introspection*, isolated from the
+      shared default limiter — exhausting it would degrade auth latency
+      specifically rather than starving `/health`, `/dashboard`, etc., at
+      the cost of tuning a second pool's size against real traffic that
+      does not exist yet (the flag is off).
+   4. *Accept it* — chosen — on the grounds that both preconditions above
+      hold today, and any of the above would be built against a threat
+      model that isn't live, tuned against traffic patterns that don't
+      exist until the flag flips.
+
+   **REOPEN TRIGGER, stated unambiguously:** flipping
+   `copilot_per_user_token_enabled` ON makes one of the mitigations above a
+   **blocking pre-condition** — exactly as issue #192 blocks enabling
+   either LLM-judge flag (`app.semantic_support` /
+   `copilot_source_ref_relevance_enabled`) on structural prompt-injection
+   grounds. Do not flip this flag on in any shared or reachable deployment
+   without first closing #188. A test pins both preconditions
+   (`services/copilot-agent/tests/test_issue188_threadpool_accept_precondition.py`)
+   and fails loudly, naming this section, if either stops holding.
 3. **Patient-context binding upgrade.** The current binding (every
    conversation anchored to the `pid` the panel was opened on; the tool
    layer refuses any other patient id, logging the attempt) is
