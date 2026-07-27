@@ -59,6 +59,22 @@ client construction and dual-layout ``sys.path`` handling verbatim.
 summarized into ``evals/results/issue-170/summary.json`` -- same shape as
 issue #130's own artifacts, for direct side-by-side comparison.
 
+**Deliberate deviation from #163/#169's counts-and-enums-only artifact
+convention.** Per-draw files here intentionally retain full claim text,
+``field: value`` fact pairs, and the judge's rationale prose (``reason``),
+not just pass/fail counts. Two reasons, both required: (1) every claim/fact
+in this measurement is synthetic eval-fixture content authored for this
+suite (the 12 ``citation_present`` cases' own scripted data, plus the
+hardcoded ``_POSITIVE_CONTROL_CLAIM``/``_POSITIVE_CONTROL_FACTS``) -- never
+real patient data, so this is not the PHI-shaped exposure #163/#169's
+convention exists to prevent; and (2) a judge measurement is not auditable
+without the reasoning -- stripping the rationale would leave a bare
+true/false with no way to check WHY the judge decided what it decided,
+making a false-reject (or a suspiciously clean zero) unfalsifiable.
+``summarize()`` records this deviation explicitly in
+``evals/results/issue-170/summary.json`` (the ``artifact_content_note``
+key) rather than leaving it implicit.
+
 Usage (from repo root, live model reachable):
 
     RECORD_ENGINE=llama_server python evals/runner/issue_170_source_ref_relevance_spike.py --draws 8
@@ -305,7 +321,10 @@ def summarize(draws_dir: Path) -> dict:
     ``"INCONCLUSIVE: zero exposure"`` when a case's ``eligible`` count is 0
     across every draw -- see module docstring, "MANDATORY exposure
     reporting" -- so a zero-power case can never silently read as
-    clearance."""
+    clearance. Also stamps ``artifact_content_note`` (see module docstring,
+    "Deliberate deviation from #163/#169's ... convention") so the summary
+    itself, not just the module docstring, records why the per-draw files
+    keep prose."""
     per_case: dict[str, dict] = {}
     total_eligible = 0
     total_judged = 0
@@ -349,6 +368,16 @@ def summarize(draws_dir: Path) -> dict:
         "positive_control_caught": positive_control_caught,
         "positive_control_catch_rate": (
             positive_control_caught / positive_control_draws if positive_control_draws else None
+        ),
+        "artifact_content_note": (
+            "Per-draw files under draws/ intentionally retain full claim text, field/value "
+            "facts, and judge rationale prose -- a deliberate deviation from #163/#169's "
+            "counts-and-enums-only artifact convention. Safe here because every claim/fact is "
+            "synthetic eval-fixture content (the 12 citation_present cases' own scripted data "
+            "plus the hardcoded positive-control claim), never real patient data, unlike "
+            "#163/#169's populations which could carry real claim text. The rationale is kept "
+            "because a judge measurement is not auditable without it -- a bare true/false "
+            "cannot be checked for WHY the judge decided what it decided."
         ),
     }
 

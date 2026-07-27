@@ -102,5 +102,6 @@
   "total_false_rejects": 0,
   "positive_control_draws": 8,
   "positive_control_caught": 8,
-  "positive_control_catch_rate": 1.0
+  "positive_control_catch_rate": 1.0,
+  "artifact_content_note": "Per-draw files under draws/ intentionally retain full claim text, field/value facts, and judge rationale prose -- a deliberate deviation from #163/#169's counts-and-enums-only artifact convention. Safe here because every claim/fact is synthetic eval-fixture content (the 12 citation_present cases' own scripted data plus the hardcoded positive-control claim), never real patient data, unlike #163/#169's populations which could carry real claim text. The rationale is kept because a judge measurement is not auditable without it -- a bare true/false cannot be checked for WHY the judge decided what it decided."
 }
