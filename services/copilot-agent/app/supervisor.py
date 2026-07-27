@@ -54,6 +54,7 @@ from typing import Any, Literal, Protocol
 
 from app.correlation import SpanContext, span_scope
 from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_extract
+from app.ollama_client import is_vision_capable_model
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
 from app.schemas.reranking import RerankedChunk
@@ -134,6 +135,20 @@ class Worker(Protocol):
     def run(self, sub_task: Any) -> Any: ...
 
 
+class VisionModelMisconfiguredError(Exception):
+    """Raised by ``IntakeExtractorWorker.run`` (issue #204) when its
+    configured ``ollama_client.model`` is not vision-capable
+    (``app.ollama_client.is_vision_capable_model``).
+
+    Fail-closed: document ingestion is a safety-contract path ("not found"
+    rather than a guessed value on illegible fields), and handing an
+    image-bearing document to a text-only model is exactly the condition
+    most likely to violate that contract. Raised BEFORE any call reaches
+    the model -- zero pages are sent -- rather than after silently
+    producing text-model output on page images it cannot read.
+    """
+
+
 class IntakeExtractorWorker:
     """Thin wrapper around ``app.ingestion.attach_and_extract`` (P3.1/P3.2)."""
 
@@ -145,6 +160,11 @@ class IntakeExtractorWorker:
         self._fact_store = fact_store
 
     def run(self, sub_task: IngestSubTask) -> IngestionResult:
+        model = self._ollama_client.model
+        if not is_vision_capable_model(model):
+            raise VisionModelMisconfiguredError(
+                f"IntakeExtractorWorker refuses to run: configured model {model!r} is not vision-capable"
+            )
         return attach_and_extract(
             sub_task.patient_id,
             sub_task.file_path,

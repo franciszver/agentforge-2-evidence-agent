@@ -126,10 +126,26 @@ class Settings(BaseSettings):
     openemr_api_timeout_seconds: float = 10.0
 
     # Model served by the internal Ollama instance and per-request timeout /
-    # retry policy for ``OllamaClient`` (app/ollama_client.py).
+    # retry policy for ``OllamaClient`` (app/ollama_client.py). Text-only --
+    # the chat/extract/reranker roles' Ollama ROLLBACK path (COPILOT_LLM_
+    # ENGINE=ollama, app.chat.get_text_llm_client) instantly reverts to
+    # this model, so its default and meaning must NOT be repurposed for
+    # vision (see copilot_vision_model below, issue #204).
     ollama_model: str = "qwen3:4b"
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
+    # Issue #204 (gate-3 finding on #194): the document-ingestion VISION role
+    # (app.supervisor.IntakeExtractorWorker, built by
+    # app.chat._build_evidence_workers) used to share ``ollama_model`` above
+    # with the text rollback path -- so a plain `docker compose ... up`,
+    # with no per-call ``OLLAMA_MODEL`` override, wired ingestion to the
+    # TEXT-ONLY ``qwen3:4b``. This is a dedicated setting instead, defaulting
+    # to the vision-capable model docs/DEMO_SCRIPT.md previously required an
+    # operator to remember as an env override. app.ollama_client.
+    # is_vision_capable_model() is also consulted at ingestion-call time
+    # (fail-closed) so a future misconfiguration of THIS setting can't
+    # silently regress to the same bug.
+    copilot_vision_model: str = "qwen2.5vl:7b"
     # Dense-embedding model for hybrid guideline-corpus retrieval (P3.3,
     # app/retrieval.py) -- distinct from ollama_model (chat/extraction). Only
     # consulted when copilot_embed_engine == "ollama" (P3.10b, see below);

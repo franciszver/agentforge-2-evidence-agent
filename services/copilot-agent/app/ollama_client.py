@@ -176,6 +176,31 @@ class OllamaError(LLMEngineError):
     """
 
 
+# Issue #204: name-based recognizer for Ollama vision-capable models, used by
+# app.supervisor.IntakeExtractorWorker to fail closed instead of silently
+# handing an image-bearing document to a text-only model. Name-based rather
+# than a live ``/api/show`` capability query (the field docs/DEMO_SCRIPT.md
+# recorded, e.g. ``capabilities: ["vision", "completion"]`` for
+# ``qwen2.5vl:7b``): keeps the check synchronous, dependency-free, and
+# evaluable at construction/dispatch time with no network call -- at the
+# cost of recognizing only name patterns already in common use for
+# vision-language models, not a per-install, ground-truth capability list.
+_VISION_MODEL_NAME_MARKERS = ("vl", "vision", "llava", "moondream", "pixtral", "bakllava")
+
+
+def is_vision_capable_model(model: str) -> bool:
+    """Best-effort, name-based check for whether ``model`` is vision-capable.
+
+    Matches Ollama tag substrings used by known vision-language models --
+    e.g. ``qwen2.5vl:7b``, ``llama3.2-vision``, ``llava``, ``moondream``,
+    ``pixtral``, ``bakllava`` -- case-insensitively, against the full model
+    string (name and tag). Returns ``False`` for anything else, including
+    text-only models like ``qwen3:4b``.
+    """
+    normalized = model.strip().lower()
+    return any(marker in normalized for marker in _VISION_MODEL_NAME_MARKERS)
+
+
 class OllamaClient:
     """Chat + constrained-extraction client for the internal Ollama instance.
 
@@ -210,14 +235,26 @@ class OllamaClient:
         # it after invoking ``chat``/``extract`` to build ``llm`` trace spans.
         self.call_stats: list[LlmCallStats] = []
 
+    @property
+    def model(self) -> str:
+        """The chat/extraction model this client was built with -- read by
+        ``app.supervisor.IntakeExtractorWorker`` (issue #204) to fail closed
+        when it is not vision-capable, via ``is_vision_capable_model``."""
+        return self._model
+
     @classmethod
-    def from_settings(cls, settings: Settings) -> OllamaClient:
-        """Build a production client, threading base URL, model, timeout, and retries."""
+    def from_settings(cls, settings: Settings, *, model: str | None = None) -> OllamaClient:
+        """Build a production client, threading base URL, model, timeout, and
+        retries. ``model`` overrides ``settings.ollama_model`` when supplied --
+        issue #204 uses this to build a SEPARATE client for the vision role
+        (``settings.copilot_vision_model``) without duplicating the base_url/
+        timeout/retries wiring, and without touching ``ollama_model``'s own
+        default or its text-rollback meaning."""
         client = httpx.Client(timeout=settings.ollama_api_timeout_seconds)
         return cls(
             base_url=settings.ollama_base_url,
             client=client,
-            model=settings.ollama_model,
+            model=model if model is not None else settings.ollama_model,
             embedding_model=settings.ollama_embedding_model,
             max_retries=settings.ollama_extract_max_retries,
         )
