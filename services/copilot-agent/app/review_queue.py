@@ -71,7 +71,7 @@ class ReviewQueueEntry:
     response, and -- unlike this DTO's other fields -- it may incidentally
     contain PHI (see ``app.trace_store``'s module docstring); callers of
     this DTO must not render it (``app.review_page``'s ``/review`` redacts
-    it, #176, and ``generate_regression_case`` never re-emits it, #157)."""
+    it, #176, and ``generate_regression_case`` never re-emits it, Phase 1 #157)."""
 
     correlation_id: str
     feedback_thumb: FeedbackThumb | None
