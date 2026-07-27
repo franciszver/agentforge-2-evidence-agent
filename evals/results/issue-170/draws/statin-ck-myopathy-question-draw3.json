@@ -1,0 +1,66 @@
+{
+  "case_id": "statin-ck-myopathy-question",
+  "draw_index": 3,
+  "answer_verdict": "partially_verified",
+  "eligible_claim_count": 4,
+  "exposure_claim_count": 4,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Simvastatin.",
+      "source_ref_facts": [
+        "name: Simvastatin"
+      ],
+      "context_facts": [
+        "dose: 40mg",
+        "route: oral",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS include 'name: Simvastatin' and the ESTABLISHED FACTS include 'status: active', which together indicate the patient is currently taking Simvastatin.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The dose of Simvastatin is 40mg.",
+      "source_ref_facts": [
+        "dose: 40mg"
+      ],
+      "context_facts": [
+        "name: Simvastatin",
+        "route: oral",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the dose is 40mg, and the ESTABLISHED FACTS confirm the medication is Simvastatin, which together support the CLAIM that the dose of Simvastatin is 40mg.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The route of administration for Simvastatin is oral.",
+      "source_ref_facts": [
+        "route: oral"
+      ],
+      "context_facts": [
+        "name: Simvastatin",
+        "dose: 40mg",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the route of administration as 'oral', which directly supports the CLAIM that the route of administration for Simvastatin is oral.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The status of Simvastatin is active.",
+      "source_ref_facts": [
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Simvastatin",
+        "dose: 40mg",
+        "route: oral"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state 'status: active' which directly supports the CLAIM that 'The status of Simvastatin is active'.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

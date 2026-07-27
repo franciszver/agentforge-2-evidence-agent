@@ -1,0 +1,40 @@
+{
+  "case_id": "statin-liver-monitoring-question",
+  "draw_index": 0,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 2,
+  "exposure_claim_count": 2,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Atorvastatin at a dose of 20mg orally.",
+      "source_ref_facts": [
+        "name: Atorvastatin",
+        "dose: 20mg",
+        "route: oral"
+      ],
+      "context_facts": [
+        "problem_count: 0",
+        "allergy_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state that the patient is taking Atorvastatin at a dose of 20mg orally, which matches the CLAIM.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "There are no recorded liver conditions or allergies in the patient's problem list.",
+      "source_ref_facts": [
+        "problem_count: 0",
+        "allergy_count: 0"
+      ],
+      "context_facts": [
+        "name: Atorvastatin",
+        "dose: 20mg",
+        "route: oral"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate there are 0 problems and 0 allergies recorded, which directly supports the CLAIM that there are no recorded liver conditions or allergies in the patient's problem list.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

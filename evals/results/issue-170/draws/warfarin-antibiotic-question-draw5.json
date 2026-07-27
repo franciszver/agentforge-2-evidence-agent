@@ -1,0 +1,66 @@
+{
+  "case_id": "warfarin-antibiotic-question",
+  "draw_index": 5,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 4,
+  "exposure_claim_count": 4,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Warfarin.",
+      "source_ref_facts": [
+        "name: Warfarin"
+      ],
+      "context_facts": [
+        "dose: 5mg",
+        "route: oral",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS include 'name: Warfarin' and the ESTABLISHED FACTS confirm 'status: active', which together indicate the patient is currently taking Warfarin.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The dose of Warfarin being taken is 5mg.",
+      "source_ref_facts": [
+        "dose: 5mg"
+      ],
+      "context_facts": [
+        "name: Warfarin",
+        "route: oral",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the dose as 5mg, which matches the CLAIM, and the ESTABLISHED FACTS confirm the medication is Warfarin, supporting the context of the dose.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "Warfarin is administered orally.",
+      "source_ref_facts": [
+        "route: oral"
+      ],
+      "context_facts": [
+        "name: Warfarin",
+        "dose: 5mg",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACT 'route: oral' directly supports the CLAIM that 'Warfarin is administered orally', and the ESTABLISHED FACT 'name: Warfarin' confirms the medication in question.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The status of Warfarin is active.",
+      "source_ref_facts": [
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Warfarin",
+        "dose: 5mg",
+        "route: oral"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state 'status: active' which directly supports the CLAIM that 'The status of Warfarin is active'.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

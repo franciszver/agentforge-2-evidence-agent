@@ -1,0 +1,22 @@
+{
+  "case_id": "metformin-renal-monitoring-question",
+  "draw_index": 6,
+  "answer_verdict": "partially_verified",
+  "eligible_claim_count": 1,
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient is on Metformin.",
+      "source_ref_facts": [
+        "name: Metformin",
+        "dose: 500mg",
+        "status: active"
+      ],
+      "context_facts": [],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS include 'name: Metformin', which directly supports the CLAIM that the patient is on Metformin.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

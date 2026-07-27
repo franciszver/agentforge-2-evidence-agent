@@ -1,0 +1,38 @@
+{
+  "case_id": "dual-antiplatelet-question",
+  "draw_index": 4,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 2,
+  "exposure_claim_count": 2,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking aspirin.",
+      "source_ref_facts": [
+        "name: Aspirin",
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Clopidogrel",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that Aspirin is active, which directly supports the CLAIM that the patient is currently taking aspirin.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient is currently taking clopidogrel.",
+      "source_ref_facts": [
+        "name: Clopidogrel",
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Aspirin",
+        "status: active"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that clopidogrel is active, which directly supports the CLAIM that the patient is currently taking clopidogrel.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

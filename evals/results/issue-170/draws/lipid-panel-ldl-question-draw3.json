@@ -1,0 +1,21 @@
+{
+  "case_id": "lipid-panel-ldl-question",
+  "draw_index": 3,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 1,
+  "exposure_claim_count": 1,
+  "judge_records": [
+    {
+      "claim_text": "The patient's LDL cholesterol level is 172 mg/dL.",
+      "source_ref_facts": [
+        "value: 172",
+        "unit: mg/dL"
+      ],
+      "context_facts": [],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly provide the LDL cholesterol level as 172 mg/dL, which matches the CLAIM.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

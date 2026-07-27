@@ -1,0 +1,6 @@
+{
+  "draw_index": 2,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS do not provide any information about the patient's blood pressure or any other relevant clinical data to support the claim.",
+  "caught": true
+}

@@ -1,0 +1,106 @@
+{
+  "per_case": {
+    "a1c-target-question": {
+      "eligible": 8,
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "bp-stage2-question": {
+      "eligible": 16,
+      "judged": 16,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "dual-antiplatelet-question": {
+      "eligible": 18,
+      "judged": 18,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "hypertension-lifestyle-followup-question": {
+      "eligible": 0,
+      "judged": 0,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "INCONCLUSIVE: zero exposure"
+    },
+    "lipid-panel-ldl-question": {
+      "eligible": 8,
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "lithium-nsaid-question": {
+      "eligible": 8,
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "metformin-renal-monitoring-question": {
+      "eligible": 8,
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "nsaid-ace-inhibitor-question": {
+      "eligible": 8,
+      "judged": 8,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "renal-function-ace-question": {
+      "eligible": 16,
+      "judged": 16,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "statin-ck-myopathy-question": {
+      "eligible": 28,
+      "judged": 28,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "statin-liver-monitoring-question": {
+      "eligible": 24,
+      "judged": 24,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    },
+    "warfarin-antibiotic-question": {
+      "eligible": 32,
+      "judged": 32,
+      "false_rejects": 0,
+      "draws": 8,
+      "exceptions": 0,
+      "status": "measured"
+    }
+  },
+  "total_eligible_claims": 174,
+  "total_judged_claims": 174,
+  "total_false_rejects": 0,
+  "positive_control_draws": 8,
+  "positive_control_caught": 8,
+  "positive_control_catch_rate": 1.0
+}
