@@ -57,7 +57,7 @@ _ANCHORS: list[tuple[str, str]] = [
     ("services/copilot-agent/app/extraction.py", "# Phase 1 #237 roster-based cross-patient detection"),
     # #223/#224/#225: dangling Phase-1 numbers for the cross-patient guard /
     # name-binding / unresolvable-referent mechanisms.
-    ("services/copilot-agent/app/extraction.py", '"""Deterministic PRE-dispatch guard (Phase 1 #223, extended by Phase 1 #224 and Phase 1 #237):'),
+    ("services/copilot-agent/app/extraction.py", "(Phase 1 #223, extended by Phase 1 #224 and Phase 1 #237)"),
     ("services/copilot-agent/app/chat.py", "falling back to Phase 1 #223's numeric-only detection."),
     ("services/copilot-agent/app/chat.py", "Deterministic unresolvable-referent guard (Phase 1 #225):"),
     # #124/#126: collide with real, unrelated PRs #124 (SourceRef fabrication
@@ -80,7 +80,7 @@ _ANCHORS: list[tuple[str, str]] = [
     ("evals/cases/stale_data/stale-only-encounter.yaml", "Formerly xfail (Phase 1 #175 resolves it)"),
     ("evals/runner/tests/test_review_queue_generator.py", "non-empty required field (Phase 1 #155)"),
     # #209/#211/#212/#213: dangling Phase-1 streaming-epic sub-issue numbers.
-    ("services/copilot-agent/tests/test_reasoning_stream.py", "sub-issue C of epic Phase 1 #209 -- Phase 1 #211 streams the SSE relay, Phase 1 #212 streams"),
+    ("services/copilot-agent/tests/test_reasoning_stream.py", "epic Phase 1 #209 -- Phase 1 #211 streams the SSE relay, Phase 1 #212 streams"),
 ]
 
 
