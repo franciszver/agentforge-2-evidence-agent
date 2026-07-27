@@ -436,8 +436,8 @@ Stated plainly, in order of what would need to change:
    control endpoints exercised, 1 affected, cleanly separated by
    sync-vs-async as the mechanism predicts. At 80 requests (2x capacity),
    all 80 queued with zero errors and tail latency ≈ 2x the introspection
-   timeout. Same shape as the dev-token-bridge exposure `_validate_token`'s
-   own docstring describes for the flag-OFF path
+   timeout. Same shape as the dev-token-bridge exposure
+   `get_authenticated_token`'s own docstring describes for the flag-OFF path
    (`app/chat.py:410-429`, `#177`'s fix removed that one); this is the
    flag-ON counterpart, and it is a strict *improvement* over pre-#177
    behavior, which burned two threadpool slots per unauthenticated request
@@ -461,7 +461,7 @@ Stated plainly, in order of what would need to change:
 
    **Why accepted rather than mitigated.** Two preconditions keep this
    inert today: `copilot_per_user_token_enabled` defaults `False`
-   (`app/config.py:196`) and is set by no compose file in the repo — the
+   (`app/config.py:199`) and is set by no compose file in the repo — the
    shipped dev stack's `docker-compose.copilot.yml` only *mentions* the env
    var in an explanatory comment, never sets it — and the agent service has no
    `ports:` mapping and sits solely on the `internal: true`

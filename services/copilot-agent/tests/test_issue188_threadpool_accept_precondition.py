@@ -93,21 +93,37 @@ _CONFIG_DEFAULT_RE = re.compile(
     re.MULTILINE,
 )
 
-# Matches any line that *mentions* the env var as a key, in mapping form
-# (``COPILOT_PER_USER_TOKEN_ENABLED: true``), list form
+# Matches the env var's key ANYWHERE on a (comment-stripped) line -- not
+# anchored to line start -- because the mainstream quoted/flow-style forms
+# put other characters before the key on the same line: a quoted list item
+# (``- "COPILOT_PER_USER_TOKEN_ENABLED=true"``), a single-quoted list item
+# (``- 'COPILOT_PER_USER_TOKEN_ENABLED=true'``), YAML flow-style list syntax
+# (``environment: ["COPILOT_PER_USER_TOKEN_ENABLED=true"]``), and a quoted
+# mapping key (``"COPILOT_PER_USER_TOKEN_ENABLED": "true"``) all have a
+# leading quote/bracket/dash that a start-anchored match misses entirely --
+# previously letting all four forms bypass this guard while turning the flag
+# ON. An anchor-free start-of-line dash and an optional quote char between
+# the key and the ``[:=]`` operator are both tolerated for the same reason.
+# The value capture stops before a comma or closing bracket/brace so flow
+# style's trailing ``"]`` doesn't get folded into the captured value; a
+# trailing quote character is stripped from the value separately, below,
+# the same way the plain-mapping-value form always has been.
+#
+# Mapping form (``COPILOT_PER_USER_TOKEN_ENABLED: true``), list form
 # (``- COPILOT_PER_USER_TOKEN_ENABLED=true``), a bare list entry with no
 # operator at all (``- COPILOT_PER_USER_TOKEN_ENABLED``), or an empty
 # mapping (``COPILOT_PER_USER_TOKEN_ENABLED:`` with nothing after the
-# colon) -- deliberately NOT scoped to a single service or a single compose
-# file, since the accept's premise is that NO compose file in the repo (nor
-# any service within one) sets the flag. The ``value`` group is ``None``
-# when there is no ``[:=]`` at all (bare list entry) and ``""`` when there
-# is an operator but nothing follows (empty mapping) -- both of those forms
-# mean "inherits from the host environment" in Compose semantics, which
-# this guard cannot prove is falsy, so both are handled as failures below
-# rather than silently passing.
+# colon) are also matched -- deliberately NOT scoped to a single service or
+# a single compose file, since the accept's premise is that NO compose file
+# in the repo (nor any service within one) sets the flag. The ``value``
+# group is ``None`` when there is no ``[:=]`` at all (bare list entry) and
+# ``""`` when there is an operator but nothing follows (empty mapping) --
+# both of those forms mean "inherits from the host environment" in Compose
+# semantics, which this guard cannot prove is falsy, so both are handled as
+# failures below rather than silently passing.
 _COMPOSE_ENV_KEY_RE = re.compile(
-    r"^-?\s*COPILOT_PER_USER_TOKEN_ENABLED(?!\w)\s*(?:[:=]\s*(?P<value>.*))?$"
+    r"COPILOT_PER_USER_TOKEN_ENABLED(?!\w)\s*"
+    r"(?:[\"']?\s*(?:[:=]\s*(?P<value>[^,\]\}]*))?)?"
 )
 
 # pydantic's bool parsing (see pydantic_core's `str_as_bool`) treats these
@@ -116,39 +132,47 @@ _COMPOSE_ENV_KEY_RE = re.compile(
 # everything not in this set.
 _PYDANTIC_FALSY_VALUES = frozenset({"false", "0", "no", "off", "n"})
 
-_SERVICE_HEADER_RE = re.compile(r"^([A-Za-z0-9_.-]+):\s*(#.*)?$")
-_AGENT_RELEVANT_SERVICE_RE = re.compile(r"agent|copilot", re.IGNORECASE)
 _ENV_FILE_RE = re.compile(r"^env_file\s*:\s*(?P<inline>.*?)\s*(#.*)?$")
 _ENV_FILE_ITEM_RE = re.compile(r"^-\s*(?P<path>[^#]+?)\s*(#.*)?$")
 
 
-def _find_env_file_references_for_relevant_services(text: str) -> list[str]:
-    """Return every ``env_file`` path referenced by a service block whose
-    name looks agent/copilot-relevant. Deliberately simple, indentation-based
-    block tracking -- this repo's compose files use a flat 2-space-per-level
-    style, and erring toward checking more service blocks (rather than fewer)
-    is the fail-closed direction here. Does not resolve YAML anchors/merges."""
+def _strip_trailing_comment(line: str) -> str:
+    """Strip a trailing ``# ...`` YAML comment, quote-aware -- a ``#``
+    inside a single- or double-quoted string is not a comment marker (mirrors
+    the quote-awareness YAML itself uses) and is left untouched. Without
+    this, a real, correctly-falsy assignment followed by an inline comment
+    (e.g. ``COPILOT_PER_USER_TOKEN_ENABLED: "false"  # off by default``) gets
+    its comment text folded into the captured value and fails a value that
+    is actually fine."""
+    in_single = False
+    in_double = False
+    for index, char in enumerate(line):
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif char == "#" and not in_single and not in_double:
+            return line[:index]
+    return line
+
+
+def _find_env_file_references(text: str) -> list[str]:
+    """Return every ``env_file`` path referenced anywhere in the compose
+    file -- deliberately NOT scoped to services whose name looks
+    agent/copilot-relevant, since a service under any other name (e.g.
+    ``app``) can equally reference a file that sets
+    ``COPILOT_PER_USER_TOKEN_ENABLED``, and the env-var scan above
+    (``_COMPOSE_ENV_KEY_RE``) is already file-wide rather than
+    service-scoped for the same reason. Deliberately simple,
+    indentation-based block tracking -- this repo's compose files use a flat
+    2-space-per-level style. Does not resolve YAML anchors/merges."""
     refs: list[str] = []
-    current_service_indent: int | None = None
-    current_service_relevant = False
     current_env_file_indent: int | None = None
     for raw_line in text.splitlines():
         if not raw_line.strip() or raw_line.strip().startswith("#"):
             continue
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         stripped = raw_line.strip()
-        header = _SERVICE_HEADER_RE.match(stripped)
-        if header and 0 < indent <= 4 and (
-            current_service_indent is None or indent <= current_service_indent
-        ):
-            current_service_indent = indent
-            current_service_relevant = bool(_AGENT_RELEVANT_SERVICE_RE.search(header.group(1)))
-            current_env_file_indent = None
-            continue
-        if current_service_indent is None or indent <= current_service_indent:
-            continue
-        if not current_service_relevant:
-            continue
         env_file_match = _ENV_FILE_RE.match(stripped)
         if env_file_match:
             current_env_file_indent = indent
@@ -218,10 +242,13 @@ def test_no_compose_file_enables_copilot_per_user_token() -> None:
     for compose_file in _ALL_COMPOSE_FILES:
         text = compose_file.read_text(encoding="utf-8")
         for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
+            raw_stripped = line.strip()
+            if not raw_stripped or raw_stripped.startswith("#"):
                 continue
-            match = _COMPOSE_ENV_KEY_RE.match(stripped)
+            stripped = _strip_trailing_comment(raw_stripped).rstrip()
+            if not stripped:
+                continue
+            match = _COMPOSE_ENV_KEY_RE.search(stripped)
             if match is None:
                 continue
             value = match.group("value")
@@ -266,24 +293,27 @@ def test_no_compose_file_enables_copilot_per_user_token() -> None:
 
 
 def test_no_compose_file_env_file_enables_copilot_per_user_token() -> None:
-    """An agent/copilot-relevant service's ``env_file:`` reference is
-    another route to turning the flag on without a live
-    ``environment:`` assignment ever appearing in the compose file itself.
-    This deliberately does not trust a referenced file's *absence* of the
-    setting as proof of OFF -- if the file cannot be read, that is treated
-    the same as "cannot be proven falsy" and fails, naming the unreadable
-    path, rather than silently passing. Today no compose file in the repo
-    declares ``env_file`` at all, so this test currently has nothing to
-    walk."""
+    """Any service's ``env_file:`` reference -- not just an agent/copilot-
+    named one -- is another route to turning the flag on without a live
+    ``environment:`` assignment ever appearing in the compose file itself;
+    a service named e.g. ``app`` referencing a file that sets the flag
+    truthy is exactly as much a bypass as an agent/copilot-named one, so
+    every ``env_file`` reference in every compose file is walked, strictly
+    fail-closed, mirroring the file-wide (not service-scoped) env-var scan
+    above. This deliberately does not trust a referenced file's *absence* of
+    the setting as proof of OFF -- if the file cannot be read, that is
+    treated the same as "cannot be proven falsy" and fails, naming the
+    unreadable path, rather than silently passing. Today no compose file in
+    the repo declares ``env_file`` at all, so this test currently has
+    nothing to walk."""
     for compose_file in _ALL_COMPOSE_FILES:
         text = compose_file.read_text(encoding="utf-8")
-        for raw_ref in _find_env_file_references_for_relevant_services(text):
+        for raw_ref in _find_env_file_references(text):
             ref_path = (compose_file.parent / raw_ref).resolve()
             if not ref_path.is_file():
                 raise AssertionError(
-                    f"{compose_file} declares env_file {raw_ref!r} for an "
-                    f"agent/copilot-relevant service, but {ref_path} could "
-                    "not be read -- whether it sets "
+                    f"{compose_file} declares env_file {raw_ref!r}, but "
+                    f"{ref_path} could not be read -- whether it sets "
                     "COPILOT_PER_USER_TOKEN_ENABLED cannot be proven, so "
                     f"this cannot be treated as OFF. {_REOPEN_MESSAGE}"
                 )
