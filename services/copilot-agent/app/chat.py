@@ -507,6 +507,28 @@ def _default_subject_resolver(token: str) -> str | None:
     return None
 
 
+class _IntrospectionSubjectResolver:
+    """Callable ``SubjectResolver`` backed by an ``Introspector`` (#185).
+
+    Exposes ``peek_cached`` -- the same duck-typed optional capability
+    ``_IntrospectionValidator`` exposes for ``_validate_token`` -- so
+    ``_resolve_subject`` (F3, chat_endpoint's caller) can decide whether
+    resolving this token is a cache hit (safe in-loop) or a cache miss (must
+    be dispatched to the threadpool; a real, blocking introspection HTTP
+    call otherwise runs directly on the event loop).
+    """
+
+    def __init__(self, introspector: Introspector) -> None:
+        self._introspector = introspector
+
+    def __call__(self, token: str) -> str | None:
+        return self._introspector.introspect(token).sub
+
+    def peek_cached(self, token: str) -> IntrospectionResult | None:
+        peek = getattr(self._introspector, "peek_cached", None)
+        return peek(token) if peek is not None else None
+
+
 def get_subject_resolver() -> SubjectResolver:
     """FastAPI dependency: resolve a bearer token to its OpenEMR subject id
     (#185). Override in tests.
@@ -515,10 +537,15 @@ def get_subject_resolver() -> SubjectResolver:
     signature-verified introspection ``sub`` claim
     (``app.openemr_auth.IntrospectionResult.sub``) for a token, via the SAME
     process-wide ``TokenIntrospector`` the token validator and
-    ``LaunchPatientBinder`` already use -- so this call is a cache hit for
-    any token that was just validated (e.g. ``/chat``'s own
-    ``get_authenticated_token``, or ``/feedback``'s validator call), not a
-    second network round trip. Flag OFF: the default no-op above, so
+    ``LaunchPatientBinder`` already use -- so this call is USUALLY a cache
+    hit off the same introspection ``get_authenticated_token``/
+    ``launch_binding_checker`` already performed for this token. It is not
+    *guaranteed* to be one: the cache deadline is ``min(now+ttl, exp)`` (see
+    ``TokenIntrospector``), so a token whose ``exp`` falls inside the window
+    between that earlier validation and this resolution can still miss and
+    make a second, real HTTP round trip. ``_resolve_subject`` (chat_endpoint's
+    caller) handles that miss the same way ``_validate_token`` handles one --
+    see its docstring. Flag OFF: the default no-op above, so
     ``/chat``/``/feedback`` stay byte-identical to today's #180 behaviour.
 
     Shared by ``app.chat`` (records the ``REQUEST`` span's owner) and
@@ -527,9 +554,29 @@ def get_subject_resolver() -> SubjectResolver:
     exact same way.
     """
     if get_settings().copilot_per_user_token_enabled:
-        introspector = get_token_introspector()
-        return lambda token: introspector.introspect(token).sub
+        return _IntrospectionSubjectResolver(get_token_introspector())
     return _default_subject_resolver
+
+
+async def _resolve_subject(subject_resolver: SubjectResolver, token: str) -> str | None:
+    """Invoke ``subject_resolver(token)``, dispatching to FastAPI's threadpool
+    only when necessary (F3, mirrors ``_validate_token``).
+
+    A cache-MISS introspection makes a real, blocking HTTP call and must not
+    occupy the event loop inside the ``async`` ``chat_endpoint`` body. A
+    cache-HIT (or the flag-off no-op, which does no I/O at all) is cheap
+    enough to call directly, in-loop.
+
+    ``subject_resolver`` optionally exposes ``peek_cached`` (see
+    ``_IntrospectionSubjectResolver``); its absence (the flag-off default, or
+    any ``SubjectResolver`` double without it, e.g. a test override) means "no
+    fast path available" -> call in-loop, byte-identical to before this
+    dispatcher existed.
+    """
+    peek_cached = getattr(subject_resolver, "peek_cached", None)
+    if peek_cached is None or peek_cached(token) is not None:
+        return subject_resolver(token)
+    return await run_in_threadpool(subject_resolver, token)
 
 
 _dev_token_bridge: DevTokenBridge | None = None
@@ -2097,13 +2144,14 @@ async def chat_endpoint(
 
     user = _user_identity_from_token(token)
     # #185: resolves to OpenEMR's verified subject when
-    # copilot_per_user_token_enabled is on (a cache hit off the SAME
+    # copilot_per_user_token_enabled is on (usually a cache hit off the SAME
     # introspection get_authenticated_token/launch_binding_checker already
     # performed for this token above -- see get_subject_resolver's
-    # docstring), or None flag-off. Recorded on the REQUEST span below so
-    # TraceStore._owner_columns can pick the #185 subject-ownership regime
-    # instead of #180's token-hash one.
-    owner_subject = subject_resolver(token)
+    # docstring for the rare miss case, handled by _resolve_subject the same
+    # way _validate_token handles one), or None flag-off. Recorded on the
+    # REQUEST span below so TraceStore._owner_columns can pick the #185
+    # subject-ownership regime instead of #180's token-hash one.
+    owner_subject = await _resolve_subject(subject_resolver, token)
 
     planner = planner_factory(request.patient_id)
 

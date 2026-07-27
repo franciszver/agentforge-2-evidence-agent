@@ -615,10 +615,16 @@ class TraceStore:
           passed neither) -> rejected. An unrecorded/ambiguous originator is
           never treated as fair game, only as unclaimable.
 
-        Only an exact, constant-time (``hmac.compare_digest``) match returns
-        ``True`` in either regime -- ``subject`` is not secret-shaped, but
-        comparing it the same way as the token hash costs nothing and keeps
-        one comparison discipline instead of two.
+        The two regimes use different comparisons, deliberately. ``subject``
+        is a non-secret identifier (an OpenEMR ``sub`` UUID) -- it is not
+        derived from anything an attacker shouldn't already know, so a plain
+        ``==`` is used: nothing is protected by constant-time comparison here,
+        and ``hmac.compare_digest`` requires both operands to be ASCII-only
+        (``bytes``, or ``str`` restricted to the ASCII subset), which a
+        non-ASCII ``subject`` would violate, raising ``TypeError`` instead of
+        returning ``False``. ``owner_token_hash`` IS secret-derived (see
+        ``hash_owner_token``), so that comparison stays on
+        ``hmac.compare_digest`` to avoid a timing side channel on the hash.
 
         First REQUEST span wins, by design -- security-load-bearing, not
         arbitrary. ``correlation_id`` is attacker-influenceable (an inbound
@@ -644,7 +650,7 @@ class TraceStore:
         if effective_kind == OwnerKind.SUBJECT.value:
             if not subject or not origin.owner_subject:
                 return False
-            return hmac.compare_digest(origin.owner_subject, subject)
+            return origin.owner_subject == subject
         if effective_kind == OwnerKind.TOKEN_HASH.value:
             if not origin.owner_token_hash:
                 return False

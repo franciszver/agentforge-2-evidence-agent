@@ -450,6 +450,18 @@ def test_caller_owns_trace_different_subject_is_rejected(store: TraceStore) -> N
     assert store.caller_owns_trace("corr-subj-owner", "attacker-token", subject="user-99") is False
 
 
+def test_caller_owns_trace_non_ascii_subject_matches_without_raising(store: TraceStore) -> None:
+    # F1 regression: hmac.compare_digest raises TypeError on non-ASCII str
+    # operands. subject is a non-secret identifier so the comparison must be
+    # a plain `==`, which handles non-ASCII values the same as any other.
+    store.record_request_span(
+        correlation_id="corr-subj-non-ascii", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="usér-42"
+    )
+
+    assert store.caller_owns_trace("corr-subj-non-ascii", "token-session-1", subject="usér-42") is True
+    assert store.caller_owns_trace("corr-subj-non-ascii", "attacker-token", subject="usér-99") is False
+
+
 # Mixed-regime matrix ------------------------------------------------------
 #
 # Cell 1: a row written under the #180 token-hash regime, checked later with
@@ -525,6 +537,51 @@ def test_matrix_legacy_pre_owner_kind_row_is_treated_as_token_hash(store: TraceS
     # A caller with only a subject and none of the original token cannot
     # claim a token_hash-regime row via that subject.
     assert store.caller_owns_trace("corr-mixed-4", "some-other-token", subject="user-42") is False
+
+
+# F5: defence-in-depth for corrupt/hand-edited rows. Neither is reachable via
+# any in-tree write path (record_request_span/record_feedback_span always go
+# through _owner_columns, which never emits owner_kind='token_hash' with a
+# NULL hash, or owner_kind='subject' with a NULL subject) -- these guard rows
+# that only a hand edit or a bug in a future writer could produce.
+def test_matrix_token_hash_row_with_null_hash_is_rejected(store: TraceStore, db_path: str) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "INSERT INTO spans (correlation_id, span_type, start_ts, end_ts, duration_ms, status, "
+            "owner_kind, owner_token_hash) VALUES (?, 'request', 0.0, 1.0, 1000.0, 'ok', 'token_hash', NULL)",
+            ("corr-corrupt-token-hash",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    span = store.get_spans("corr-corrupt-token-hash")[0]
+    assert span.owner_kind == "token_hash"
+    assert span.owner_token_hash is None
+
+    assert store.caller_owns_trace("corr-corrupt-token-hash", "any-token") is False
+    assert store.caller_owns_trace("corr-corrupt-token-hash", "any-token", subject="user-42") is False
+
+
+def test_matrix_subject_row_with_null_subject_is_rejected(store: TraceStore, db_path: str) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "INSERT INTO spans (correlation_id, span_type, start_ts, end_ts, duration_ms, status, "
+            "owner_kind, owner_subject) VALUES (?, 'request', 0.0, 1.0, 1000.0, 'ok', 'subject', NULL)",
+            ("corr-corrupt-subject",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    span = store.get_spans("corr-corrupt-subject")[0]
+    assert span.owner_kind == "subject"
+    assert span.owner_subject is None
+
+    assert store.caller_owns_trace("corr-corrupt-subject", "any-token", subject="user-42") is False
+    assert store.caller_owns_trace("corr-corrupt-subject", "any-token") is False
 
 
 def test_record_feedback_span_records_owner_subject_and_kind(store: TraceStore) -> None:

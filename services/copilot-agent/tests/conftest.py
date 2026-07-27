@@ -133,6 +133,47 @@ def _isolate_eval_history(_isolation_eval_history: list[object]) -> Iterator[Non
     app.dependency_overrides.pop(get_eval_history_provider, None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_wide_singletons() -> Iterator[None]:
+    """Gate 3 (Opus) MINOR finding: ``chat._token_introspector`` and
+    ``chat._dev_token_bridge`` are lazily-built, process-wide singletons
+    (``get_token_introspector`` / ``get_dev_token_bridge``) baked from
+    whatever ``Settings`` were live the FIRST time either is called. No
+    fixture reset them, so a test that exercises the real (non-overridden)
+    introspection or dev-bridge path -- e.g. ``test_chat_endpoint.py``'s flag
+    precedence test, or its fail-closed-default endpoint test -- could seed a
+    singleton bound to one test's env/creds that then silently leaks into a
+    LATER test under ``pytest-randomly`` reordering. Mirrors
+    ``test_launch_binding.py``'s ``_reset_binder_singleton`` for
+    ``chat._launch_patient_binder``.
+
+    Also resets ``chat._default_roster_cache`` (#174): ``get_roster_cache``
+    is a top-level dependency of ``chat_endpoint`` (evaluated on EVERY
+    ``/chat`` call, not just when a "switch to <Name>" construction fires),
+    so without this reset the first test in the session to hit a real
+    (non-overridden) ``get_roster_cache`` call would seed a cached roster
+    that could silently leak into a later roster-assertion test under
+    ``pytest-randomly`` reordering -- the same leak class as the two
+    singletons above, just for a cache instead of a validator/bridge.
+
+    Promoted to this shared conftest (F2, #185 gate) after
+    ``test_subject_ownership.py::test_get_subject_resolver_flag_on_returns_a_real_resolver``
+    was found seeding ``chat._token_introspector`` via the real
+    ``get_subject_resolver()`` with no reset in that module -- autouse here
+    so every module in this test package is covered, not just
+    ``test_chat_endpoint.py``.
+    """
+    import app.chat as chat
+
+    chat._token_introspector = None
+    chat._dev_token_bridge = None
+    chat._default_roster_cache = None
+    yield
+    chat._token_introspector = None
+    chat._dev_token_bridge = None
+    chat._default_roster_cache = None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _assert_default_trace_store_untouched() -> Iterator[None]:
     """Session leak guard: prove no test ever invoked the real

@@ -401,6 +401,19 @@ Stated plainly, in order of what would need to change:
    UX choice, and enabling the real per-user path is a documented, **one-line
    flag flip** the owner controls. Framed precisely: proven live, flag-gated,
    default off — not shipped-on-by-default.
+
+   **Flipping ON is effectively one-way for feedback ownership (#185).**
+   `POST /feedback` rows written while `copilot_per_user_token_enabled` is ON
+   record ownership against the caller's verified OpenEMR `sub` (subject
+   regime), not a bearer-token hash. Rolling the flag back OFF does not make
+   those rows reclaimable under the token-hash regime — `TraceStore
+   .caller_owns_trace` dispatches on each row's own recorded `owner_kind` and
+   fails closed for a `subject` row when the caller has no subject to offer
+   (see that method's docstring for the full mixed-regime matrix), the
+   correct choice to avoid re-litigating ownership under a weaker regime, but
+   it means there is **no recovery path**: a clinician's accumulated
+   feedback ownership on rows written under SUBJECT becomes permanently
+   unclaimable once the flag is flipped back OFF.
 2. **Real token introspection at `/chat` — built.** As of #168 (VULN-0001)
    the shipped default `TokenValidator` is fail-closed, not a stub — every
    token is rejected unless the explicit, dev-only
@@ -425,10 +438,10 @@ Stated plainly, in order of what would need to change:
    anywhere in `app/` or `tests/`) and is shared by every other sync
    dependency/endpoint in the process: `/health`, `GET /chat`, `/dashboard`,
    `/review`, `/review/promote`, `/feedback`, `/documents/{source_id}`,
-   `get_planner_factory` (`chat.py:577`), plus
-   `_resolve_conversation_patient_name` (`chat.py:1961`, itself `async def`
+   `get_planner_factory` (`chat.py:661`), plus
+   `_resolve_conversation_patient_name` (`chat.py:2047`, itself `async def`
    but dispatches its own blocking resolve via `run_in_threadpool` at
-   `chat.py:1981`). Only `/ready` and `POST /chat`'s own body are otherwise
+   `chat.py:2067`). Only `/ready` and `POST /chat`'s own body are otherwise
    async. Measured: 40 concurrent unauthenticated requests drove 40/40
    concurrent validator calls (watermark == pool capacity); with the pool
    saturated, `/health` (sync, shares the pool) measured +1.25s of added

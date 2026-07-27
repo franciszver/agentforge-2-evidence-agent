@@ -604,3 +604,88 @@ def test_validate_token_cache_miss_does_not_block_the_event_loop(tmp_path):
     # If the 0.2s introspection blocked the loop, the ticker could not have
     # advanced concurrently with it -- it would starve until the call returned.
     assert ticks >= 5
+
+
+# --- F3: _resolve_subject mirrors _validate_token's cache-hit/miss dispatch -
+
+
+def test_resolve_subject_cache_miss_dispatches_to_threadpool(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999, "sub": "user-42"})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+
+    import app.chat as chat_module
+
+    subject_resolver = chat_module._IntrospectionSubjectResolver(introspector)
+
+    real_run_in_threadpool = chat_module.run_in_threadpool
+    dispatched: list[object] = []
+
+    async def spy(func, *args):
+        dispatched.append(func)
+        return await real_run_in_threadpool(func, *args)
+
+    monkeypatch.setattr(chat_module, "run_in_threadpool", spy)
+
+    import asyncio
+
+    result = asyncio.run(chat_module._resolve_subject(subject_resolver, _TOK))
+
+    assert dispatched  # cache miss -> the resolver call was dispatched off-loop
+    assert len(calls) == 1  # the upstream introspection happened (inside the threadpool)
+    assert result == "user-42"
+
+
+def test_resolve_subject_cache_hit_skips_threadpool(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999, "sub": "user-42"})
+
+    introspector = _introspector(tmp_path, handler, calls=calls)
+
+    import app.chat as chat_module
+
+    subject_resolver = chat_module._IntrospectionSubjectResolver(introspector)
+
+    # Warm the cache first, exactly as get_authenticated_token's own
+    # validation call would have for this same token earlier in the request.
+    introspector.introspect(_TOK)
+    assert len(calls) == 1
+
+    dispatched: list[object] = []
+    monkeypatch.setattr(chat_module, "run_in_threadpool", lambda *a, **k: dispatched.append(1))
+
+    import asyncio
+
+    result = asyncio.run(chat_module._resolve_subject(subject_resolver, _TOK))
+
+    assert dispatched == []  # cache hit -> no threadpool round trip at all
+    assert len(calls) == 1  # and no additional upstream call either
+    assert result == "user-42"
+
+
+def test_resolve_subject_without_peek_cached_calls_in_loop(monkeypatch):
+    """A ``SubjectResolver`` double without ``peek_cached`` (e.g. a test
+    override, or the flag-off default) must fall back to an in-loop call,
+    byte-identical to before ``_resolve_subject`` existed."""
+    import app.chat as chat_module
+
+    calls: list[str] = []
+    dispatched: list[object] = []
+    monkeypatch.setattr(chat_module, "run_in_threadpool", lambda *a, **k: dispatched.append(1))
+
+    def bare_resolver(token: str) -> str | None:
+        calls.append(token)
+        return "user-1"
+
+    import asyncio
+
+    result = asyncio.run(chat_module._resolve_subject(bare_resolver, _TOK))
+
+    assert result == "user-1"
+    assert calls == [_TOK]
+    assert dispatched == []
