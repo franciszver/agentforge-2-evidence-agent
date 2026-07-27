@@ -767,7 +767,7 @@ describe('createThinkingIndicator', () => {
 
         indicator.setStage('reasoning');
         expect(el.textContent).toContain('Reasoning locally');
-        expect(el.textContent).toContain('Qwen3-4B');
+        expect(el.textContent).toContain('Qwen3-8B');
 
         indicator.setStage('verifying');
         expect(el.textContent).toContain('Verifying claims against the record');
@@ -1057,7 +1057,7 @@ describe('createReasoningZone', () => {
         const el = container.querySelector('.copilot-reasoning');
         expect(el).not.toBeNull();
         expect(el.textContent).toContain('Reasoning locally');
-        expect(el.textContent).toContain('Qwen3-4B');
+        expect(el.textContent).toContain('Qwen3-8B');
 
         zone.append('Let me check ');
         zone.append('the medication list.');
