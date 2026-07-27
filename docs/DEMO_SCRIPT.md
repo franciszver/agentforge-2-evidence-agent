@@ -279,8 +279,9 @@ three beats were measured against.
    already does this — `evals/fixtures/seed.py`'s `ALLERGY_CONFLICT_PUBPID`
    resolves to `pid=1` on a fresh pinned demo dataset) and passed as an
    explicit argument to a small in-container wrapper
-   (`scripts/ingest_demo_pdf.py`, new for this issue) that calls the exact
-   same `attach_and_extract`/`LocalIngestionStore` logic
+   (`scripts/ingest_demo_pdf.py`, new for this issue) that dispatches
+   through the same `app.supervisor.IntakeExtractorWorker` (and, beneath
+   it, the same `attach_and_extract`/`LocalIngestionStore` logic)
    `seed_demo_documents.py` does, minus the host-only pubpid resolution.
    Ingests the already-committed synthetic lab PDF
    (`tests/fixtures/lab_report_synthetic.pdf`), which already carries the

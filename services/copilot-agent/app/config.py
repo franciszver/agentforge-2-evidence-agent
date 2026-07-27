@@ -142,15 +142,14 @@ class Settings(BaseSettings):
     # TEXT-ONLY ``qwen3:4b``. This is a dedicated setting instead, defaulting
     # to the vision-capable model docs/DEMO_SCRIPT.md's setup step 5 used to
     # require an operator to remember as a per-call ``OLLAMA_MODEL`` env
-    # override -- both that doc and scripts/ingest_demo_pdf.py /
+    # override -- both scripts/ingest_demo_pdf.py and
     # scripts/seed_demo_documents.py now dispatch through
     # app.supervisor.IntakeExtractorWorker (the same worker class
     # app.chat._build_evidence_workers builds for /chat), so the default and
     # its guard are decided here, not re-derived at each call site.
-    # app.ollama_client.
-    # is_vision_capable_model() is also consulted at ingestion-call time
-    # (fail-closed) so a future misconfiguration of THIS setting can't
-    # silently regress to the same bug.
+    # app.ollama_client.is_vision_capable_model() is also consulted at
+    # ingestion-call time (fail-closed) so a future misconfiguration of
+    # THIS setting can't silently regress to the same bug.
     copilot_vision_model: str = "qwen2.5vl:7b"
     # Issue #204 (gate-1 finding on #206): is_vision_capable_model() is a
     # best-effort, name-based heuristic (app/ollama_client.py) -- it can

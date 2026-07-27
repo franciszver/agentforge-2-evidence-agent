@@ -55,8 +55,9 @@ write to the host filesystem rather than the running ``agent`` container's
 Verified live during the P5.1 dry run. Against THIS stack, ingest from
 inside the ``agent`` container instead -- see ``docs/DEMO_SCRIPT.md``'s
 setup section and ``scripts/ingest_demo_pdf.py`` (a container-side runner
-with the same ``attach_and_extract``/``LocalIngestionStore`` wiring as this
-module, minus the host-only pubpid resolution below, which
+that dispatches through the same ``app.supervisor.IntakeExtractorWorker``
+(and, beneath it, the same ``attach_and_extract``/``LocalIngestionStore``
+logic) as this module, minus the host-only pubpid resolution below, which
 ``get_pid_for_pubpid`` performs via ``docker compose exec mysql`` -- itself
 only reachable from the host, not from inside ``agent``). This module is
 still correct wherever ``OLLAMA_BASE_URL`` genuinely is host-reachable

@@ -172,16 +172,17 @@ class IntakeExtractorWorker:
         self._vision_model_capability_check = vision_model_capability_check
 
     def run(self, sub_task: IngestSubTask) -> IngestionResult:
-        model = self._ollama_client.model
-        if self._vision_model_capability_check and not is_vision_capable_model(model):
-            raise VisionModelMisconfiguredError(
-                f"IntakeExtractorWorker refuses to run: configured model {model!r} failed a "
-                "name-based vision-capability check (app.ollama_client.is_vision_capable_model), "
-                "which may not recognize a model that is genuinely vision-capable (e.g. a "
-                "digest-pinned reference or a custom re-tag). If you have verified this model "
-                "can in fact process images, set copilot_vision_model_capability_check=false to "
-                "skip this check."
-            )
+        if self._vision_model_capability_check:
+            model = self._ollama_client.model
+            if not is_vision_capable_model(model):
+                raise VisionModelMisconfiguredError(
+                    f"IntakeExtractorWorker refuses to run: configured model {model!r} failed a "
+                    "name-based vision-capability check (app.ollama_client.is_vision_capable_model), "
+                    "which may not recognize a model that is genuinely vision-capable (e.g. a "
+                    "digest-pinned reference or a custom re-tag). If you have verified this model "
+                    "can in fact process images, set copilot_vision_model_capability_check=false to "
+                    "skip this check."
+                )
         return attach_and_extract(
             sub_task.patient_id,
             sub_task.file_path,

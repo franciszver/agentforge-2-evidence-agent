@@ -312,19 +312,23 @@ def is_vision_capable_model(model: str) -> bool:
     ``Settings.copilot_vision_model_capability_check``, not extend this
     function's matching.
 
-    KNOWN LIMITATIONS (Gate-3 findings on #204), the flip side of the
-    false-``False`` case above -- a false ``True``:
-      * Letter-adjacent ``vl`` names (``internvl2``, ``cogvlm``,
-        ``smolvlm``) and multimodal models with no recognized marker at all
-        (``gemma3``, ``paligemma``, ``idefics2``, ``fuyu``, ``glm-4v``,
-        ``llama4``) are NOT recognized -- correctly refused, but only
-        because they are indistinguishable from ordinary text-only names
-        like ``wavlm``, not because they were specifically identified.
-      * ``word2vl-embed`` and ``model2vl.gguf`` (a digit immediately before
-        ``vl``, a delimiter immediately after) falsely match ``_has_vl_marker``
-        despite being ordinary non-VLM names -- low real-world plausibility
-        (an operator-chosen model name coinciding with this exact shape),
-        left unfixed rather than tightening the digit-preceded case in a way
+    KNOWN LIMITATIONS (Gate-3 findings on #204):
+      * More false-``False`` cases beyond the ones above: letter-adjacent
+        ``vl`` names (``internvl2``, ``cogvlm``, ``smolvlm``) and
+        multimodal models with no recognized marker at all (``gemma3``,
+        ``paligemma``, ``idefics2``, ``fuyu``, ``glm-4v``, ``llama4``) are
+        NOT recognized, because they are indistinguishable from ordinary
+        text-only names like ``wavlm``, not because they were specifically
+        identified. This is safe (the caller fails closed) but incorrect --
+        every one of these models is genuinely vision-capable, and the
+        refusal costs a working deployment the ability to use it without
+        the operator override.
+      * The flip side -- a false ``True``: ``word2vl-embed`` and
+        ``model2vl.gguf`` (a digit immediately before ``vl``, a delimiter
+        immediately after) falsely match ``_has_vl_marker`` despite being
+        ordinary non-VLM names -- low real-world plausibility (an
+        operator-chosen model name coinciding with this exact shape), left
+        unfixed rather than tightening the digit-preceded case in a way
         that would also reject genuine ``qwen2-vl``/``qwen2.5vl`` names.
     """
     normalized = model.strip().lower()

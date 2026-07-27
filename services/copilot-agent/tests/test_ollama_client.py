@@ -939,19 +939,6 @@ def test_embed_does_not_log_the_input_text(caplog):
 # --- is_vision_capable_model: gate-1 finding on #206 -------------------
 
 
-def test_is_vision_capable_model_recognizes_minicpm_v():
-    """minicpm-v is a real, commonly-deployed VLM family that the marker
-    list previously missed entirely -- it matched no marker and would have
-    been wrongly rejected by IntakeExtractorWorker.run()."""
-    assert is_vision_capable_model("minicpm-v:8b") is True
-    assert is_vision_capable_model("MiniCPM-V") is True
-
-
-@pytest.mark.parametrize("model", ["qwen2.5vl:7b", "llama3.2-vision", "llava", "moondream", "pixtral", "bakllava"])
-def test_is_vision_capable_model_still_recognizes_pre_existing_families(model: str):
-    assert is_vision_capable_model(model) is True
-
-
 def test_is_vision_capable_model_rejects_a_text_only_model():
     """Safety property: the heuristic must still reject an unrecognized,
     genuinely text-only model name -- this must not regress while fixing
@@ -980,12 +967,18 @@ def test_is_vision_capable_model_rejects_a_text_only_model():
         pytest.param("llama3.2-vision", id="accept-llama-vision-no-tag"),
         pytest.param("llama3.2-vision:11b", id="accept-llama-vision-with-tag"),
         pytest.param("llava:13b", id="accept-llava-tag"),
+        pytest.param("llava", id="accept-llava-bare"),
         pytest.param("llava-llama3", id="accept-llava-llama3"),
         pytest.param("bakllava", id="accept-bakllava-bare"),
         pytest.param("moondream", id="accept-moondream-bare"),
         pytest.param("pixtral-12b", id="accept-pixtral-12b"),
+        pytest.param("pixtral", id="accept-pixtral-bare"),
         pytest.param("minicpm-v", id="accept-minicpm-v-bare"),
         pytest.param("minicpm-v:8b", id="accept-minicpm-v-tag"),
+        # Case-insensitivity: is_vision_capable_model() normalizes to
+        # lowercase before matching (previously covered only by the
+        # now-removed test_is_vision_capable_model_recognizes_minicpm_v).
+        pytest.param("MiniCPM-V", id="accept-minicpm-v-mixed-case"),
         pytest.param("minicpm-o", id="accept-minicpm-o-bare"),
         # MINOR-6 (#204 gate-3): trailing digits after the ``vl`` marker,
         # before the next delimiter/end, must not defeat the boundary check
@@ -1036,7 +1029,7 @@ def test_is_vision_capable_model_accepts_genuine_vlm_names(model: str):
         pytest.param("idefics2:8b", id="not-recognized-idefics2-no-marker"),
         pytest.param("fuyu:8b", id="not-recognized-fuyu-no-marker"),
         pytest.param("glm-4v:9b", id="not-recognized-glm-4v-no-marker"),
-        pytest.param("llama4:8b", id="not-recognized-llama4-no-marker"),
+        pytest.param("llama4:scout", id="not-recognized-llama4-no-marker"),
     ],
 )
 def test_is_vision_capable_model_rejects_text_only_and_near_miss_names(model: str):
