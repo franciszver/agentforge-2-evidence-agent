@@ -79,14 +79,17 @@ def _load_pinned_spec() -> dict[str, Any]:
 _PRESENTATION_METADATA_KEYS = frozenset({"description", "title", "summary", "examples", "example"})
 
 # #184 diagnosis: reproduced the standing local failure with an older
-# fastapi pin (fastapi==0.115.0 vs. this repo's fastapi==0.139.2 -- both
-# environments run the same pydantic==2.13.4) and diffed the two schemas
-# key-by-key. The ENTIRE delta -- across all 8 paths and all 8 component
-# schemas -- was two optional properties on this one component:
-# `ValidationError.properties` gained `input`/`ctx` under the newer fastapi.
-# `ValidationError` is FastAPI's own built-in request-validation-error model,
-# hardcoded as `validation_error_definition` in `fastapi/openapi/utils.py`
-# (present in 0.139.2, absent in <=0.124.4) -- no app module defines an
+# fastapi pin (the diagnosis environment resolved fastapi 0.139.2 vs. fastapi
+# 0.124.4 -- pyproject only floors on `fastapi>=0.115`, there is no lockfile
+# pinning an exact version; both environments ran the same pydantic 2.13.4)
+# and diffed the two schemas key-by-key. The ENTIRE delta -- across all 8
+# paths and all 8 component schemas -- was two optional properties on this
+# one component: `ValidationError.properties` gained `input`/`ctx` under the
+# newer fastapi. `ValidationError` is FastAPI's own built-in
+# request-validation-error model, hardcoded as `validation_error_definition`
+# in `fastapi/openapi/utils.py`; that definition exists in both versions
+# tested, but its `input`/`ctx` properties are present in 0.139.2 and absent
+# in 0.124.4 -- no app module defines an
 # OpenAPI component schema named `ValidationError`; the component is emitted
 # solely by fastapi's own openapi generation. Its `required` list (`loc`,
 # `msg`, `type`) is identical across both versions tested, so this is a
@@ -102,6 +105,13 @@ _FRAMEWORK_VERSION_DEPENDENT_SCHEMA_PROPERTIES = {
 # presentation metadata -- even when a name happens to collide with one of
 # `_PRESENTATION_METADATA_KEYS` (e.g. a schema property literally named
 # `title`).
+#
+# Known limitation: the exemption is keyed on the PARENT key name alone, so
+# a property literally named `properties` or `headers` would have its own
+# schema treated as exempt too. That would surface as a loud false-positive
+# test failure (a framework rewording of that field's title/description
+# stops being stripped), not silent drift-masking. Zero properties with
+# either name exist in the pinned spec today.
 _METADATA_EXEMPT_CONTAINER_KEYS = frozenset({"properties", "headers"})
 
 
@@ -203,9 +213,13 @@ def test_pinned_spec_matches_live_schema() -> None:
     framework-injected ``ValidationError`` schema (FastAPI-version-dependent,
     not authored by this app -- no app module defines an OpenAPI component
     schema named ``ValidationError``; it is emitted by fastapi's own hardcoded
-    ``validation_error_definition`` in ``fastapi/openapi/utils.py``, present
-    in 0.139.2 and absent in <=0.124.4; its ``required`` list is untouched
-    across the fastapi versions tested). Normalization never touches
+    ``validation_error_definition`` in ``fastapi/openapi/utils.py``, whose
+    ``input``/``ctx`` properties are present in the diagnosis environment's
+    fastapi 0.139.2 and absent in its fastapi 0.124.4 (see #184's diagnosis
+    comment above the module-level constants for how those two versions were
+    resolved -- there is no repo lockfile pinning an exact fastapi version);
+    its ``required`` list is untouched across the fastapi versions tested).
+    Normalization never touches
     ``required`` lists, so a real field gaining or losing required-ness is
     still caught even on the ValidationError schema.
     """
