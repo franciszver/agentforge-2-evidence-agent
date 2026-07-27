@@ -137,7 +137,7 @@ def seed_demo_documents() -> int:
         # Issue #206: attach_and_extract now raises when EVERY page failed
         # extraction, distinct from the partial-failure case below.
         raise DemoDocumentSeedError(
-            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id} "
+            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id}, file={_LAB_PDF_FIXTURE} "
             f"(pages_total={exc.pages_total}, failed_pages={exc.failed_pages}) "
             "-- check Ollama reachability/model before running the demo"
         ) from exc

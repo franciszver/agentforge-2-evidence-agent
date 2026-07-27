@@ -588,7 +588,7 @@ def attach_and_extract(
             extra={"pages_total": pages_total, "failed_page_count": len(failed_pages)},
         )
         raise IngestionError(
-            f"{path.name}: all {pages_total} page(s) failed extraction; no facts recorded",
+            f"all {pages_total} page(s) failed extraction; no facts recorded",
             pages_total=pages_total,
             failed_pages=failed_pages,
         )

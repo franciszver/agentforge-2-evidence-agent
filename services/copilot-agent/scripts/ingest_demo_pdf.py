@@ -99,7 +99,7 @@ def main() -> int:
         # extraction, distinct from the partial-failure case below (which
         # still returns a result with a non-empty failed_pages).
         print(
-            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id} "
+            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id}, file={pdf_path} "
             f"(pages_total={exc.pages_total}, failed_pages={exc.failed_pages}): {exc}",
             file=sys.stderr,
         )
