@@ -33,6 +33,16 @@ DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
 # justification.
 DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 
+# Issue #182: cap on the number of distinct AUTHENTICATED PRINCIPALS
+# app.chat.RosterCache tracks at once when copilot_per_user_token_enabled is
+# ON (see Settings.copilot_roster_cache_max_principals's docstring for the
+# full bound analysis). 512 comfortably covers a large single-facility
+# clinician panel (a deployment with 512 distinct clinicians authenticating
+# within one TTL window would be unusually large) while keeping the
+# per-entry memory cost (one full roster copy) bounded by a fixed constant
+# regardless of how many distinct users a long-lived process ever sees.
+DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS = 512
+
 # Issue #173: default cap for app.body_size_limit.BodySizeLimitMiddleware --
 # the OUTERMOST-registered ASGI middleware (see app/main.py's
 # create_app -- Starlette applies add_middleware in REVERSE order of
@@ -344,6 +354,21 @@ class Settings(BaseSettings):
     # so a deployment with a rapidly-changing patient panel can shorten it,
     # or one prioritizing fewer OpenEMR round trips can lengthen it.
     copilot_roster_cache_ttl_seconds: float = DEFAULT_ROSTER_CACHE_TTL_SECONDS
+
+    # Issue #182: with copilot_per_user_token_enabled ON, app.chat.RosterCache
+    # is keyed by the authenticated PRINCIPAL (OpenEMR's introspected `sub`,
+    # not the raw bearer token -- a token rotates, so keying by token would
+    # make the cache grow unboundedly and reintroduce #174's own memory
+    # defect under a different key) instead of sharing one entry across every
+    # caller. Bounding entry COUNT still matters even keyed correctly: a
+    # long-lived process could otherwise accumulate one full roster copy per
+    # distinct clinician who EVER authenticates against it, unbounded over
+    # the process's lifetime. This cap makes that bound explicit rather than
+    # relying on "a real deployment doesn't have that many clinicians" --
+    # once at capacity, the entry with the earliest expiry is evicted to
+    # admit a new principal (see RosterCache's docstring). Irrelevant with
+    # the flag OFF (one shared, unkeyed entry, as before #182).
+    copilot_roster_cache_max_principals: int = DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose

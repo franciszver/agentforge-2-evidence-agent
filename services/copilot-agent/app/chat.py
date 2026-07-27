@@ -99,6 +99,7 @@ from pydantic import BaseModel, Field
 from app.config import (
     DEFAULT_MAX_STORED_CONVERSATIONS,
     DEFAULT_MAX_TURNS_PER_CONVERSATION,
+    DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS,
     DEFAULT_ROSTER_CACHE_TTL_SECONDS,
     Settings,
     get_settings,
@@ -1048,67 +1049,125 @@ class RosterCache:
     result means a failed fetch is retried on every subsequent matching
     turn until one actually succeeds, same cost as having no cache at all.
 
-    ``enabled`` -- Gate 2 (security) finding on #174, CONFIRMED: sharing one
-    cached roster across every caller is only safe when every caller is the
-    SAME authorization principal. With ``copilot_per_user_token_enabled``
-    OFF (the default this class was designed for), every request runs as
-    the same dev-bridge demo-clinician identity (see
-    ``get_planner_factory``'s docstring) -- a shared roster there is just a
-    shared view of that ONE principal's own data. With the flag ON,
-    ``get_planner_factory`` binds the planner to the REQUEST's own forwarded
-    bearer, so ``Planner.resolve_patient_roster`` executes
-    ``GET /apis/default/api/patient`` AS THAT USER -- and
+    ``require_principal`` -- Gate 2 (security) finding on #174, restored
+    under per-user tokens by #182: sharing one cached roster across every
+    caller is only safe when every caller is the SAME authorization
+    principal. With ``copilot_per_user_token_enabled`` OFF
+    (``require_principal=False``, the default this class was originally
+    designed for), every request runs as the same dev-bridge demo-clinician
+    identity (see ``get_planner_factory``'s docstring) -- a shared roster
+    there is just a shared view of that ONE principal's own data, so
+    ``get_or_fetch`` ignores whatever ``principal`` it is given and always
+    uses one implicit, process-wide shared entry (byte-identical to the
+    pre-#182 behavior). With the flag ON (``require_principal=True``, wired
+    by ``get_roster_cache``), ``get_planner_factory`` binds the planner to
+    the REQUEST's own forwarded bearer, so ``Planner.resolve_patient_roster``
+    executes ``GET /apis/default/api/patient`` AS THAT USER --
     ``docs/ARCHITECTURE.md``'s "Patient-context binding" section documents
     that OpenEMR's REST authorization is role- and resource-scoped (its
-    Sec 124 Phase 4 example: an ``accountant``-role token gets 403 where an
-    ``admin`` token gets 200 on the SAME endpoint shape). Sharing one cached
-    roster across callers with DIFFERENT tokens in that mode would serve
-    caller B a roster fetched under caller A's authorization -- a
-    cross-principal authorization-scope leak, and a NEW risk #174's own
-    per-conversation fetch never had (each conversation fetched under its
-    OWN caller's token). ``enabled=False`` (wired by ``get_roster_cache``
-    whenever ``copilot_per_user_token_enabled`` is true) makes
-    ``get_or_fetch`` a pure passthrough -- fetch on EVERY call, cache
-    nothing -- restoring the pre-#174 per-request-scoped fetch rather than
-    silently sharing across principals. Deliberately NOT a per-token cache
-    keyed some other way: token rotation would make such a cache grow
-    unboundedly, reintroducing the exact unbounded-memory defect #174 exists
-    to fix, just keyed by token instead of by conversation. Restoring the
-    amplification fix under per-user tokens (keyed by authenticated
-    principal instead of bypassed) is tracked as a separate follow-up --
-    don't "simplify" this guard away without reading it first.
+    #124 Phase 4 example: an ``accountant``-role token gets 403 where an
+    ``admin`` token gets 200 on the SAME endpoint shape), and that role is a
+    property of the OpenEMR USER ACCOUNT (the introspected ``sub``), not of
+    any one token -- two different tokens introspecting to the SAME ``sub``
+    hit the identical ``gacl`` result (see #185's
+    ``test_two_different_tokens_for_the_same_subject_can_each_rate_its_trace``
+    for the same principle applied to feedback ownership). A token whose
+    OAuth *scope* is too narrow to even reach the roster endpoint fails
+    closed to ``get_patient_roster``'s ``[]`` fail-safe, which
+    ``get_or_fetch`` never caches (see below) -- so scope differences
+    across tokens for the same subject cannot poison another token's cached
+    entry either. #182 therefore keys ``require_principal=True`` caching by
+    ``principal`` (the introspected ``sub`` -- see ``_stream_chat``'s
+    ``_roster_provider``): each distinct principal gets its OWN cached
+    entry, so caller B (a different principal) is never served caller A's
+    roster, while a SECOND request under the SAME principal (e.g. a token
+    refresh, or simply a second session) still hits the cache. ``principal
+    is None`` (subject resolution failed or is otherwise unavailable --
+    see ``_resolve_subject``'s docstring) degrades SAFELY to a bypass:
+    ``fetch`` runs on every such call and nothing is read or written to any
+    cache entry -- never a fall back to the shared, unkeyed entry, which
+    would silently cross principals again. Deliberately NOT a per-token
+    cache: token rotation would make such a cache grow unboundedly,
+    reintroducing the exact unbounded-memory defect #174 exists to fix,
+    just keyed by token instead of by conversation.
+
+    Entry-count bound: ``max_principals`` caps the number of distinct,
+    non-``None`` ``principal`` keys tracked at once (irrelevant when
+    ``require_principal`` is ``False`` -- there is only ever the one shared
+    entry). Bounded by the number of distinct clinicians who authenticate
+    against a real deployment within a TTL window in practice, but this cap
+    makes the bound explicit rather than relying on that: once at capacity,
+    admitting a new principal evicts whichever existing entry expires
+    soonest (a cheap, already-tracked-timestamp approximation of LRU) rather
+    than growing without limit.
+
+    TTL semantics: one ``ttl_seconds`` shared across every principal's
+    entry, not a per-principal override -- staleness tolerance for the
+    roster-based "switch to <Name>" signal is a property of how fresh the
+    roster needs to be, not of who is asking, so a single operator-tunable
+    knob (``copilot_roster_cache_ttl_seconds``) is enough.
 
     Thread safety: shared, mutable, process-wide singleton
     (``_default_roster_cache``), same posture as ``ConversationStore`` above
     -- guarded by ``self._lock``. The fetch itself (an HTTP round trip) runs
     OUTSIDE the lock so concurrent requests are never serialized on network
     I/O, only on the cheap swap of the cached result; a stale-cache race
-    (two threads both see an expired entry and both fetch) is accepted --
-    last writer wins, and the roster is presumed identical regardless of
-    which concurrent fetch produced it. (Not relevant when ``enabled`` is
-    ``False``: there is no cached state to race over.)
+    (two threads both see an expired entry for the SAME key and both fetch)
+    is accepted -- last writer wins, and the roster is presumed identical
+    regardless of which concurrent fetch (under the same principal) produced
+    it. (Not relevant when ``principal`` is ``None``: there is no cached
+    state to race over.)
     """
 
-    def __init__(self, ttl_seconds: float, clock: Clock, *, enabled: bool = True) -> None:
+    _SHARED_KEY = "\x00shared"
+    """Internal cache key used for every call when ``require_principal`` is
+    ``False`` -- never a valid ``principal`` value itself (an OpenEMR
+    introspected ``sub`` is never this literal), so it cannot collide with a
+    real principal key if ``require_principal`` is ever flipped ON for a
+    process that already populated this shared entry."""
+
+    def __init__(
+        self,
+        ttl_seconds: float,
+        clock: Clock,
+        *,
+        require_principal: bool = False,
+        max_principals: int = DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS,
+    ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
+        if max_principals <= 0:
+            raise ValueError("max_principals must be positive")
         self._ttl_seconds = ttl_seconds
         self._clock = clock
-        self._enabled = enabled
+        self._require_principal = require_principal
+        self._max_principals = max_principals
         self._lock = threading.Lock()
-        self._roster: list[RosterEntry] | None = None
-        self._expires_at: datetime | None = None
+        # OrderedDict for its (cheap) ability to re-insert-to-move-to-end --
+        # not currently relied on for eviction order (eviction below picks
+        # the earliest ``expires_at``, not insertion order), but keeps
+        # iteration order deterministic for that eviction scan.
+        self._entries: OrderedDict[str, tuple[list[RosterEntry], datetime]] = OrderedDict()
 
-    def get_or_fetch(self, fetch: Callable[[], list[RosterEntry]]) -> list[RosterEntry]:
+    def get_or_fetch(
+        self, fetch: Callable[[], list[RosterEntry]], principal: str | None = None
+    ) -> list[RosterEntry]:
         """Return the cached roster if still fresh; otherwise call ``fetch``
         (``Planner.resolve_patient_roster``, an OpenEMR round trip),
-        cache the result for ``ttl_seconds``, and return it.
+        cache the result, and return it.
 
-        ``self._enabled is False`` (see the class docstring's
-        authorization-scope analysis): always calls ``fetch`` and never
-        reads or writes the cache -- every call gets its OWN, freshly
-        fetched roster, scoped to whatever principal ``fetch`` itself is
-        bound to.
+        ``require_principal`` and ``principal`` together decide the cache
+        key -- see the class docstring's authorization-scope analysis:
+
+        * ``require_principal is False``: ``principal`` is ignored; every
+          call reads/writes the single shared entry (pre-#182 behavior,
+          byte-identical).
+        * ``require_principal is True`` and ``principal is None``: pure
+          passthrough -- ``fetch()`` runs and nothing is cached. The safe
+          default when the caller's principal could not be determined.
+        * ``require_principal is True`` and ``principal`` is a real value:
+          keyed by that principal -- isolated from every other principal's
+          entry.
 
         Gate 2 (security) re-review, CONFIRMED MAJOR: an empty ``fetch()``
         result is NEVER cached (``if roster:`` below). ``get_patient_roster``
@@ -1121,23 +1180,30 @@ class RosterCache:
         EVERY conversation for the rest of ``ttl_seconds`` -- a process-wide
         fail-OPEN window, not just the one conversation that hit the blip
         (pre-#174, a fetch failure poisoned only that one conversation's own
-        cache). Leaving ``self._roster``/``self._expires_at`` untouched on an
-        empty result means the NEXT call sees the same (already-expired, or
-        still-``None``) cache state and retries ``fetch()`` again -- costing
+        cache). Leaving the entry untouched on an empty result means the
+        NEXT call for the same key sees the same (already-expired, or
+        still-absent) cache state and retries ``fetch()`` again -- costing
         exactly what calling ``fetch()`` on every matching turn cost before
         this cache existed, until a fetch actually succeeds.
         """
-        if not self._enabled:
+        if self._require_principal and principal is None:
             return fetch()
+        key = principal if self._require_principal and principal is not None else self._SHARED_KEY
         now = self._clock()
         with self._lock:
-            if self._roster is not None and self._expires_at is not None and now < self._expires_at:
-                return self._roster
+            entry = self._entries.get(key)
+            if entry is not None and now < entry[1]:
+                return entry[0]
         roster = fetch()
         if roster:
             with self._lock:
-                self._roster = roster
-                self._expires_at = now + timedelta(seconds=self._ttl_seconds)
+                if key not in self._entries and len(self._entries) >= self._max_principals:
+                    # Bound entry count: evict whichever existing entry
+                    # expires soonest to admit this new principal (see the
+                    # class docstring's entry-count-bound analysis).
+                    oldest_key = min(self._entries, key=lambda k: self._entries[k][1])
+                    del self._entries[oldest_key]
+                self._entries[key] = (roster, now + timedelta(seconds=self._ttl_seconds))
         return roster
 
 
@@ -1157,19 +1223,23 @@ def get_roster_cache(
     in the environment after the process has served at least one ``/chat``
     request has no effect until restart.
 
-    ``enabled=not settings.copilot_per_user_token_enabled`` -- Gate 2
-    (security) finding on #174: see ``RosterCache``'s docstring for the full
-    authorization-scope analysis. Sharing is only valid when every caller is
-    provably the same principal, which is true under the dev-bridge default
-    (flag OFF) and NOT true once each request is bound to its own forwarded
-    bearer (flag ON, ``get_planner_factory``'s docstring).
+    ``require_principal=settings.copilot_per_user_token_enabled`` -- Gate 2
+    (security) finding on #174, restored under per-user tokens by #182: see
+    ``RosterCache``'s docstring for the full authorization-scope analysis.
+    Sharing one unkeyed entry is only valid when every caller is provably
+    the same principal (true under the dev-bridge default, flag OFF); once
+    each request is bound to its own forwarded bearer (flag ON,
+    ``get_planner_factory``'s docstring), the cache is keyed per-principal
+    instead -- see ``_stream_chat``'s ``_roster_provider`` for where the
+    resolved ``owner_subject`` is threaded through as that key.
     """
     global _default_roster_cache
     if _default_roster_cache is None:
         _default_roster_cache = RosterCache(
             ttl_seconds=settings.copilot_roster_cache_ttl_seconds,
             clock=clock,
-            enabled=not settings.copilot_per_user_token_enabled,
+            require_principal=settings.copilot_per_user_token_enabled,
+            max_principals=settings.copilot_roster_cache_max_principals,
         )
     return _default_roster_cache
 
@@ -1810,10 +1880,19 @@ def _stream_chat(
             # for why a shared cache is correct here, not just cheaper. A
             # planner double with no ``resolve_patient_roster`` capability
             # (the pre-#237 default) never reaches the cache at all.
+            #
+            # #182: ``owner_subject`` (the #185 introspected principal, or
+            # ``None`` flag-off / on a resolution miss) is threaded through
+            # as the cache key unconditionally -- ``RosterCache`` itself
+            # decides whether to use it (flag ON) or ignore it in favor of
+            # the one shared entry (flag OFF), and a ``None`` principal
+            # under flag ON safely bypasses caching entirely rather than
+            # falling back to the shared entry. See ``RosterCache.
+            # get_or_fetch``'s and ``get_roster_cache``'s docstrings.
             resolve_roster = getattr(planner, "resolve_patient_roster", None)
             if resolve_roster is None:
                 return []
-            return roster_cache.get_or_fetch(resolve_roster)
+            return roster_cache.get_or_fetch(resolve_roster, principal=owner_subject)
 
         # #223 (extended by #224, #237): deterministic PRE-dispatch
         # cross-patient refusal guard, checked BEFORE the planner runs at
