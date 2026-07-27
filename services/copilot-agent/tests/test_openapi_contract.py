@@ -196,6 +196,16 @@ def test_pinned_spec_matches_live_schema() -> None:
     )
 
 
+def _normalized_before_and_after(mutate) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Shared setup for the mutation-parametrized tests below: deep-copy the
+    live schema, apply one mutation, and normalize both the original and the
+    mutated copy for comparison."""
+    live_spec = app.openapi()
+    mutated_spec = copy.deepcopy(live_spec)
+    mutate(mutated_spec)
+    return _normalize_spec_for_comparison(live_spec), _normalize_spec_for_comparison(mutated_spec)
+
+
 def test_normalized_live_schema_contains_load_bearing_paths() -> None:
     """Presence companion to the drift guard above: proves the normalized
     comparison can't pass vacuously (e.g. both sides accidentally emptied by
@@ -246,12 +256,7 @@ def test_normalization_still_catches_structural_drift(mutate, description) -> No
     injects one real structural mutation, and asserts the normalized
     comparison still flags it as different from the unmutated normalized
     schema."""
-    live_spec = app.openapi()
-    mutated_spec = copy.deepcopy(live_spec)
-    mutate(mutated_spec)
-
-    baseline = _normalize_spec_for_comparison(live_spec)
-    mutated = _normalize_spec_for_comparison(mutated_spec)
+    baseline, mutated = _normalized_before_and_after(mutate)
 
     assert baseline != mutated, f"normalization hid real structural drift: {description}"
 
@@ -288,12 +293,7 @@ def test_normalization_still_catches_structural_drift(mutate, description) -> No
 def test_normalization_tolerates_presentation_only_drift(mutate, description) -> None:
     """Complement to the mutation-catch test above: proves normalization is
     not so strict that it re-introduces the #184 noise it exists to remove."""
-    live_spec = app.openapi()
-    mutated_spec = copy.deepcopy(live_spec)
-    mutate(mutated_spec)
-
-    baseline = _normalize_spec_for_comparison(live_spec)
-    mutated = _normalize_spec_for_comparison(mutated_spec)
+    baseline, mutated = _normalized_before_and_after(mutate)
 
     assert baseline == mutated, f"normalization failed to absorb presentation-only noise: {description}"
 
