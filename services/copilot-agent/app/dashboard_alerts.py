@@ -21,13 +21,15 @@ the DTO or derived from fields already on it:
   Phase 1 #149 lands.
 - **verification-fail rate**: DERIVED as ``1 - verification_pass_rate``.
   ``None`` (no alert) when ``verification_pass_rate`` is ``None``.
-- **extraction-failure rate** (P3G.4/#24): ``metrics.extraction_failure_rate``
-  directly -- always ``None`` today. No ``app.trace_store`` span exists yet
-  for document-ingestion extraction (see ``app.ingestion.IngestionResult``'s
-  ``failed_pages``), so -- same "dormant until a future issue wires the
-  data" posture as tool-failure rate above -- this alert is implemented and
-  tested now and will start evaluating real data once a future issue
-  computes this field from live spans.
+- **extraction-failure rate** (P3G.4/#24, wired to live data by #206):
+  ``metrics.extraction_failure_rate`` directly -- computed by
+  ``app.dashboard_metrics.compute_dashboard_metrics`` as the share of a
+  document's pages that failed VLM extraction outright, aggregated across
+  every ``app.trace_store.SpanType.EXTRACTION`` span (recorded by
+  ``app.supervisor`` on every ingestion outcome -- success, partial, and
+  total failure, the last via ``app.ingestion.IngestionError``'s own
+  ``pages_total``/``failed_pages``). ``None`` when there are no extraction
+  spans yet (no document has been ingested), not a fabricated ``0.0``.
 - **retrieval p95 latency** (P3G.4/#24): ``metrics.retrieval_p95_latency_ms``
   directly, likewise always ``None`` today for the same reason -- retrieval
   (``app.retrieval``) has no dedicated span yet.
@@ -225,16 +227,16 @@ def evaluate_alerts(
     eval-regression. See module docstring for boundary (``>``, not ``>=``)
     and ``None`` handling.
 
-    ``metrics.extraction_failure_rate``/``metrics.retrieval_p95_latency_ms``
-    are always ``None`` today (see ``DashboardMetrics``'s docstring for
-    those fields) because, as of P3G.4, no live span data feeds them yet --
-    document ingestion and retrieval do not record a dedicated
-    ``app.trace_store`` span the way requests/tools/LLM calls/verification
-    do. This mirrors the tool-failure-rate alert's own documented "dormant
-    until Phase 1 #149" precedent above: the rule is implemented and tested now, and
-    will start evaluating real data once a future issue computes this field
-    from live spans. ``eval_history`` (``app.dashboard_eval_history``) IS
-    real, already-committed data -- the dashboard passes it live.
+    ``metrics.extraction_failure_rate`` is wired to live data as of #206 --
+    see ``DashboardMetrics``'s docstring and ``app.trace_store.SpanType.
+    EXTRACTION``. ``metrics.retrieval_p95_latency_ms`` remains always
+    ``None`` today: retrieval does not record a dedicated ``app.trace_store``
+    span the way requests/tools/LLM calls/verification/extraction do. This
+    mirrors the tool-failure-rate alert's own documented "dormant until
+    Phase 1 #149" precedent above: the rule is implemented and tested now,
+    and will start evaluating real data once a future issue computes this
+    field from live spans. ``eval_history`` (``app.dashboard_eval_history``)
+    IS real, already-committed data -- the dashboard passes it live.
     """
     tool_failure_rate = (
         metrics.retry_count / metrics.tool_call_count if metrics.tool_call_count > 0 else None

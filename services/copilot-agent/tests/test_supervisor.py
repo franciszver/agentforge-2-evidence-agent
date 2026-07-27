@@ -244,6 +244,8 @@ def test_partial_failure_ingestion_records_an_extraction_span_with_failed_pages(
     tmp_path: Path, trace_store: TraceStore
 ) -> None:
     class _MixedVlm:
+        model = "qwen2.5vl:7b"  # vision-capable, so IntakeExtractorWorker's guard passes
+
         def __init__(self) -> None:
             self.calls = 0
 

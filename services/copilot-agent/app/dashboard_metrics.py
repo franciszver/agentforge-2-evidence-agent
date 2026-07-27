@@ -58,22 +58,23 @@ class DashboardMetrics:
     verification_pass_rate: float | None
     feedback_up_count: int
     feedback_down_count: int
-    # P3G.4/#24: always None today -- unlike every field above, no
-    # ``spans`` row exists yet for document-ingestion extraction or
-    # retrieval (``app.trace_store.SpanType`` has no EXTRACTION/RETRIEVAL
-    # member), so there is nothing in this table to aggregate. Present here
-    # (rather than as a separate parameter elsewhere) so
+    # Issue #206: computed from ``app.trace_store.SpanType.EXTRACTION`` spans
+    # (recorded by ``app.supervisor`` on every ingestion outcome -- success,
+    # partial, and total failure) as SUM(pages_failed) / SUM(pages_total)
+    # across all such spans -- ``None`` (not a fabricated ``0.0``) when there
+    # are no extraction spans yet, or none with any pages recorded. Present
+    # here (rather than as a separate parameter elsewhere) so
     # ``app.dashboard_alerts.evaluate_alerts`` reads every alert input the
-    # same uniform way -- straight off this DTO -- same "dormant until a
-    # future issue wires the data" posture already documented for
-    # ``tool_call_count``/``retry_count`` above (see that field's docstring
-    # in this module, and ``app.dashboard_alerts``'s module docstring).
-    # NOTE: these two are DTO fields, not ``evaluate_alerts()`` keyword
-    # arguments, for the same reason ``tool_call_count``/``retry_count`` are
-    # DTO fields despite ALSO having no live data today -- "no live source
-    # yet" does not mean "does not belong on this DTO"; it means the query
-    # that populates it (a ``spans`` COUNT/aggregate, same shape as every
-    # other field here) has nothing to count yet.
+    # same uniform way -- straight off this DTO.
+    #
+    # ``retrieval_p95_latency_ms`` remains dormant: no live source yet --
+    # ``app.trace_store.SpanType`` has no RETRIEVAL member, so there is
+    # nothing in this table to aggregate for it. Same "no live source yet
+    # does not mean does not belong on this DTO" posture already documented
+    # for ``tool_call_count``/``retry_count`` above -- the query that will
+    # populate it (a ``spans`` aggregate, same shape as every other field
+    # here) has nothing to compute over until a future issue wires a
+    # RETRIEVAL span.
     extraction_failure_rate: float | None = None
     retrieval_p95_latency_ms: float | None = None
 
@@ -159,6 +160,16 @@ def compute_dashboard_metrics(db_path: str) -> DashboardMetrics:
             elif thumb == "down":
                 feedback_down_count = count
 
+        extraction_pages_total = _scalar(
+            connection, "SELECT COALESCE(SUM(pages_total), 0) FROM spans WHERE span_type = 'extraction'"
+        )
+        extraction_pages_failed = _scalar(
+            connection, "SELECT COALESCE(SUM(pages_failed), 0) FROM spans WHERE span_type = 'extraction'"
+        )
+        extraction_failure_rate = (
+            (extraction_pages_failed / extraction_pages_total) if extraction_pages_total else None
+        )
+
         return DashboardMetrics(
             request_count=request_count,
             error_rate=error_rate,
@@ -170,6 +181,7 @@ def compute_dashboard_metrics(db_path: str) -> DashboardMetrics:
             verification_pass_rate=verification_pass_rate,
             feedback_up_count=feedback_up_count,
             feedback_down_count=feedback_down_count,
+            extraction_failure_rate=extraction_failure_rate,
         )
     finally:
         connection.close()

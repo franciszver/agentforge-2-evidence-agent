@@ -58,7 +58,7 @@ from __future__ import annotations
 import sys
 
 from app.config import get_settings
-from app.ingestion import LocalIngestionStore
+from app.ingestion import IngestionError, LocalIngestionStore
 from app.ollama_client import OllamaClient
 from app.supervisor import IngestSubTask, IntakeExtractorWorker, VisionModelMisconfiguredError
 
@@ -93,6 +93,16 @@ def main() -> int:
         result = worker.run(IngestSubTask(patient_id=patient_id, file_path=pdf_path, doc_type="lab_pdf"))
     except VisionModelMisconfiguredError as exc:
         print(f"lab PDF ingestion refused for patient_id={patient_id}: {exc}", file=sys.stderr)
+        return 1
+    except IngestionError as exc:
+        # Issue #206: attach_and_extract now raises when EVERY page failed
+        # extraction, distinct from the partial-failure case below (which
+        # still returns a result with a non-empty failed_pages).
+        print(
+            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id} "
+            f"(pages_total={exc.pages_total}, failed_pages={exc.failed_pages}): {exc}",
+            file=sys.stderr,
+        )
         return 1
     if result.failed_pages:
         print(

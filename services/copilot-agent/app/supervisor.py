@@ -37,11 +37,21 @@ never logged by value -- only that a handoff completed and how long it
 took.
 
 **Worker failure is surfaced, not swallowed.** ``Worker.run`` is expected to
-raise on failure (mirroring ``app.ingestion``'s honest partial-failure
-discipline -- a failure is a first-class, visible outcome, not silently
-absorbed into an empty result). The supervisor logs a ``handoff_failed``
-event and then RE-RAISES the same exception -- it never catches-and-returns
-a degraded/empty result in its place.
+raise on failure (mirroring ``app.ingestion``'s honest total-failure
+discipline, issue #206 -- a failure is a first-class, visible outcome, not
+silently absorbed into an empty result). The supervisor logs a
+``handoff_failed`` event and then RE-RAISES the same exception -- it never
+catches-and-returns a degraded/empty result in its place.
+
+**Extraction spans (issue #206).** Every ``IngestSubTask`` dispatch also
+records an ``app.trace_store.SpanType.EXTRACTION`` span, best-effort, on ALL
+THREE outcomes -- full success, partial page failure (both read off the
+returned ``IngestionResult``), and total failure (read off the raised
+``app.ingestion.IngestionError``'s own ``pages_total``/``failed_pages`` --
+recorded, then the exception still propagates unchanged, per the paragraph
+above). A non-``IngestionError``/no-page-bookkeeping failure (e.g.
+``VisionModelMisconfiguredError``, raised before any page is ever attempted)
+records no extraction span -- there are no page counts to report.
 """
 
 from __future__ import annotations
@@ -53,7 +63,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from app.correlation import SpanContext, span_scope
-from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_extract
+from app.ingestion import DocumentStore, FactStore, IngestionError, IngestionResult, attach_and_extract
 from app.ollama_client import is_vision_capable_model
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
@@ -268,10 +278,13 @@ class Supervisor:
             _log_handoff("handoff_start", log_context)
             start_ts = time.time()
             error_type: str | None = None
+            error: Exception | None = None
+            payload: Any = None
             try:
                 payload = worker.run(sub_task)
             except Exception as exc:
                 error_type = type(exc).__name__
+                error = exc
                 raise
             finally:
                 end_ts = time.time()
@@ -287,6 +300,15 @@ class Supervisor:
                     start_ts=start_ts,
                     end_ts=end_ts,
                     error_type=error_type,
+                )
+                self._record_extraction_span(
+                    sub_task=sub_task,
+                    payload=payload,
+                    error=error,
+                    worker_span=worker_span,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    ok=error_type is None,
                 )
             return payload
 
@@ -325,3 +347,58 @@ class Supervisor:
             )
 
         record_span_best_effort(_logger, "worker_span", _write_worker_span)
+
+    def _record_extraction_span(
+        self,
+        *,
+        sub_task: SubTask,
+        payload: Any,
+        error: Exception | None,
+        worker_span: SpanContext,
+        start_ts: float,
+        end_ts: float,
+        ok: bool,
+    ) -> None:
+        """Persist an ``app.trace_store.SpanType.EXTRACTION`` span for an
+        ``IngestSubTask`` dispatch, best-effort (issue #206) -- see module
+        docstring's "Extraction spans" section for the three-outcome
+        contract. No-op when no ``trace_store`` was injected, when
+        ``sub_task`` is not an ``IngestSubTask`` (nothing to record for
+        ``RetrieveSubTask``), or when a failure carries no page bookkeeping
+        at all (e.g. ``VisionModelMisconfiguredError``, or an
+        ``IngestionError`` raised before any page was ever attempted --
+        malformed PDF, page-count/dimension limits)."""
+        if self._trace_store is None:
+            return
+        if not isinstance(sub_task, IngestSubTask):
+            return
+
+        pages_total: int
+        pages_failed: int
+        if ok:
+            assert isinstance(payload, IngestionResult)
+            pages_total = payload.pages_total
+            pages_failed = len(payload.failed_pages)
+        elif isinstance(error, IngestionError) and error.pages_total is not None:
+            pages_total = error.pages_total
+            pages_failed = len(error.failed_pages) if error.failed_pages is not None else error.pages_total
+        else:
+            return
+
+        trace_store = self._trace_store
+        error_category = type(error).__name__ if error is not None else None
+
+        def _write_extraction_span() -> int:
+            return trace_store.record_extraction_span(
+                correlation_id=worker_span.correlation_id,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                ok=ok,
+                pages_total=pages_total,
+                pages_failed=pages_failed,
+                span_id=worker_span.span_id,
+                parent_span_id=worker_span.parent_span_id,
+                error_category=error_category,
+            )
+
+        record_span_best_effort(_logger, "extraction_span", _write_extraction_span)

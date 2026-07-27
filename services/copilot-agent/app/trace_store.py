@@ -140,7 +140,9 @@ CREATE TABLE IF NOT EXISTS spans (
     sub_task_type TEXT,
     owner_token_hash TEXT,
     owner_kind TEXT,
-    owner_subject TEXT
+    owner_subject TEXT,
+    pages_total INTEGER,
+    pages_failed INTEGER
 )
 """
 _INDEX = "CREATE INDEX IF NOT EXISTS idx_spans_correlation_id ON spans (correlation_id)"
@@ -171,6 +173,8 @@ _COLUMNS = (
     "owner_token_hash",
     "owner_kind",
     "owner_subject",
+    "pages_total",
+    "pages_failed",
 )
 
 
@@ -189,6 +193,16 @@ class SpanType(StrEnum):
     # closed-set/non-identifying (a worker's stable name, a sub-task class
     # name), same discipline as ``tool_name`` -- never a sub-task field value.
     WORKER = "worker"
+    # Issue #206: one span per document-ingestion extraction attempt
+    # (app.supervisor's dispatch of an IngestSubTask), recorded on ALL three
+    # outcomes -- full success, partial page failure, and total failure (the
+    # last of these via app.ingestion.IngestionError's own pages_total/
+    # failed_pages, since attach_and_extract raises rather than returning in
+    # that case). ``pages_total``/``pages_failed`` are the only type-specific
+    # columns this span carries -- plain counts, never a page's extracted
+    # content -- feeding app.dashboard_metrics.compute_dashboard_metrics's
+    # extraction_failure_rate.
+    EXTRACTION = "extraction"
 
 
 class SpanStatus(StrEnum):
@@ -251,6 +265,8 @@ class Span:
     owner_token_hash: str | None = None
     owner_kind: str | None = None
     owner_subject: str | None = None
+    pages_total: int | None = None
+    pages_failed: int | None = None
 
 
 def _keyed_digest(secret: str, data: str) -> str:
@@ -378,6 +394,17 @@ def _row_to_span(row: tuple[Any, ...]) -> Span:
     values["status"] = SpanStatus(values["status"])
     if values["feedback_thumb"] is not None:
         values["feedback_thumb"] = FeedbackThumb(values["feedback_thumb"])
+    # ``pages_total``/``pages_failed`` are declared INTEGER in ``_SCHEMA`` for
+    # a fresh DB, but ``_migrate_missing_columns`` adds any column missing
+    # from an EXISTING (pre-#206) table as TEXT -- SQLite's TEXT column
+    # affinity then stores an inserted int as its text representation, so a
+    # migrated-DB row can read back a numeric STRING here. Coercing
+    # explicitly keeps ``Span``'s typed fields honest regardless of which
+    # path created the column.
+    if values["pages_total"] is not None:
+        values["pages_total"] = int(values["pages_total"])
+    if values["pages_failed"] is not None:
+        values["pages_failed"] = int(values["pages_failed"])
     return Span(**values)
 
 
@@ -724,6 +751,40 @@ class TraceStore:
             status=_status(ok),
             worker_name=worker_name,
             sub_task_type=sub_task_type,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            error_category=error_category,
+        )
+
+    def record_extraction_span(
+        self,
+        *,
+        correlation_id: str,
+        start_ts: float,
+        end_ts: float,
+        ok: bool,
+        pages_total: int,
+        pages_failed: int,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        error_category: str | None = None,
+    ) -> int:
+        """Record one document-ingestion extraction attempt (issue #206),
+        recorded by ``app.supervisor`` on ALL three outcomes -- success,
+        partial page failure, and total failure. ``pages_total``/
+        ``pages_failed`` are plain counts (never a page's content), feeding
+        ``app.dashboard_metrics.compute_dashboard_metrics``'s
+        ``extraction_failure_rate``. ``span_id``/``parent_span_id`` carry
+        this span's place in the P3.5 span tree, same as
+        ``record_worker_span``."""
+        return self._insert(
+            span_type=SpanType.EXTRACTION,
+            correlation_id=correlation_id,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status=_status(ok),
+            pages_total=pages_total,
+            pages_failed=pages_failed,
             span_id=span_id,
             parent_span_id=parent_span_id,
             error_category=error_category,
