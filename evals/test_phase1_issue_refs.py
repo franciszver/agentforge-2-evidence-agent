@@ -51,6 +51,29 @@ found and fixed, so a careless future edit (a revert, a bad merge, a
 copy-paste of the pre-fix docstring from history) cannot silently re-drop
 the ``Phase 1`` marker without turning this test red.
 
+**The dual-meaning numbers cannot be guarded by a mechanical rule.** For
+``#130``, ``#149``, ``#153``, ``#185``, ``#176``, ``#124``, ``#140``,
+``#144``, ``#157``, ``#54``, and ``#60``, a bare ``#N`` is not an error --
+this repo's own tracker legitimately reuses each of those numbers for a
+real, differently-scoped Phase-2 issue, and most bare citations of them in
+this codebase are exactly that: correct references to this repo's own
+issue/PR N, not a leftover from the Phase-1 merge. No regex or line-based
+check can tell those apart; it requires reading each occurrence's
+surrounding prose and judging which concept it describes, then looking up
+what this repo's issue/PR N actually is. That is a one-time content review,
+not something this test (or any future automated sweep) re-derives or
+re-verifies. The only guarantee this file's tests provide for these eleven
+numbers is that the specific instances issue #199 found and marked
+(``_ANCHORS`` above) stay marked -- nothing here proves no *other* bare
+occurrence of one of these numbers is a mismarked Phase-1 leftover, before
+or after this test was written. That correctness claim rests entirely on
+the manual content-classification review recorded in issue #199's PR
+description, which is not re-checked by any test in this repo and can
+silently go stale if a future merge reintroduces Phase-1 history again.
+The only numbers this suite mechanically guarantees have zero false
+negatives are the genuinely-dangling ones in ``_DANGLING_NUMBERS`` below,
+via ``test_no_new_bare_dangling_references``.
+
 **Mutation-verified:** temporarily reverting any one of the anchors below
 (e.g. ``Phase 1 #185`` -> ``#185`` in ``app/chat.py``) makes the
 corresponding assertion fail with a clear message naming the file.
