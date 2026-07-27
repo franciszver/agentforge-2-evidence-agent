@@ -20,11 +20,13 @@ A strict subset does NOT have that ambiguity: ``#223``, ``#224``, ``#225``,
 mechanisms (the cross-patient guard family and the streaming epic) that this
 repo's tracker has never reused -- see each anchor's comment above for the
 "this repo has no #N at all" note. For those numbers, ANY bare occurrence in
-the swept trees (outside this file's own commentary, and outside the
-``#201``-owned carve-out in ``app/tools/patient_summary.py``) is
-unconditionally wrong, so a negative assertion is both cheap and safe.
+the swept trees (outside this file's own commentary) is unconditionally
+wrong, so a negative assertion is both cheap and safe.
 ``test_no_new_bare_dangling_references`` below enforces exactly that,
-scoped to only those numbers.
+scoped to only those numbers. (Issue #201 closed the last carve-out: the
+bare ``#237`` in ``get_patient_roster``'s own docstring in
+``app/tools/patient_summary.py`` is now marked ``Phase 1 #237`` like every
+other site, so no exemption remains.)
 
 **The defect this guards against.** The Phase-1 -> Phase-2 sync merge
 (``chore(sync): merge Phase 1 final state (v1.0) into Phase 2 base``) carried
@@ -108,6 +110,7 @@ _ANCHORS: list[tuple[str, str]] = [
     # #237: roster-based cross-patient detection (Phase 1; this repo has no
     # #237 at all).
     ("services/copilot-agent/app/tools/patient_summary.py", "``get_patient_roster`` (Phase 1 #237 -- collect"),
+    ("services/copilot-agent/app/tools/patient_summary.py", 'pair (Phase 1 #237\n    roster-based cross-patient detection'),
     ("services/copilot-agent/app/chat.py", "``_roster_provider`` enables the Phase 1 #237"),
     ("services/copilot-agent/app/extraction.py", "# Phase 1 #237 roster-based cross-patient detection"),
     # #223/#224/#225: dangling Phase-1 numbers for the cross-patient guard /
@@ -161,11 +164,11 @@ _DANGLING_NUMBERS: tuple[str, ...] = ("223", "224", "225", "237", "209", "211", 
 _SWEPT_DIRS: tuple[str, ...] = ("services/copilot-agent", "evals")
 
 # (relpath, 1-indexed line number) pairs exempt from the negative check --
-# the #201-owned carve-out, and this file's own commentary above (which
-# names the dangling numbers in prose, not as citations).
-_EXEMPT: frozenset[tuple[str, int]] = frozenset(
-    {("services/copilot-agent/app/tools/patient_summary.py", 154)}
-)
+# this file's own commentary above (which names the dangling numbers in
+# prose, not as citations). Previously also carried the #201-owned
+# ``app/tools/patient_summary.py:154`` carve-out; #201 fixed that bare
+# citation, so no non-self exemption remains.
+_EXEMPT: frozenset[tuple[str, int]] = frozenset()
 _SELF_RELPATH = "evals/test_phase1_issue_refs.py"
 
 
@@ -193,9 +196,11 @@ def test_no_new_bare_dangling_references() -> None:
     existing anchor, or a brand-new bare citation this PR never touched.
 
     **Mutation-verified:** temporarily appending a bare ``#237`` anywhere in
-    the swept trees (outside the exemptions below) turns this test red with
-    the offending file:line quoted in the failure message; removing it turns
-    the test green again.
+    the swept trees turns this test red with the offending file:line quoted
+    in the failure message; removing it turns the test green again.
+    ``_EXEMPT`` is currently empty (see its own comment for why) but the
+    per-line carve-out below is retained deliberately, for any future
+    same-file, non-citation prose occurrence of a dangling number.
     """
     import re
 

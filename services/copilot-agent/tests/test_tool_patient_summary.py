@@ -241,11 +241,12 @@ def test_get_patient_name_returns_none_on_api_error(make_openemr_client):
 # (a referenced name is foreign only if it matches a real DIFFERENT patient).
 #
 # Issue #174 made this fetch patient-agnostic: it no longer takes a
-# ``patient_id`` to exclude, because the shared, process-wide
-# ``app.chat.RosterCache`` in front of it is used by every conversation
-# regardless of which patient is bound -- a fetch-time exclusion keyed to
-# ONE caller's bound patient would be wrong for every other conversation
-# reusing the cached result. Exclusion of the CALLER's own bound patient now
+# ``patient_id`` to exclude, because ``app.chat.RosterCache`` in front of
+# it (shared across every conversation under the same principal, keyed
+# per-principal otherwise -- see RosterCache) is used regardless of which
+# patient is bound -- a fetch-time exclusion keyed to ONE caller's bound
+# patient would be wrong for every other conversation reusing the cached
+# result. Exclusion of the CALLER's own bound patient now
 # happens at comparison time in app.extraction._matches_roster, keyed by
 # pid (see tests/test_extraction.py's roster section for that behavior).
 # --------------------------------------------------------------------------

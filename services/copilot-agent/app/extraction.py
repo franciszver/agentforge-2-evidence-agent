@@ -1250,10 +1250,13 @@ def _matches_roster(candidate: str, roster: Sequence[RosterEntry], bound_patient
     comparison time, keyed by ``pid`` -- not at fetch time (pre-#174,
     ``app.tools.patient_summary.get_patient_roster`` took a ``patient_id``
     and dropped that one record before returning). ``roster`` is now a
-    single process-wide, TTL'd, patient-AGNOSTIC cache
-    (``app.chat.RosterCache``) shared by every conversation regardless of
-    which patient it is bound to, so it may well contain the bound patient's
-    own (pid, name) entry -- excluding it here, by pid, is what stops a
+    TTL'd, patient-AGNOSTIC cache (``app.chat.RosterCache``) -- one shared,
+    process-wide entry when every caller is the same principal, keyed by
+    principal otherwise, and bypassed (never cached) when the principal
+    cannot be resolved; see ``RosterCache`` for the full per-auth-mode
+    analysis -- so regardless of which patient it is bound to, it may well
+    contain the bound patient's own (pid, name) entry -- excluding it here,
+    by pid, is what stops a
     "switch to <own name>" construction from being misread as a match
     against a DIFFERENT patient who merely shares that pid's cached slot.
     Excluding by NAME instead would be wrong: another, unrelated patient who
