@@ -185,7 +185,15 @@ class OllamaError(LLMEngineError):
 # evaluable at construction/dispatch time with no network call -- at the
 # cost of recognizing only name patterns already in common use for
 # vision-language models, not a per-install, ground-truth capability list.
-_VISION_MODEL_NAME_MARKERS = ("vl", "vision", "llava", "moondream", "pixtral", "bakllava")
+#
+# Gate-1 finding on #206: this list is BEST-EFFORT ONLY, never authoritative
+# -- it cannot recognize digest-pinned references (``sha256:...``, no
+# human-readable segment), operator-renamed/custom tags, or VLM families not
+# yet added here. Do not treat a rejection from this function as proof a
+# model isn't vision-capable: the escape hatch for a false rejection is
+# ``Settings.copilot_vision_model_capability_check`` (app/config.py), not a
+# growing enumeration of markers.
+_VISION_MODEL_NAME_MARKERS = ("vl", "vision", "llava", "moondream", "pixtral", "bakllava", "minicpm")
 
 
 def is_vision_capable_model(model: str) -> bool:
@@ -193,9 +201,17 @@ def is_vision_capable_model(model: str) -> bool:
 
     Matches Ollama tag substrings used by known vision-language models --
     e.g. ``qwen2.5vl:7b``, ``llama3.2-vision``, ``llava``, ``moondream``,
-    ``pixtral``, ``bakllava`` -- case-insensitively, against the full model
-    string (name and tag). Returns ``False`` for anything else, including
-    text-only models like ``qwen3:4b``.
+    ``pixtral``, ``bakllava``, ``minicpm-v`` -- case-insensitively, against
+    the full model string (name and tag). Returns ``False`` for anything
+    else, including text-only models like ``qwen3:4b``.
+
+    This is NOT a ground-truth capability list (see the module-level
+    comment above ``_VISION_MODEL_NAME_MARKERS``): a genuinely vision-
+    capable model with an unrecognized name (digest-pinned reference,
+    custom re-tag, or a VLM family not yet listed) will get a false
+    ``False`` here. Callers needing an escape hatch for that case should
+    consult ``Settings.copilot_vision_model_capability_check``, not extend
+    this function's matching.
     """
     normalized = model.strip().lower()
     return any(marker in normalized for marker in _VISION_MODEL_NAME_MARKERS)

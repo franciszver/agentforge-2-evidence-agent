@@ -1455,7 +1455,12 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
     return (
-        IntakeExtractorWorker(ollama_client=vision_client, document_store=ingestion_store, fact_store=ingestion_store),
+        IntakeExtractorWorker(
+            ollama_client=vision_client,
+            document_store=ingestion_store,
+            fact_store=ingestion_store,
+            vision_model_capability_check=settings.copilot_vision_model_capability_check,
+        ),
         EvidenceRetrieverWorker(retriever=retriever, reranker=reranker),
     )
 

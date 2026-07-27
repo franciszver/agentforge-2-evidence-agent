@@ -136,3 +136,26 @@ def test_intake_extractor_stays_on_the_vision_model_even_when_ollama_reranker_is
     assert intake_worker._ollama_client.model == settings.copilot_vision_model
     assert evidence_worker._reranker._scorer._client.model == settings.ollama_model
     assert intake_worker._ollama_client is not evidence_worker._reranker._scorer._client
+
+
+def test_copilot_vision_model_capability_check_defaults_to_the_safe_enabled_value():
+    """Gate-1 finding on #206: the default MUST be the safe one (check
+    enabled) -- pinned against a literal so flipping the default fails this
+    test, per the batch's 'checks that could not fail' finding."""
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.copilot_vision_model_capability_check is True
+
+
+def test_build_evidence_workers_wires_the_capability_check_flag_through(tmp_path):
+    """The intake-extractor worker built by ``_build_evidence_workers`` must
+    receive ``settings.copilot_vision_model_capability_check`` -- not a
+    hardcoded default -- so disabling it via Settings actually reaches the
+    worker's fail-closed check."""
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, copilot_ingestion_base_dir=str(tmp_path), copilot_vision_model_capability_check=False
+    )
+
+    intake_worker, _ = _build_evidence_workers(settings)
+
+    assert intake_worker._vision_model_capability_check is False

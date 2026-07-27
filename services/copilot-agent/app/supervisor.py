@@ -154,16 +154,33 @@ class IntakeExtractorWorker:
 
     name = "intake-extractor"
 
-    def __init__(self, *, ollama_client: Any, document_store: DocumentStore, fact_store: FactStore) -> None:
+    def __init__(
+        self,
+        *,
+        ollama_client: Any,
+        document_store: DocumentStore,
+        fact_store: FactStore,
+        vision_model_capability_check: bool = True,
+    ) -> None:
         self._ollama_client = ollama_client
         self._document_store = document_store
         self._fact_store = fact_store
+        # Issue #204 (gate-1 finding on #206): operator escape hatch for
+        # is_vision_capable_model()'s false rejections -- see
+        # Settings.copilot_vision_model_capability_check (app/config.py) for
+        # what disabling this asserts and why the safe default is True.
+        self._vision_model_capability_check = vision_model_capability_check
 
     def run(self, sub_task: IngestSubTask) -> IngestionResult:
         model = self._ollama_client.model
-        if not is_vision_capable_model(model):
+        if self._vision_model_capability_check and not is_vision_capable_model(model):
             raise VisionModelMisconfiguredError(
-                f"IntakeExtractorWorker refuses to run: configured model {model!r} is not vision-capable"
+                f"IntakeExtractorWorker refuses to run: configured model {model!r} failed a "
+                "name-based vision-capability check (app.ollama_client.is_vision_capable_model), "
+                "which may not recognize a model that is genuinely vision-capable (e.g. a "
+                "digest-pinned reference or a custom re-tag). If you have verified this model "
+                "can in fact process images, set copilot_vision_model_capability_check=false to "
+                "skip this check."
             )
         return attach_and_extract(
             sub_task.patient_id,

@@ -146,6 +146,21 @@ class Settings(BaseSettings):
     # (fail-closed) so a future misconfiguration of THIS setting can't
     # silently regress to the same bug.
     copilot_vision_model: str = "qwen2.5vl:7b"
+    # Issue #204 (gate-1 finding on #206): is_vision_capable_model() is a
+    # best-effort, name-based heuristic (app/ollama_client.py) -- it can
+    # wrongly REJECT a genuinely vision-capable model whose name it doesn't
+    # recognize (e.g. ``minicpm-v`` before it was added to the marker list,
+    # a digest-pinned reference like ``sha256:3a8f...`` with no human-
+    # readable segment, or an operator's custom re-tag of a VLM such as
+    # ``clinic-doc-reader:v3``). Disabling this setting is the operator
+    # ASSERTING, out of band, that ``copilot_vision_model`` above is in fact
+    # vision-capable despite failing the name check -- ingestion's no-
+    # fabrication contract (fail-closed rather than a guessed value on
+    # illegible fields) depends entirely on that assertion being true. A
+    # wrong assertion here silently reintroduces the exact bug #204 fixed:
+    # an image-bearing document handed to a model that cannot read it.
+    # Default True (safe): the name check runs and fails closed.
+    copilot_vision_model_capability_check: bool = True
     # Dense-embedding model for hybrid guideline-corpus retrieval (P3.3,
     # app/retrieval.py) -- distinct from ollama_model (chat/extraction). Only
     # consulted when copilot_embed_engine == "ollama" (P3.10b, see below);

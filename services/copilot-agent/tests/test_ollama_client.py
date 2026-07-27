@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.correlation import _STDLIB_RECORD_ATTRS
-from app.ollama_client import CHAT_MAX_TOKENS, OllamaClient, OllamaError
+from app.ollama_client import CHAT_MAX_TOKENS, OllamaClient, OllamaError, is_vision_capable_model
 
 
 class _Animal(BaseModel):
@@ -934,6 +934,29 @@ def test_embed_does_not_log_the_input_text(caplog):
 
     records = [r for r in caplog.records if r.name == "app.ollama_client"]
     assert secret_text not in _all_log_text(records)
+
+
+# --- is_vision_capable_model: gate-1 finding on #206 -------------------
+
+
+def test_is_vision_capable_model_recognizes_minicpm_v():
+    """minicpm-v is a real, commonly-deployed VLM family that the marker
+    list previously missed entirely -- it matched no marker and would have
+    been wrongly rejected by IntakeExtractorWorker.run()."""
+    assert is_vision_capable_model("minicpm-v:8b") is True
+    assert is_vision_capable_model("MiniCPM-V") is True
+
+
+@pytest.mark.parametrize("model", ["qwen2.5vl:7b", "llama3.2-vision", "llava", "moondream", "pixtral", "bakllava"])
+def test_is_vision_capable_model_still_recognizes_pre_existing_families(model: str):
+    assert is_vision_capable_model(model) is True
+
+
+def test_is_vision_capable_model_rejects_a_text_only_model():
+    """Safety property: the heuristic must still reject an unrecognized,
+    genuinely text-only model name -- this must not regress while fixing
+    the false-rejection cases above."""
+    assert is_vision_capable_model("qwen3:4b") is False
 
 
 # --- live integration: real qwen3:4b -----------------------------------
