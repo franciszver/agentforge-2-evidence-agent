@@ -572,6 +572,16 @@ async def _resolve_subject(subject_resolver: SubjectResolver, token: str) -> str
     any ``SubjectResolver`` double without it, e.g. a test override) means "no
     fast path available" -> call in-loop, byte-identical to before this
     dispatcher existed.
+
+    This mirrors ``_validate_token`` only for the *blocking* concern above --
+    it does NOT mirror it for the *value* on a miss. ``_validate_token``'s
+    failure raises (401, request never reaches this body). A failed/erroring
+    ``introspect`` here never raises -- it fails closed to ``sub=None``
+    (see ``Introspector.introspect``), which this function passes straight
+    through as ``None``. The caller (``chat_endpoint``) then silently
+    downgrades this trace's ownership from the SUBJECT regime to #180's
+    TOKEN_HASH regime instead of rejecting the request -- logged as a
+    warning at the call site so that downgrade is at least diagnosable.
     """
     peek_cached = getattr(subject_resolver, "peek_cached", None)
     if peek_cached is None or peek_cached(token) is not None:
@@ -2152,6 +2162,14 @@ async def chat_endpoint(
     # REQUEST span below so TraceStore._owner_columns can pick the #185
     # subject-ownership regime instead of #180's token-hash one.
     owner_subject = await _resolve_subject(subject_resolver, token)
+    if get_settings().copilot_per_user_token_enabled and owner_subject is None:
+        # #185: a failed/miss subject resolution silently downgrades this
+        # trace's ownership regime from SUBJECT to TOKEN_HASH (see
+        # _resolve_subject's docstring) -- log that fact so a token-rotation
+        # window that later makes this trace's feedback unclaimable is
+        # diagnosable after the fact. No token, hash, or PHI: correlation_id
+        # is already stamped on every LogRecord by app.correlation's factory.
+        _logger.warning("chat request: subject resolution failed; trace owned by token-hash fallback")
 
     planner = planner_factory(request.patient_id)
 

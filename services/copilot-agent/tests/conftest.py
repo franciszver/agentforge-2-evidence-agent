@@ -143,7 +143,10 @@ def _reset_process_wide_singletons() -> Iterator[None]:
     introspection or dev-bridge path -- e.g. ``test_chat_endpoint.py``'s flag
     precedence test, or its fail-closed-default endpoint test -- could seed a
     singleton bound to one test's env/creds that then silently leaks into a
-    LATER test under ``pytest-randomly`` reordering. Mirrors
+    LATER test -- under any test-execution order, not just alphabetical
+    collection order, and regardless of whether a random-order plugin is
+    installed (none is, currently; this is about the leak existing at all,
+    not about how likely a given run is to hit it). Mirrors
     ``test_launch_binding.py``'s ``_reset_binder_singleton`` for
     ``chat._launch_patient_binder``.
 
@@ -152,9 +155,10 @@ def _reset_process_wide_singletons() -> Iterator[None]:
     ``/chat`` call, not just when a "switch to <Name>" construction fires),
     so without this reset the first test in the session to hit a real
     (non-overridden) ``get_roster_cache`` call would seed a cached roster
-    that could silently leak into a later roster-assertion test under
-    ``pytest-randomly`` reordering -- the same leak class as the two
-    singletons above, just for a cache instead of a validator/bridge.
+    that could silently leak into a later roster-assertion test -- the same
+    leak class as the two singletons above (any reordering, or simply a
+    later module exercising the real introspector, can trigger it), just for
+    a cache instead of a validator/bridge.
 
     Promoted to this shared conftest (F2, #185 gate) after
     ``test_subject_ownership.py::test_get_subject_resolver_flag_on_returns_a_real_resolver``

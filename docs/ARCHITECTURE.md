@@ -403,17 +403,22 @@ Stated plainly, in order of what would need to change:
    default off — not shipped-on-by-default.
 
    **Flipping ON is effectively one-way for feedback ownership (#185).**
-   `POST /feedback` rows written while `copilot_per_user_token_enabled` is ON
-   record ownership against the caller's verified OpenEMR `sub` (subject
-   regime), not a bearer-token hash. Rolling the flag back OFF does not make
-   those rows reclaimable under the token-hash regime — `TraceStore
-   .caller_owns_trace` dispatches on each row's own recorded `owner_kind` and
-   fails closed for a `subject` row when the caller has no subject to offer
-   (see that method's docstring for the full mixed-regime matrix), the
-   correct choice to avoid re-litigating ownership under a weaker regime, but
-   it means there is **no recovery path**: a clinician's accumulated
-   feedback ownership on rows written under SUBJECT becomes permanently
-   unclaimable once the flag is flipped back OFF.
+   Claimability of a trace's feedback is decided exclusively by that trace's
+   `POST /chat` **REQUEST span** — `TraceStore.caller_owns_trace` filters to
+   `span_type == SpanType.REQUEST` and reads the first such span's own
+   `owner_kind`/`owner_subject`/`owner_token_hash`; a `FEEDBACK` row's own
+   `owner_kind` is never consulted for authorization. So when a `REQUEST` span
+   is written while `copilot_per_user_token_enabled` is ON, its ownership is
+   recorded against the caller's verified OpenEMR `sub` (subject regime), not
+   a bearer-token hash, and every `FEEDBACK` row filed against that same trace
+   is claimable only under that regime. Rolling the flag back OFF does not
+   make such a trace reclaimable under the token-hash regime — the REQUEST
+   span fails closed for the subject regime when the caller has no subject to
+   offer (see `caller_owns_trace`'s docstring for the full mixed-regime
+   matrix), the correct choice to avoid re-litigating ownership under a
+   weaker regime, but it means there is **no recovery path**: a clinician's
+   accumulated feedback on a trace whose REQUEST span was written under
+   SUBJECT becomes permanently unclaimable once the flag is flipped back OFF.
 2. **Real token introspection at `/chat` — built.** As of #168 (VULN-0001)
    the shipped default `TokenValidator` is fail-closed, not a stub — every
    token is rejected unless the explicit, dev-only

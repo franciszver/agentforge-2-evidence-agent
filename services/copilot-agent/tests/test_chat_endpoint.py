@@ -962,8 +962,9 @@ def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatc
     # (e.g. inside the provisioned agent container) -- made a genuine
     # outbound POST of a garbage token to OpenEMR's introspection endpoint,
     # AND seeded the process-wide ``chat._token_introspector`` singleton
-    # (reset by the ``_reset_process_wide_singletons`` fixture above, but the
-    # network call itself is still undesirable in a "hermetic" suite). This
+    # (reset by the ``_reset_process_wide_singletons`` fixture in
+    # ``tests/conftest.py``, but the network call itself is still undesirable
+    # in a "hermetic" suite). This
     # injects a fake introspector instead, exactly as ``test_introspection
     # .py`` does for the introspection unit tests themselves -- the
     # precedence decision under test never needs a real network round trip.

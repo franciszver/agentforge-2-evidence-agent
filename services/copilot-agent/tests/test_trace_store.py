@@ -539,11 +539,14 @@ def test_matrix_legacy_pre_owner_kind_row_is_treated_as_token_hash(store: TraceS
     assert store.caller_owns_trace("corr-mixed-4", "some-other-token", subject="user-42") is False
 
 
-# F5: defence-in-depth for corrupt/hand-edited rows. Neither is reachable via
-# any in-tree write path (record_request_span/record_feedback_span always go
+# F5: defence-in-depth for a corrupt/hand-edited row. Not reachable via any
+# in-tree write path (record_request_span/record_feedback_span always go
 # through _owner_columns, which never emits owner_kind='token_hash' with a
-# NULL hash, or owner_kind='subject' with a NULL subject) -- these guard rows
-# that only a hand edit or a bug in a future writer could produce.
+# NULL hash) -- this guards a row that only a hand edit or a bug in a future
+# writer could produce. Genuinely pins the guard: neutering the
+# ``if not origin.owner_token_hash: return False`` clause in
+# ``caller_owns_trace`` reaches ``hmac.compare_digest(None, ...)``, which
+# raises ``TypeError`` -- so this test fails if that guard is removed.
 def test_matrix_token_hash_row_with_null_hash_is_rejected(store: TraceStore, db_path: str) -> None:
     connection = sqlite3.connect(db_path)
     try:
@@ -564,6 +567,12 @@ def test_matrix_token_hash_row_with_null_hash_is_rejected(store: TraceStore, db_
     assert store.caller_owns_trace("corr-corrupt-token-hash", "any-token", subject="user-42") is False
 
 
+# Behavioural regression test, NOT a guard-pinning test: ``caller_owns_trace``
+# has no ``origin.owner_subject`` NULL-check of its own -- rejection here
+# comes from the plain ``origin.owner_subject == subject`` comparison, where
+# ``None == "user-42"`` is always ``False``. This documents that a
+# NULL-subject SUBJECT row is (and stays) unclaimable, without claiming to
+# pin a dedicated guard clause.
 def test_matrix_subject_row_with_null_subject_is_rejected(store: TraceStore, db_path: str) -> None:
     connection = sqlite3.connect(db_path)
     try:

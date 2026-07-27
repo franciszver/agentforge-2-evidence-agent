@@ -648,8 +648,13 @@ class TraceStore:
         origin = request_spans[0]
         effective_kind = origin.owner_kind or (OwnerKind.TOKEN_HASH.value if origin.owner_token_hash else None)
         if effective_kind == OwnerKind.SUBJECT.value:
-            if not subject or not origin.owner_subject:
+            if not subject:
                 return False
+            # A NULL ``origin.owner_subject`` (corrupt/hand-edited row) is not
+            # special-cased: it simply fails the equality check below, same as
+            # any other mismatch. ``None == subject`` is always ``False`` for
+            # a non-empty ``subject`` string, so this stays fail-closed
+            # without an explicit ``origin.owner_subject`` guard.
             return origin.owner_subject == subject
         if effective_kind == OwnerKind.TOKEN_HASH.value:
             if not origin.owner_token_hash:

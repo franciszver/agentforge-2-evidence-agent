@@ -25,6 +25,7 @@ alternative used below for the plain flag-gating checks).
 
 from __future__ import annotations
 
+import logging
 import secrets
 from collections.abc import Iterator
 from pathlib import Path
@@ -199,3 +200,56 @@ def test_chat_endpoint_records_token_hash_owner_when_no_subject_available(tmp_pa
     assert request_span.owner_kind == "token_hash"
     assert request_span.owner_subject is None
     assert request_span.owner_token_hash is not None
+
+
+# --- LOW-3: a failed subject resolution logs its silent regime downgrade --
+
+
+def test_chat_endpoint_warns_when_subject_resolution_falls_back_to_token_hash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
+    _override_ok_validator()
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _override_subject_resolver({})  # resolver miss -> None, same as a failed introspection
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: fake_planner)
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/chat",
+            json={"message": "hello", "patient_id": 1},
+            headers={"Authorization": "Bearer token-fallback"},
+        )
+
+    assert response.status_code == 200
+    assert any(
+        "subject resolution failed" in record.message and "token-hash fallback" in record.message
+        for record in caplog.records
+    )
+    # No token, hash, or PHI in the log message itself.
+    for record in caplog.records:
+        assert "token-fallback" not in record.message
+
+
+def test_chat_endpoint_does_not_warn_when_subject_resolution_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("COPILOT_PER_USER_TOKEN_ENABLED", "true")
+    trace_store = TraceStore(db_path=str(tmp_path / "traces.db"), hash_secret=_TEST_HASH_KEY)
+    _override_ok_validator()
+    app.dependency_overrides[get_trace_store] = lambda: trace_store
+    _override_subject_resolver({"token-good": "user-42"})
+    fake_planner = FakePlanner(trace=[], answer="ok")
+    app.dependency_overrides[get_planner_factory] = lambda: (lambda patient_id: fake_planner)
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/chat",
+            json={"message": "hello", "patient_id": 1},
+            headers={"Authorization": "Bearer token-good"},
+        )
+
+    assert response.status_code == 200
+    assert not any("subject resolution failed" in record.message for record in caplog.records)
