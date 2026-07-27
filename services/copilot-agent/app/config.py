@@ -411,7 +411,7 @@ class Settings(BaseSettings):
     # relevance's fail-closed direction. Owner declined the fence; the soft
     # instruction ships as measured-sufficient evidence, not assertion. See
     # app/semantic_support.py's module docstring, "Injection posture", and
-    # prd/DECISIONS.md's 2026-07-27 entries for the full before/after tables.
+    # evals/results/issue-192/README.md for the full before/after tables.
     copilot_semantic_support_enabled: bool = True
 
     # Issue #153: when true, run_verification additionally requires that each

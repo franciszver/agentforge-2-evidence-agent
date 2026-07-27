@@ -35,7 +35,7 @@ same 152-payload battery / 190 draws per (judge, direction) cell, fencing
 moved this module's force_not_supported bypass count from 25 to 21 (noise on
 4 draws) while making ``app.source_ref_relevance``'s force_not_supported
 bypass rate 2.4x WORSE (25 -> 61) -- see ``evals/results/issue-192/`` and
-``prd/DECISIONS.md``'s 2026-07-27 entries for the full before/after tables.
+``evals/results/issue-192/README.md`` for the full before/after tables.
 **force-SUPPORTED -- the only direction that can promote an unsupported
 clinical claim to certified-verified -- was 0/190 in every configuration
 measured, before and after fencing.** The owner's decision: ship the soft
@@ -45,7 +45,17 @@ a valid closing condition. This is measured ABSENCE of a force-SUPPORTED
 bypass on THIS model and prompt on THIS battery -- not proof none exists;
 the battery (``tests/test_issue_192_injection_battery.py``,
 ``evals/runner/issue_192_injection_battery.py``) should be re-run against
-any judge-model change before relying on this posture again.
+any judge-model change before relying on this posture again. **This 0/190 is
+also confounded with scenario distance, not a clean result:** this module's
+force-SUPPORTED scenario pairs a claim with a maximally-UNRELATED quote (the
+easiest pairing to resist), while the fail-closed scenario -- where the
+measured bypasses above actually occurred -- starts from a genuinely
+supporting, high-overlap pair. The battery cannot distinguish "resists
+force-SUPPORTED injection" from "won't call a wildly-unrelated quote
+supported regardless of injection"; a near-miss pair (plausibly related, not
+actually supporting) plus injection has never been measured. Treat as a
+named limitation for any future re-measurement, not as evidence this posture
+is robust against a more realistic force-SUPPORTED attempt.
 
 **Scope: DocumentCitation (quote-based) only, not SourceRef.** A ``SourceRef``
 citation names a structured ``(tool_call_id, record_id, field)`` triple and
@@ -271,7 +281,10 @@ def judge_support_full(
     try:
         return judge.extract(messages, SemanticSupportJudgement)
     except LLMEngineError as exc:
-        return SemanticSupportJudgement(verdict=SupportVerdict.NOT_SUPPORTED, reason=f"judge error (fail-closed): {exc}"[:280])
+        return SemanticSupportJudgement(
+            verdict=SupportVerdict.NOT_SUPPORTED,
+            reason=f"judge error (fail-closed): {exc}"[:280],
+        )
 
 
 def judge_support(

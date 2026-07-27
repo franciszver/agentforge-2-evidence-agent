@@ -1196,5 +1196,5 @@
       ]
     }
   },
-  "note": "BEFORE measurement, issue #192 phase-2 CLAIM_TEXT-channel extension -- zero structural mitigation in place (old, unfenced prompt shape reconstructed verbatim from evals/runner/issue_192_injection_battery.py@a8015ea). Establishes the new channel's own before-baseline so the after (mitigated) number is a real comparison, not an after-only claim."
+  "note": "BEFORE measurement, issue #192 phase-2 CLAIM_TEXT-channel extension -- zero structural mitigation in place. Provenance (MINOR-7, honestly recorded): the note this summary originally shipped with claimed the prompt shape was 'reconstructed verbatim from evals/runner/issue_192_injection_battery.py@a8015ea', but a8015ea (commit 39d190a7's era) is when both the runner and the judge modules were still fenced -- so this run actually came from an uncommitted, ad-hoc reconstruction of the unfenced shape, not from any committed, fence-free version of the runner. It is NOT reproducible from a committed artifact as-is; do not treat @a8015ea as a valid provenance pointer. Establishes the new channel's own before-baseline so the after (mitigated) number is a real comparison, not an after-only claim. See evals/results/issue-192/README.md, 'Provenance of claim-channel-before/', for the full context."
 }
