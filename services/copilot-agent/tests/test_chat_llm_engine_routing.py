@@ -106,3 +106,33 @@ def test_evidence_workers_use_ollama_reranker_when_flagged(tmp_path):
 
     assert isinstance(intake_worker._ollama_client, OllamaClient)
     assert isinstance(evidence_worker._reranker._scorer._client, OllamaClient)
+
+
+def test_intake_extractor_uses_the_dedicated_vision_model_by_default(tmp_path):
+    """Issue #204: the intake-extractor's ``OllamaClient`` must be built on
+    ``settings.copilot_vision_model`` (default ``qwen2.5vl:7b``, vision-
+    capable) -- NOT ``settings.ollama_model`` (default ``qwen3:4b``,
+    text-only, and the text/embed/rerank rollback path's own default this
+    fix must not repurpose)."""
+    settings = Settings(_env_file=None, copilot_ingestion_base_dir=str(tmp_path))  # type: ignore[call-arg]
+
+    intake_worker, _ = _build_evidence_workers(settings)
+
+    assert intake_worker._ollama_client.model == "qwen2.5vl:7b" == settings.copilot_vision_model
+    assert intake_worker._ollama_client.model != settings.ollama_model
+
+
+def test_intake_extractor_stays_on_the_vision_model_even_when_ollama_reranker_is_flagged(tmp_path):
+    """The reranker/embedder rollback to plain ``OllamaClient`` (flagged
+    above) must not pull the intake extractor back onto the shared
+    ``ollama_model`` -- the two roles now use two DISTINCT ``OllamaClient``
+    instances even when both engine flags select ``ollama``."""
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, copilot_llm_engine="ollama", copilot_ingestion_base_dir=str(tmp_path)
+    )
+
+    intake_worker, evidence_worker = _build_evidence_workers(settings)
+
+    assert intake_worker._ollama_client.model == settings.copilot_vision_model
+    assert evidence_worker._reranker._scorer._client.model == settings.ollama_model
+    assert intake_worker._ollama_client is not evidence_worker._reranker._scorer._client

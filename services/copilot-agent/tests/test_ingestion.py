@@ -84,9 +84,15 @@ class _FakeVlmOllama:
     reused for both doc types' tests, standing in for whichever schema the
     real VLM call would be constrained to."""
 
-    def __init__(self, results: list[Any] | None = None, *, error: bool = False) -> None:
+    def __init__(self, results: list[Any] | None = None, *, error: bool = False, model: str = "qwen2.5vl:7b") -> None:
         self._results = results or []
         self._error = error
+        # Issue #204: IntakeExtractorWorker.run() reads ``.model`` to fail
+        # closed via ``is_vision_capable_model`` -- default is the real
+        # vision-capable model so every EXISTING caller of this double stays
+        # green; pass ``model="qwen3:4b"`` (or similar) to exercise the
+        # fail-closed path itself (see test_supervisor.py).
+        self.model = model
         self.extract_calls: list[tuple[list[dict[str, Any]], type, list[str] | None]] = []
 
     def extract(

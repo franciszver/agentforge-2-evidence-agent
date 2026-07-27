@@ -40,6 +40,7 @@ from app.supervisor import (
     RetrieveSubTask,
     Supervisor,
     SupervisorResult,
+    VisionModelMisconfiguredError,
 )
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
 from tests.test_ingestion import _FakeVlmOllama, _FIXTURE_PATH, _PAGE_1_ROWS, _PAGE_2_ROWS
@@ -225,6 +226,24 @@ def test_intake_extractor_worker_delegates_and_preserves_citations(tmp_path: Pat
     assert len(result.facts) >= 1
     assert result.facts[0].citation.source_type == "lab_pdf"
     assert result.facts[0].citation.quote_or_value  # citation text survives
+
+
+def test_intake_extractor_worker_refuses_to_run_on_a_text_only_model(tmp_path: Path):
+    """Issue #204: fail-closed. A worker wired to a non-vision-capable model
+    (the default ``qwen3:4b`` bug this issue fixes) must refuse to run
+    BEFORE any page reaches the model -- zero extract() calls -- rather
+    than silently sending it an image it cannot read."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)], model="qwen3:4b"
+    )
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    with pytest.raises(VisionModelMisconfiguredError):
+        worker.run(sub_task)
+
+    assert ollama.extract_calls == [], "exposure count must be 0 -- no page image may reach a misconfigured model"
 
 
 def test_evidence_retriever_worker_delegates_and_preserves_citations():
