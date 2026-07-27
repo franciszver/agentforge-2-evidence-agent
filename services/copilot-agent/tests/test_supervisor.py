@@ -40,6 +40,7 @@ from app.supervisor import (
     RetrieveSubTask,
     Supervisor,
     SupervisorResult,
+    VisionModelMisconfiguredError,
 )
 from scripts.retrieval_golden_queries import GOLDEN_QUERIES
 from tests.test_ingestion import _FakeVlmOllama, _FIXTURE_PATH, _PAGE_1_ROWS, _PAGE_2_ROWS
@@ -225,6 +226,128 @@ def test_intake_extractor_worker_delegates_and_preserves_citations(tmp_path: Pat
     assert len(result.facts) >= 1
     assert result.facts[0].citation.source_type == "lab_pdf"
     assert result.facts[0].citation.quote_or_value  # citation text survives
+
+
+def test_intake_extractor_worker_refuses_to_run_on_a_text_only_model(tmp_path: Path):
+    """Issue #204: fail-closed. A worker wired to a non-vision-capable model
+    (the default ``qwen3:4b`` bug this issue fixes) must refuse to run
+    BEFORE any page reaches the model -- zero extract() calls -- rather
+    than silently sending it an image it cannot read."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)], model="qwen3:4b"
+    )
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    with pytest.raises(VisionModelMisconfiguredError):
+        worker.run(sub_task)
+
+    assert ollama.extract_calls == [], "exposure count must be 0 -- no page image may reach a misconfigured model"
+
+
+def test_vision_model_misconfigured_error_names_the_model_and_the_escape_hatch(tmp_path: Path):
+    """Gate-1 finding on #206: the error must be actionable without reading
+    source -- it must name the configured model, that the check is
+    name-based (so it may misjudge a valid VLM), and the exact setting to
+    disable it."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)], model="qwen3:4b"
+    )
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    with pytest.raises(VisionModelMisconfiguredError) as excinfo:
+        worker.run(sub_task)
+
+    message = str(excinfo.value)
+    assert "qwen3:4b" in message
+    assert "name-based" in message
+    assert "copilot_vision_model_capability_check" in message
+
+
+def test_intake_extractor_worker_accepts_an_unrecognized_model_when_the_check_is_disabled(tmp_path: Path):
+    """Gate-1 finding on #206: the escape hatch. A digest-pinned reference
+    (no human-readable segment) or an operator's custom re-tag both fail
+    the name-based heuristic even when the underlying model is genuinely
+    vision-capable. With the check disabled, the worker must proceed
+    rather than raise."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)],
+        model="clinic-doc-reader:v3",
+    )
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(
+        ollama_client=ollama, document_store=store, fact_store=store, vision_model_capability_check=False
+    )
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    result = worker.run(sub_task)
+
+    assert len(result.facts) >= 1
+    assert ollama.extract_calls, "the escape hatch must let ingestion actually reach the model"
+
+
+class _MinimalVlm:
+    """The narrowest double satisfying ``app.ingestion._Extractor`` --
+    ``extract`` only, deliberately with NO ``.model`` attribute. Stands in
+    for an operator's custom VLM adapter that doesn't happen to expose a
+    ``model`` attribute at all (``attach_and_extract``'s injected-client
+    contract never required one). Reproduces the MINOR-1 gate-3 finding on
+    #204/#206: with the capability check disabled, ``IntakeExtractorWorker
+    .run()`` must never touch ``.model`` -- reading it before checking
+    ``self._vision_model_capability_check`` raised ``AttributeError`` on
+    exactly this double."""
+
+    def __init__(self, results: list[Any]) -> None:
+        self._results = list(results)
+        self.extract_calls: list[tuple[list[dict[str, Any]], type, list[str] | None]] = []
+
+    def extract(
+        self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None
+    ) -> Any:
+        self.extract_calls.append((prompt_or_messages, schema, images))
+        return self._results.pop(0)
+
+
+def test_intake_extractor_worker_never_reads_dot_model_when_check_is_disabled(tmp_path: Path):
+    """MINOR-1 (gate-3 finding on #204/#206): a VLM double exposing ONLY
+    ``extract`` (no ``.model``) must be able to ingest when the check is
+    disabled -- proving the ``.model`` read happens inside the ``if
+    self._vision_model_capability_check:`` branch, not before it."""
+    ollama = _MinimalVlm([LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)])
+    assert not hasattr(ollama, "model")
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(
+        ollama_client=ollama, document_store=store, fact_store=store, vision_model_capability_check=False
+    )
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    result = worker.run(sub_task)
+
+    assert len(result.facts) >= 1
+    assert ollama.extract_calls, "the escape hatch must let ingestion actually reach the model"
+
+
+def test_intake_extractor_worker_still_fails_closed_on_a_text_model_when_check_left_enabled(tmp_path: Path):
+    """Non-regression, stated explicitly alongside the escape-hatch test
+    above: leaving the (default-True) check enabled must still reject a
+    genuinely non-vision model -- the override is opt-in, not a change to
+    the default safety behavior."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)], model="qwen3:4b"
+    )
+    store = LocalIngestionStore(tmp_path)
+    worker = IntakeExtractorWorker(
+        ollama_client=ollama, document_store=store, fact_store=store, vision_model_capability_check=True
+    )
+    sub_task = IngestSubTask(patient_id=7, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf")
+
+    with pytest.raises(VisionModelMisconfiguredError):
+        worker.run(sub_task)
+
+    assert ollama.extract_calls == []
 
 
 def test_evidence_retriever_worker_delegates_and_preserves_citations():

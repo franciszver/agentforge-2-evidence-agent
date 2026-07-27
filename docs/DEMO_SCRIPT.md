@@ -257,7 +257,7 @@ three beats were measured against.
      development-easy-agent-1:/data/repo_ingest/fixtures/lab_report_synthetic.pdf
    docker cp ../../services/copilot-agent/scripts/ingest_demo_pdf.py \
      development-easy-agent-1:/data/repo_ingest/ingest_demo_pdf.py
-   docker exec -e OLLAMA_MODEL=qwen2.5vl:7b -w /app development-easy-agent-1 \
+   docker exec -w /app development-easy-agent-1 \
      python /data/repo_ingest/ingest_demo_pdf.py 1 /data/repo_ingest/fixtures/lab_report_synthetic.pdf
    docker compose -f docker-compose.yml -f docker-compose.copilot.yml start llama-server
    # wait for llama-server healthy before continuing:
@@ -279,8 +279,9 @@ three beats were measured against.
    already does this — `evals/fixtures/seed.py`'s `ALLERGY_CONFLICT_PUBPID`
    resolves to `pid=1` on a fresh pinned demo dataset) and passed as an
    explicit argument to a small in-container wrapper
-   (`scripts/ingest_demo_pdf.py`, new for this issue) that calls the exact
-   same `attach_and_extract`/`LocalIngestionStore` logic
+   (`scripts/ingest_demo_pdf.py`, new for this issue) that dispatches
+   through the same `app.supervisor.IntakeExtractorWorker` (and, beneath
+   it, the same `attach_and_extract`/`LocalIngestionStore` logic)
    `seed_demo_documents.py` does, minus the host-only pubpid resolution.
    Ingests the already-committed synthetic lab PDF
    (`tests/fixtures/lab_report_synthetic.pdf`), which already carries the
@@ -574,9 +575,17 @@ Nothing below is guessed at; each item names how it was checked.
   confirmed pulled and reachable (`curl http://ollama:11434/api/tags`
   inside the container network showed it present, digest
   `5ced39dfa4bac...`, matching the `capabilities: ["vision", "completion"]`
-  tag). `OLLAMA_MODEL=qwen2.5vl:7b` must be set on the ingestion call's
-  environment (`Settings.ollama_model` otherwise defaults to the text-only
-  `qwen3:4b`) — folded into the corrected setup step 5 above.
+  tag). No per-call environment override is needed on the ingestion call:
+  issue #204 gave document ingestion its own dedicated
+  `Settings.copilot_vision_model` (default `qwen2.5vl:7b`), separate from
+  `Settings.ollama_model` (the text/embed/rerank rollback role's default,
+  `qwen3:4b`) — both `scripts/ingest_demo_pdf.py` and
+  `scripts/seed_demo_documents.py` now dispatch through
+  `app.supervisor.IntakeExtractorWorker`, which builds its `OllamaClient` on
+  `copilot_vision_model` and fails closed
+  (`VisionModelMisconfiguredError`) if the configured model doesn't pass
+  the vision-capability name check — folded into the corrected setup step
+  5 above.
 - **Actual per-beat timings — measured**, see each beat above and the
   total in "The demo" section header: 79.9s total (33.1 + 24.2 + 22.5s),
   comfortably under 5 minutes even before accounting for narration

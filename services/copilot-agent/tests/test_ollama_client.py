@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.correlation import _STDLIB_RECORD_ATTRS
-from app.ollama_client import CHAT_MAX_TOKENS, OllamaClient, OllamaError
+from app.ollama_client import CHAT_MAX_TOKENS, OllamaClient, OllamaError, is_vision_capable_model
 
 
 class _Animal(BaseModel):
@@ -934,6 +934,106 @@ def test_embed_does_not_log_the_input_text(caplog):
 
     records = [r for r in caplog.records if r.name == "app.ollama_client"]
     assert secret_text not in _all_log_text(records)
+
+
+# --- is_vision_capable_model: gate-1 finding on #206 -------------------
+
+
+def test_is_vision_capable_model_rejects_a_text_only_model():
+    """Safety property: the heuristic must still reject an unrecognized,
+    genuinely text-only model name -- this must not regress while fixing
+    the false-rejection cases above."""
+    assert is_vision_capable_model("qwen3:4b") is False
+
+
+# --- is_vision_capable_model: boundary-aware matching (security gate, #204) --
+#
+# MAJOR finding: the plain substring matcher accepted TEXT-ONLY models whose
+# names merely contain "vl"/"vision" as a fragment of an ordinary word
+# (``med-supervision-4b``, ``wavlm-base``, ...) -- a false POSITIVE that lets
+# a text-only model silently pass the safety check on the default path, with
+# no override touched. A second, mirror-image gate finding showed the same
+# substring matcher wrongly REJECTING genuine VLM names that don't happen to
+# contain a listed marker as a bare fragment in the right spot. Each case
+# below is independently named so a failure identifies exactly which model
+# name regressed.
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("qwen2.5vl:7b", id="accept-qwen2.5vl-tag"),
+        pytest.param("qwen2-vl:7b", id="accept-qwen2-vl-dash-tag"),
+        pytest.param("llama3.2-vision", id="accept-llama-vision-no-tag"),
+        pytest.param("llama3.2-vision:11b", id="accept-llama-vision-with-tag"),
+        pytest.param("llava:13b", id="accept-llava-tag"),
+        pytest.param("llava", id="accept-llava-bare"),
+        pytest.param("llava-llama3", id="accept-llava-llama3"),
+        pytest.param("bakllava", id="accept-bakllava-bare"),
+        pytest.param("moondream", id="accept-moondream-bare"),
+        pytest.param("pixtral-12b", id="accept-pixtral-12b"),
+        pytest.param("pixtral", id="accept-pixtral-bare"),
+        pytest.param("minicpm-v", id="accept-minicpm-v-bare"),
+        pytest.param("minicpm-v:8b", id="accept-minicpm-v-tag"),
+        # Case-insensitivity: is_vision_capable_model() normalizes to
+        # lowercase before matching (previously covered only by the
+        # now-removed test_is_vision_capable_model_recognizes_minicpm_v).
+        pytest.param("MiniCPM-V", id="accept-minicpm-v-mixed-case"),
+        pytest.param("minicpm-o", id="accept-minicpm-o-bare"),
+        # MINOR-6 (#204 gate-3): trailing digits after the ``vl`` marker,
+        # before the next delimiter/end, must not defeat the boundary check
+        # -- ``deepseek-vl2``/``qwen2-vl2`` follow the same ``vlN``
+        # version-suffix convention as ``deepseek-vl`` (already accepted).
+        pytest.param("deepseek-vl2", id="accept-deepseek-vl2-digit-suffix"),
+        pytest.param("qwen2-vl2", id="accept-qwen2-vl2-digit-suffix"),
+    ],
+)
+def test_is_vision_capable_model_accepts_genuine_vlm_names(model: str):
+    assert is_vision_capable_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("qwen3:4b", id="reject-qwen3-text-only"),
+        pytest.param("med-supervision-4b", id="reject-supervision-near-miss"),
+        pytest.param("clinical-provision:2b", id="reject-provision-near-miss"),
+        pytest.param("notes-revision-4b", id="reject-revision-near-miss"),
+        pytest.param("envision-lite:1b", id="reject-envision-near-miss"),
+        pytest.param("wavlm-base", id="reject-wavlm-vl-near-miss"),
+        pytest.param("avle-test", id="reject-avle-vl-near-miss"),
+        pytest.param("uvloop-helper", id="reject-uvloop-vl-near-miss"),
+        pytest.param("llama3:8b", id="reject-llama3-text-only"),
+        pytest.param("mistral:7b", id="reject-mistral-text-only"),
+        pytest.param("television-model:1b", id="reject-television-vision-near-miss"),
+        pytest.param("devlin-base:1b", id="reject-devlin-vl-near-miss"),
+        # MODERATE-3 (#204 gate-3): bare "minicpm" wrongly admitted the
+        # text-only MiniCPM family -- these are real, non-vision LLMs and
+        # must be refused now that the marker is minicpm-v/minicpm-o only.
+        pytest.param("minicpm3:4b", id="reject-minicpm3-text-only"),
+        pytest.param("minicpm4:8b", id="reject-minicpm4-text-only"),
+        pytest.param("minicpm:2b", id="reject-minicpm-2b-text-only"),
+        pytest.param("minicpm-2b-sft", id="reject-minicpm-2b-sft-text-only"),
+        # MINOR-6 (#204 gate-3): letter-adjacent VL names are structurally
+        # indistinguishable from wavlm/avle/uvloop above and stay
+        # unrecognized by design -- pinned here so the limit is an explicit
+        # test, not folklore.
+        pytest.param("internvl2", id="not-recognized-internvl2-letter-adjacent"),
+        pytest.param("cogvlm", id="not-recognized-cogvlm-letter-adjacent"),
+        pytest.param("smolvlm", id="not-recognized-smolvlm-letter-adjacent"),
+        # Multimodal models with no marker this function knows about at
+        # all -- not recognized, override required (Settings.
+        # copilot_vision_model_capability_check=false).
+        pytest.param("gemma3:4b", id="not-recognized-gemma3-no-marker"),
+        pytest.param("paligemma:3b", id="not-recognized-paligemma-no-marker"),
+        pytest.param("idefics2:8b", id="not-recognized-idefics2-no-marker"),
+        pytest.param("fuyu:8b", id="not-recognized-fuyu-no-marker"),
+        pytest.param("glm-4v:9b", id="not-recognized-glm-4v-no-marker"),
+        pytest.param("llama4:scout", id="not-recognized-llama4-no-marker"),
+    ],
+)
+def test_is_vision_capable_model_rejects_text_only_and_near_miss_names(model: str):
+    assert is_vision_capable_model(model) is False
 
 
 # --- live integration: real qwen3:4b -----------------------------------

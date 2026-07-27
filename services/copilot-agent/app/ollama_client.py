@@ -176,6 +176,165 @@ class OllamaError(LLMEngineError):
     """
 
 
+# Issue #204: name-based recognizer for Ollama vision-capable models, used by
+# app.supervisor.IntakeExtractorWorker to fail closed instead of silently
+# handing an image-bearing document to a text-only model. Name-based rather
+# than a live ``/api/show`` capability query (the field docs/DEMO_SCRIPT.md
+# recorded, e.g. ``capabilities: ["vision", "completion"]`` for
+# ``qwen2.5vl:7b``): keeps the check synchronous, dependency-free, and
+# evaluable at construction/dispatch time with no network call -- at the
+# cost of recognizing only name patterns already in common use for
+# vision-language models, not a per-install, ground-truth capability list.
+#
+# Gate-1 finding on #206: this list is BEST-EFFORT ONLY, never authoritative
+# -- it cannot recognize digest-pinned references (``sha256:...``, no
+# human-readable segment), operator-renamed/custom tags, or VLM families not
+# yet added here. Do not treat a rejection from this function as proof a
+# model isn't vision-capable: the escape hatch for a false rejection is
+# ``Settings.copilot_vision_model_capability_check`` (app/config.py), not a
+# growing enumeration of markers.
+#
+# Security gate finding on #204 (MAJOR): the previous implementation matched
+# these as raw case-insensitive SUBSTRINGS anywhere in the model string. The
+# bare "vl"/"vision" markers collide with ordinary English fragments inside
+# plausible operator-chosen model names -- ``med-supervision-4b``,
+# ``clinical-provision:2b``, ``notes-revision-4b``, ``envision-lite:1b``
+# (all contain "vision"), and ``wavlm-base``/``avle-test``/``uvloop-helper``
+# (all contain "vl") -- so a genuinely TEXT-ONLY model could pass this check
+# on name alone, and every ingested document page would go to a model that
+# cannot read images (the original #204 bug, with false confidence because
+# "the check passed"). ``is_vision_capable_model`` below is boundary-aware
+# instead of substring-containment to close that: this remains a NAME
+# HEURISTIC over an operator-set config value (``settings.ollama_model`` /
+# ``copilot_vision_model``), not a rule ever applied to model-generated
+# text, and near-miss names like the ones above are exactly why boundaries
+# are required rather than optional polish.
+#
+# Gate-3 finding on #204 (MODERATE): the bare ``minicpm`` marker admits the
+# TEXT-ONLY MiniCPM family too -- ``minicpm3:4b``, ``minicpm4:8b``,
+# ``minicpm:2b``, and ``minicpm-2b-sft`` are all real text-only LLMs that
+# would pass a bare ``minicpm`` prefix/delimiter check. Only the ``-v``
+# (vision) and ``-o`` (omni, which includes vision) suffixed variants are
+# actually vision-capable, so the markers below are ``minicpm-v`` and
+# ``minicpm-o`` specifically, never bare ``minicpm``.
+_VISION_WORD_MARKERS = ("vision", "llava", "bakllava", "moondream", "pixtral", "minicpm-v", "minicpm-o")
+_TAG_DELIMITERS = "-_./:"
+
+
+def _has_word_marker(normalized: str, marker: str) -> bool:
+    """``marker`` occurs in ``normalized`` at start-of-string or right after
+    a tag delimiter (``-_./:``) -- e.g. ``vision`` matches the ``vision`` in
+    ``llama3.2-vision`` but not the one embedded in ``supervision``,
+    ``provision``, ``revision``, or ``envision``. No end-boundary check is
+    performed after the marker.
+
+    KNOWN LIMITATION (Gate-3 finding on #204, refuting an earlier version of
+    this docstring that claimed the opposite): a start/delimiter-anchored
+    prefix match on its own is NOT collision-proof. It still accepts
+    text-only names that happen to start with a marker followed by more
+    letters before the next delimiter -- ``minicpm3:4b``, ``minicpm4:8b``,
+    and ``minicpm-2b-sft`` all matched a bare ``minicpm`` marker before it
+    was narrowed to ``minicpm-v``/``minicpm-o`` (see
+    ``_VISION_WORD_MARKERS``'s comment) -- and unrelated names can coincide
+    the same way, e.g. ``pixtral-tokenizer-only``, ``moondreamer-text``,
+    ``llavage:1b``, ``visionary-7b`` (verified: all match a word marker here
+    and are all text-only-shaped names). Callers must not treat a ``True``
+    result as a ground-truth capability signal for exactly this reason --
+    see ``is_vision_capable_model``'s own docstring."""
+    start = 0
+    while True:
+        idx = normalized.find(marker, start)
+        if idx == -1:
+            return False
+        if idx == 0 or normalized[idx - 1] in _TAG_DELIMITERS:
+            return True
+        start = idx + 1
+
+
+def _has_vl_marker(normalized: str) -> bool:
+    """The 2-char ``vl`` marker (``qwen2.5vl:7b``, ``qwen2-vl``) needs BOTH
+    ends anchored -- a digit or delimiter before it, and a delimiter or
+    end-of-string after it -- because as a bare 2-char fragment it collides
+    with ordinary text far more easily than the word markers above:
+    ``wavlm-base``, ``avle-test``, and ``uvloop-helper`` all contain "vl"
+    with real letters on at least one side and must be rejected.
+
+    Trailing digits between the ``vl`` marker and the next delimiter/
+    end-of-string are skipped before the end-boundary check (Gate-3 MINOR
+    finding on #204): ``deepseek-vl2`` and ``qwen2-vl2`` follow the same
+    ``vlN`` version-suffix convention as ``deepseek-vl`` (which already
+    matched) and must not be refused just because the version number wasn't
+    a delimiter. This does NOT rescue letter-adjacent names -- ``internvl2``,
+    ``cogvlm``, ``smolvlm`` remain unrecognized: they are structurally
+    indistinguishable from ``wavlm`` (a real letter immediately before
+    ``vl``), and loosening the preceding-side check to catch them would
+    reintroduce false accepts on ordinary text. Those names, and multimodal
+    models with no recognized marker at all (``gemma3``, ``paligemma``,
+    ``idefics2``, ``fuyu``, ``glm-4v``, ``llama4``), are NOT recognized by
+    this function and require ``copilot_vision_model_capability_check=false``
+    as the operator escape hatch -- see ``is_vision_capable_model``'s
+    docstring."""
+    start = 0
+    while True:
+        idx = normalized.find("vl", start)
+        if idx == -1:
+            return False
+        end = idx + 2
+        while end < len(normalized) and normalized[end].isdigit():
+            end += 1
+        preceded_ok = idx > 0 and (normalized[idx - 1].isdigit() or normalized[idx - 1] in _TAG_DELIMITERS)
+        followed_ok = end == len(normalized) or normalized[end] in _TAG_DELIMITERS
+        if preceded_ok and followed_ok:
+            return True
+        start = idx + 1
+
+
+def is_vision_capable_model(model: str) -> bool:
+    """Best-effort, name-based check for whether ``model`` is vision-capable.
+
+    Matches boundary-anchored Ollama tag fragments used by known vision-
+    language models -- e.g. ``qwen2.5vl:7b``, ``qwen2-vl``,
+    ``llama3.2-vision``, ``llava``, ``moondream``, ``pixtral``,
+    ``bakllava``, ``minicpm-v`` -- case-insensitively, against the full
+    model string (name and tag). Returns ``False`` for anything else,
+    including text-only models like ``qwen3:4b`` AND near-miss names that
+    merely contain one of these fragments as a substring of an ordinary
+    word (``med-supervision-4b``, ``wavlm-base``, etc. -- see the
+    module-level comment above ``_VISION_WORD_MARKERS`` for why boundary
+    anchoring, not plain substring containment, is required here).
+
+    This is a NAME HEURISTIC over an operator-set config value, not a
+    ground-truth capability list (see the module-level comment above
+    ``_VISION_WORD_MARKERS``): a genuinely vision-capable model with an
+    unrecognized name (digest-pinned reference, custom re-tag, or a VLM
+    family not yet listed) will get a false ``False`` here. Callers needing
+    an escape hatch for that case should consult
+    ``Settings.copilot_vision_model_capability_check``, not extend this
+    function's matching.
+
+    KNOWN LIMITATIONS (Gate-3 findings on #204):
+      * More false-``False`` cases beyond the ones above: letter-adjacent
+        ``vl`` names (``internvl2``, ``cogvlm``, ``smolvlm``) and
+        multimodal models with no recognized marker at all (``gemma3``,
+        ``paligemma``, ``idefics2``, ``fuyu``, ``glm-4v``, ``llama4``) are
+        NOT recognized, because they are indistinguishable from ordinary
+        text-only names like ``wavlm``, not because they were specifically
+        identified. This is safe (the caller fails closed) but incorrect --
+        every one of these models is genuinely vision-capable, and the
+        refusal costs a working deployment the ability to use it without
+        the operator override.
+      * The flip side -- a false ``True``: ``word2vl-embed`` and
+        ``model2vl.gguf`` (a digit immediately before ``vl``, a delimiter
+        immediately after) falsely match ``_has_vl_marker`` despite being
+        ordinary non-VLM names -- low real-world plausibility (an
+        operator-chosen model name coinciding with this exact shape), left
+        unfixed rather than tightening the digit-preceded case in a way
+        that would also reject genuine ``qwen2-vl``/``qwen2.5vl`` names.
+    """
+    normalized = model.strip().lower()
+    return _has_vl_marker(normalized) or any(_has_word_marker(normalized, marker) for marker in _VISION_WORD_MARKERS)
+
+
 class OllamaClient:
     """Chat + constrained-extraction client for the internal Ollama instance.
 
@@ -210,14 +369,26 @@ class OllamaClient:
         # it after invoking ``chat``/``extract`` to build ``llm`` trace spans.
         self.call_stats: list[LlmCallStats] = []
 
+    @property
+    def model(self) -> str:
+        """The chat/extraction model this client was built with -- read by
+        ``app.supervisor.IntakeExtractorWorker`` (issue #204) to fail closed
+        when it is not vision-capable, via ``is_vision_capable_model``."""
+        return self._model
+
     @classmethod
-    def from_settings(cls, settings: Settings) -> OllamaClient:
-        """Build a production client, threading base URL, model, timeout, and retries."""
+    def from_settings(cls, settings: Settings, *, model: str | None = None) -> OllamaClient:
+        """Build a production client, threading base URL, model, timeout, and
+        retries. ``model`` overrides ``settings.ollama_model`` when supplied --
+        issue #204 uses this to build a SEPARATE client for the vision role
+        (``settings.copilot_vision_model``) without duplicating the base_url/
+        timeout/retries wiring, and without touching ``ollama_model``'s own
+        default or its text-rollback meaning."""
         client = httpx.Client(timeout=settings.ollama_api_timeout_seconds)
         return cls(
             base_url=settings.ollama_base_url,
             client=client,
-            model=settings.ollama_model,
+            model=model if model is not None else settings.ollama_model,
             embedding_model=settings.ollama_embedding_model,
             max_retries=settings.ollama_extract_max_retries,
         )

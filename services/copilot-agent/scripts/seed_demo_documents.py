@@ -15,10 +15,15 @@ story the demo needs.
 This is a separate, explicit ingestion step -- not something ``POST /chat``
 does implicitly (see ``app.chat._build_evidence_workers``'s docstring:
 "ingesting a NEW document stays a separate concern from a chat turn").
-Wiring mirrors that same function exactly: ``OllamaClient.from_settings``
-plus ``LocalIngestionStore(settings.copilot_ingestion_base_dir)``, so this
-script ingests through the identical code path production/chat reads
-already-ingested facts back out of.
+Wiring dispatches through ``app.supervisor.IntakeExtractorWorker`` -- the
+SAME worker class ``_build_evidence_workers`` constructs for ``/chat`` --
+built on ``OllamaClient.from_settings(settings, model=settings.
+copilot_vision_model)`` plus ``LocalIngestionStore(settings.
+copilot_ingestion_base_dir)``, so this script ingests through the
+identical code path production/chat reads already-ingested facts back out
+of, AND gets the same vision-model default and fail-closed
+vision-capability guard (issue #204) as production, decided in that one
+worker class rather than re-derived here.
 
 **Idempotent.** Before ingesting, checks
 ``LocalIngestionStore.list_citations_for_patient`` for an existing
@@ -50,8 +55,9 @@ write to the host filesystem rather than the running ``agent`` container's
 Verified live during the P5.1 dry run. Against THIS stack, ingest from
 inside the ``agent`` container instead -- see ``docs/DEMO_SCRIPT.md``'s
 setup section and ``scripts/ingest_demo_pdf.py`` (a container-side runner
-with the same ``attach_and_extract``/``LocalIngestionStore`` wiring as this
-module, minus the host-only pubpid resolution below, which
+that dispatches through the same ``app.supervisor.IntakeExtractorWorker``
+(and, beneath it, the same ``attach_and_extract``/``LocalIngestionStore``
+logic) as this module, minus the host-only pubpid resolution below, which
 ``get_pid_for_pubpid`` performs via ``docker compose exec mysql`` -- itself
 only reachable from the host, not from inside ``agent``). This module is
 still correct wherever ``OLLAMA_BASE_URL`` genuinely is host-reachable
@@ -81,8 +87,9 @@ _LAB_PDF_FIXTURE = _SERVICE_ROOT / "tests" / "fixtures" / "lab_report_synthetic.
 sys.path.insert(0, str(_REPO_ROOT / "evals"))
 
 from app.config import get_settings  # noqa: E402
-from app.ingestion import LocalIngestionStore, attach_and_extract  # noqa: E402
+from app.ingestion import LocalIngestionStore  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
+from app.supervisor import IngestSubTask, IntakeExtractorWorker, VisionModelMisconfiguredError  # noqa: E402
 from fixtures.seed import ALLERGY_CONFLICT_PUBPID, SeedError, get_pid_for_pubpid  # noqa: E402
 
 
@@ -113,15 +120,19 @@ def seed_demo_documents() -> int:
     if _already_ingested(store, patient_id):
         return patient_id
 
-    ollama_client = OllamaClient.from_settings(settings)
-    result = attach_and_extract(
-        patient_id,
-        _LAB_PDF_FIXTURE,
-        "lab_pdf",
-        ollama_client=ollama_client,
+    vision_client = OllamaClient.from_settings(settings, model=settings.copilot_vision_model)
+    worker = IntakeExtractorWorker(
+        ollama_client=vision_client,
         document_store=store,
         fact_store=store,
+        vision_model_capability_check=settings.copilot_vision_model_capability_check,
     )
+    try:
+        result = worker.run(
+            IngestSubTask(patient_id=patient_id, file_path=str(_LAB_PDF_FIXTURE), doc_type="lab_pdf")
+        )
+    except VisionModelMisconfiguredError as exc:
+        raise DemoDocumentSeedError(str(exc)) from exc
     if result.failed_pages:
         raise DemoDocumentSeedError(
             f"lab PDF ingestion had failed pages {result.failed_pages} for patient_id={patient_id} "

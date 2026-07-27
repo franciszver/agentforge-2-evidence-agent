@@ -126,10 +126,46 @@ class Settings(BaseSettings):
     openemr_api_timeout_seconds: float = 10.0
 
     # Model served by the internal Ollama instance and per-request timeout /
-    # retry policy for ``OllamaClient`` (app/ollama_client.py).
+    # retry policy for ``OllamaClient`` (app/ollama_client.py). Text-only --
+    # the chat/extract/reranker roles' Ollama ROLLBACK path (COPILOT_LLM_
+    # ENGINE=ollama, app.chat.get_text_llm_client) instantly reverts to
+    # this model, so its default and meaning must NOT be repurposed for
+    # vision (see copilot_vision_model below, issue #204).
     ollama_model: str = "qwen3:4b"
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
+    # Issue #204 (gate-3 finding on #194): the document-ingestion VISION role
+    # (app.supervisor.IntakeExtractorWorker, built by
+    # app.chat._build_evidence_workers) used to share ``ollama_model`` above
+    # with the text rollback path -- so a plain `docker compose ... up`,
+    # with no per-call ``OLLAMA_MODEL`` override, wired ingestion to the
+    # TEXT-ONLY ``qwen3:4b``. This is a dedicated setting instead, defaulting
+    # to the vision-capable model docs/DEMO_SCRIPT.md's setup step 5 used to
+    # require an operator to remember as a per-call ``OLLAMA_MODEL`` env
+    # override -- both scripts/ingest_demo_pdf.py and
+    # scripts/seed_demo_documents.py now dispatch through
+    # app.supervisor.IntakeExtractorWorker (the same worker class
+    # app.chat._build_evidence_workers builds for /chat), so the default and
+    # its guard are decided here, not re-derived at each call site.
+    # app.ollama_client.is_vision_capable_model() is also consulted at
+    # ingestion-call time (fail-closed) so a future misconfiguration of
+    # THIS setting can't silently regress to the same bug.
+    copilot_vision_model: str = "qwen2.5vl:7b"
+    # Issue #204 (gate-1 finding on #206): is_vision_capable_model() is a
+    # best-effort, name-based heuristic (app/ollama_client.py) -- it can
+    # wrongly REJECT a genuinely vision-capable model whose name it doesn't
+    # recognize (e.g. ``minicpm-v`` before it was added to the marker list,
+    # a digest-pinned reference like ``sha256:3a8f...`` with no human-
+    # readable segment, or an operator's custom re-tag of a VLM such as
+    # ``clinic-doc-reader:v3``). Disabling this setting is the operator
+    # ASSERTING, out of band, that ``copilot_vision_model`` above is in fact
+    # vision-capable despite failing the name check -- ingestion's no-
+    # fabrication contract (fail-closed rather than a guessed value on
+    # illegible fields) depends entirely on that assertion being true. A
+    # wrong assertion here silently reintroduces the exact bug #204 fixed:
+    # an image-bearing document handed to a model that cannot read it.
+    # Default True (safe): the name check runs and fails closed.
+    copilot_vision_model_capability_check: bool = True
     # Dense-embedding model for hybrid guideline-corpus retrieval (P3.3,
     # app/retrieval.py) -- distinct from ollama_model (chat/extraction). Only
     # consulted when copilot_embed_engine == "ollama" (P3.10b, see below);

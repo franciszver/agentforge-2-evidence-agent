@@ -1397,8 +1397,9 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     without touching that singleton.
 
     The intake-extractor worker is real (not a stub) -- it shares this same
-    ``LocalIngestionStore``/``OllamaClient`` wiring ``app.documents`` already
-    uses -- but /chat still never dispatches an ``IngestSubTask``: ingesting
+    ``LocalIngestionStore`` wiring ``app.documents`` already uses (its own,
+    vision-model ``OllamaClient``, per issue #204 below) -- but /chat still
+    never dispatches an ``IngestSubTask``: ingesting
     a NEW document stays a separate concern from a chat turn. Constructing a
     real worker anyway costs nothing (it is never invoked from here) and
     keeps ``Supervisor`` construction uniform. Per-patient fact citations
@@ -1414,12 +1415,23 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     #52c). The reranker's LLM-as-judge relevance score is selectable via
     ``settings.copilot_llm_engine`` (``get_text_llm_client``).
 
+    Issue #204: the intake-extractor's ``OllamaClient`` is now built as a
+    SEPARATE instance from ``ollama_client`` below, on
+    ``settings.copilot_vision_model`` (default ``qwen2.5vl:7b``) rather than
+    sharing ``ollama_model`` (the text/embed/rerank fallback role's own
+    default and rollback path, which this must not repurpose). Two
+    ``httpx.Client``s means two connection pools for the vision role vs.
+    the shared text/embed/rerank one below -- an accepted, small cost for
+    no longer depending on an operator-supplied ``OLLAMA_MODEL`` override
+    to get a vision-capable model on the ingestion path.
+
     P3.10b (epic #52 step 2): the embedder (dense-vector retrieval,
     ``nomic-embed-text``) is selectable via its OWN flag,
     ``settings.copilot_embed_engine`` -- defaulting to
     ``LlamaServerEmbedClient`` (a second, dedicated llama-server instance
     running in ``--embedding`` mode) rather than ``OllamaClient``.
     """
+    vision_client = OllamaClient.from_settings(settings, model=settings.copilot_vision_model)
     ollama_client = OllamaClient.from_settings(settings)
     embedder = LlamaServerEmbedClient.from_settings(settings) if _wants_llama_server_embed(settings) else ollama_client
     retriever = build_retriever_from_corpus(embedder=embedder)
@@ -1443,7 +1455,12 @@ def _build_evidence_workers(settings: Settings) -> tuple[IntakeExtractorWorker, 
     reranker = Reranker(OllamaRerankScorer(text_llm_client))
     ingestion_store = LocalIngestionStore(settings.copilot_ingestion_base_dir)
     return (
-        IntakeExtractorWorker(ollama_client=ollama_client, document_store=ingestion_store, fact_store=ingestion_store),
+        IntakeExtractorWorker(
+            ollama_client=vision_client,
+            document_store=ingestion_store,
+            fact_store=ingestion_store,
+            vision_model_capability_check=settings.copilot_vision_model_capability_check,
+        ),
         EvidenceRetrieverWorker(retriever=retriever, reranker=reranker),
     )
 

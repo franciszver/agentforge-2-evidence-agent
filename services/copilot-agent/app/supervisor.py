@@ -54,6 +54,7 @@ from typing import Any, Literal, Protocol
 
 from app.correlation import SpanContext, span_scope
 from app.ingestion import DocumentStore, FactStore, IngestionResult, attach_and_extract
+from app.ollama_client import is_vision_capable_model
 from app.reranking import Reranker, retrieve_and_rerank
 from app.retrieval import HybridRetriever
 from app.schemas.reranking import RerankedChunk
@@ -134,17 +135,54 @@ class Worker(Protocol):
     def run(self, sub_task: Any) -> Any: ...
 
 
+class VisionModelMisconfiguredError(Exception):
+    """Raised by ``IntakeExtractorWorker.run`` (issue #204) when its
+    configured ``ollama_client.model`` is not vision-capable
+    (``app.ollama_client.is_vision_capable_model``).
+
+    Fail-closed: document ingestion is a safety-contract path ("not found"
+    rather than a guessed value on illegible fields), and handing an
+    image-bearing document to a text-only model is exactly the condition
+    most likely to violate that contract. Raised BEFORE any call reaches
+    the model -- zero pages are sent -- rather than after silently
+    producing text-model output on page images it cannot read.
+    """
+
+
 class IntakeExtractorWorker:
     """Thin wrapper around ``app.ingestion.attach_and_extract`` (P3.1/P3.2)."""
 
     name = "intake-extractor"
 
-    def __init__(self, *, ollama_client: Any, document_store: DocumentStore, fact_store: FactStore) -> None:
+    def __init__(
+        self,
+        *,
+        ollama_client: Any,
+        document_store: DocumentStore,
+        fact_store: FactStore,
+        vision_model_capability_check: bool = True,
+    ) -> None:
         self._ollama_client = ollama_client
         self._document_store = document_store
         self._fact_store = fact_store
+        # Issue #204 (gate-1 finding on #206): operator escape hatch for
+        # is_vision_capable_model()'s false rejections -- see
+        # Settings.copilot_vision_model_capability_check (app/config.py) for
+        # what disabling this asserts and why the safe default is True.
+        self._vision_model_capability_check = vision_model_capability_check
 
     def run(self, sub_task: IngestSubTask) -> IngestionResult:
+        if self._vision_model_capability_check:
+            model = self._ollama_client.model
+            if not is_vision_capable_model(model):
+                raise VisionModelMisconfiguredError(
+                    f"IntakeExtractorWorker refuses to run: configured model {model!r} failed a "
+                    "name-based vision-capability check (app.ollama_client.is_vision_capable_model), "
+                    "which may not recognize a model that is genuinely vision-capable (e.g. a "
+                    "digest-pinned reference or a custom re-tag). If you have verified this model "
+                    "can in fact process images, set copilot_vision_model_capability_check=false to "
+                    "skip this check."
+                )
         return attach_and_extract(
             sub_task.patient_id,
             sub_task.file_path,
