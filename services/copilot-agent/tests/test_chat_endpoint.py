@@ -102,37 +102,6 @@ def _reset_overrides() -> Iterator[None]:
     app.dependency_overrides.clear()
 
 
-@pytest.fixture(autouse=True)
-def _reset_process_wide_singletons() -> Iterator[None]:
-    """Gate 3 (Opus) MINOR finding: ``chat._token_introspector`` and
-    ``chat._dev_token_bridge`` are lazily-built, process-wide singletons
-    (``get_token_introspector`` / ``get_dev_token_bridge``) baked from
-    whatever ``Settings`` were live the FIRST time either is called. No
-    fixture reset them, so a test that exercises the real (non-overridden)
-    introspection or dev-bridge path -- e.g. the flag precedence test below,
-    or the fail-closed-default endpoint test -- could seed a singleton bound
-    to one test's env/creds that then silently leaks into a LATER test under
-    ``pytest-randomly`` reordering. Mirrors ``test_launch_binding.py``'s
-    ``_reset_binder_singleton`` for ``chat._launch_patient_binder``.
-
-    Also resets ``chat._default_roster_cache`` (#174): ``get_roster_cache``
-    is a top-level dependency of ``chat_endpoint`` (evaluated on EVERY
-    ``/chat`` call, not just when a "switch to <Name>" construction fires),
-    so without this reset the first test in the session to hit a real
-    (non-overridden) ``get_roster_cache`` call would seed a cached roster
-    that could silently leak into a later roster-assertion test under
-    ``pytest-randomly`` reordering -- the same leak class as the two
-    singletons above, just for a cache instead of a validator/bridge.
-    """
-    chat._token_introspector = None
-    chat._dev_token_bridge = None
-    chat._default_roster_cache = None
-    yield
-    chat._token_introspector = None
-    chat._dev_token_bridge = None
-    chat._default_roster_cache = None
-
-
 def _iter_sse_events(text: str) -> list[tuple[str, str]]:
     """Parse ``event: X\\ndata: Y\\n\\n`` blocks into (event, data) pairs."""
     events: list[tuple[str, str]] = []
@@ -993,8 +962,9 @@ def test_per_user_token_enabled_wins_over_dev_accept_any_bearer_token(monkeypatc
     # (e.g. inside the provisioned agent container) -- made a genuine
     # outbound POST of a garbage token to OpenEMR's introspection endpoint,
     # AND seeded the process-wide ``chat._token_introspector`` singleton
-    # (reset by the ``_reset_process_wide_singletons`` fixture above, but the
-    # network call itself is still undesirable in a "hermetic" suite). This
+    # (reset by the ``_reset_process_wide_singletons`` fixture in
+    # ``tests/conftest.py``, but the network call itself is still undesirable
+    # in a "hermetic" suite). This
     # injects a fake introspector instead, exactly as ``test_introspection
     # .py`` does for the introspection unit tests themselves -- the
     # precedence decision under test never needs a real network round trip.

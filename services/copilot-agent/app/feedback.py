@@ -29,34 +29,40 @@ Auth: gated by the SAME bearer-token seam as ``POST /chat``
 to prevent anonymous feedback spam. Reuses the seam rather than
 reimplementing a second one.
 
-Ownership control (#180 -- closes the MEDIUM-severity gap #176 re-derived;
-was previously mis-scored LOW and deferred to the flag-on token-introspection
-path). Before persisting, the endpoint verifies the presented bearer token
-matches the token that originated ``target_correlation_id``'s trace, via
-``TraceStore.caller_owns_trace`` -- see that method's docstring and
-``app.trace_store.hash_owner_token``'s docstring for the full reasoning. In
-short: our ``IntrospectionResult`` (``app.openemr_auth.introspect_token``)
-does not parse the introspection response's ``sub`` claim today -- it keeps
-only ``active``/``exp``/the SMART launch ``patient`` and drops the rest of
-the payload -- so it is not itself a checkable per-user principal as things
-stand; OpenEMR's introspection endpoint DOES return ``sub`` (OpenEMR
-signature-verifies it when minting the token), so binding ownership to
-``sub`` once ``copilot_per_user_token_enabled`` is on is real, available
-follow-up work, not a protocol limitation -- tracked separately, not solved
-here. The dev-bridge, flag-off path is the one where no per-user principal
-is obtainable at all even in principle: the dev token's username claim is
-HMAC'd with a per-session CSRF-derived signing key
-(``AgentTokenBroker``/``DevAgentToken`` on the PHP side) that this agent
-never verifies (see ``app.chat._user_identity_from_token``'s docstring), so
-that claim cannot be trusted as a principal regardless of what this service
-chooses to parse. Either way, the raw bearer token itself is the one
-caller-distinguishing value available TODAY at both ``/chat`` and
-``/feedback``, and the panel already caches exactly one token per browser
-session and reuses it for both calls (see
-``app.trace_store.hash_owner_token``'s docstring), so "presented the same
-token that started this trace" is a sound, implementable proxy for
-ownership that works identically regardless of
-``copilot_per_user_token_enabled`` -- and needed no flag gate. A correlation
+Ownership control (#180, extended by #185 -- closes the MEDIUM-severity gap
+#176 re-derived; was previously mis-scored LOW and deferred to the flag-on
+token-introspection path). Before persisting, the endpoint verifies the
+caller matches the principal that originated ``target_correlation_id``'s
+trace, via ``TraceStore.caller_owns_trace`` -- see that method's docstring
+for the full mixed-regime matrix and ``app.trace_store.hash_owner_token``'s /
+``app.openemr_auth.IntrospectionResult.sub``'s docstrings for the two
+regimes' full reasoning. In short, TWO regimes, chosen per-row (never mixed
+on one row, see ``OwnerKind``):
+
+  * ``copilot_per_user_token_enabled`` ON: ownership binds to OpenEMR's
+    signature-verified introspection ``sub`` claim (resolved via
+    ``app.chat.get_subject_resolver``, the SAME token-to-subject mapping
+    ``/chat`` uses to record it) -- a real per-user principal that survives
+    token reissue and a service restart, unlike a token hash (see
+    ``hash_owner_token``'s docstring on the restart failure mode it
+    inherits from an unset ``trace_args_hash_secret``).
+  * Flag OFF (the dev-bridge path): no per-user principal is obtainable even
+    in principle -- the dev token's ``username`` claim is HMAC'd with a
+    per-session CSRF-derived signing key (``AgentTokenBroker``/
+    ``DevAgentToken`` on the PHP side) that this agent never verifies (see
+    ``app.chat._user_identity_from_token``'s docstring), so that claim
+    cannot be trusted as a principal regardless of what this service
+    parses. Ownership instead binds to the raw bearer token itself (hashed,
+    never stored raw) -- the panel caches exactly one token per browser
+    session and reuses it for both ``/chat`` and ``/feedback`` (see
+    ``app.trace_store.hash_owner_token``'s docstring), so "presented the
+    same token that started this trace" is a sound proxy for ownership in
+    this regime.
+
+A row written under one regime is NEVER claimable under the other -- a flag
+flip after the fact does not retroactively upgrade or downgrade an existing
+row's ownership, it only changes which regime NEW rows are written under
+(see ``caller_owns_trace``'s docstring for the full matrix). A correlation
 id with no recorded owner (no ``REQUEST`` span, or one written before #180)
 is rejected, not treated as unclaimed -- see ``caller_owns_trace``'s
 fail-closed cases. A caller holding a foreign but otherwise-valid token can
@@ -82,9 +88,11 @@ from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.chat import (
+    SubjectResolver,
     TokenValidationError,
     TokenValidator,
     extract_bearer_token,
+    get_subject_resolver,
     get_token_validator,
     get_trace_store,
 )
@@ -114,6 +122,7 @@ def feedback_endpoint(
     request: FeedbackRequest,
     authorization: str | None = Header(default=None),
     validator: TokenValidator = Depends(get_token_validator),
+    subject_resolver: SubjectResolver = Depends(get_subject_resolver),
     trace_store: TraceStore = Depends(get_trace_store),
 ) -> FeedbackResponse:
     # Plain `def`, not `async def`: record_feedback_span does blocking
@@ -126,12 +135,19 @@ def feedback_endpoint(
     except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="invalid or missing token") from exc
 
-    # #180 ownership check (see module docstring's "Ownership control"
-    # section): reject unless the presented token is the SAME one that
-    # originated target_correlation_id's trace. Checked after token
-    # validation (a 401 for a garbage/expired token takes priority) and
-    # before the write -- a forged comment must never reach the store.
-    if not trace_store.caller_owns_trace(request.correlation_id, token):
+    # #185: resolve the caller's OpenEMR subject (flag ON, a cache hit off
+    # the SAME introspection ``validator`` just performed above) or None
+    # (flag OFF). Resolved once and reused for both the ownership check and
+    # the FEEDBACK span's own attribution, below.
+    subject = subject_resolver(token)
+
+    # #180/#185 ownership check (see module docstring's "Ownership control"
+    # section): reject unless this caller matches the principal (subject or
+    # token, depending on the ORIGINATING row's own regime) that originated
+    # target_correlation_id's trace. Checked after token validation (a 401
+    # for a garbage/expired token takes priority) and before the write -- a
+    # forged comment must never reach the store.
+    if not trace_store.caller_owns_trace(request.correlation_id, token, subject=subject):
         _logger.warning(
             "feedback rejected: caller does not own target_correlation_id",
             extra={"target_correlation_id": request.correlation_id},
@@ -147,6 +163,7 @@ def feedback_endpoint(
             feedback_thumb=request.thumb,
             feedback_comment=request.comment,
             owner_token=token,
+            owner_subject=subject,
         )
     except Exception as exc:
         # Hard fail (see module docstring): never expose exc's message

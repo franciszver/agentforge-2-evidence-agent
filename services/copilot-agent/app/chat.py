@@ -495,6 +495,100 @@ def get_launch_binding_checker() -> LaunchBindingChecker:
     return _default_launch_binding_checker
 
 
+SubjectResolver = Callable[[str], str | None]
+
+
+def _default_subject_resolver(token: str) -> str | None:
+    """Flag-OFF default: no verified subject is ever available in the
+    dev-bridge regime (#185) -- see ``app.trace_store.hash_owner_token``'s
+    docstring for why the dev token's own claims cannot substitute for one.
+    Always ``None`` so ownership recording falls back to the #180 token-hash
+    regime (``TraceStore._owner_columns``)."""
+    return None
+
+
+class _IntrospectionSubjectResolver:
+    """Callable ``SubjectResolver`` backed by an ``Introspector`` (#185).
+
+    Exposes ``peek_cached`` -- the same duck-typed optional capability
+    ``_IntrospectionValidator`` exposes for ``_validate_token`` -- so
+    ``_resolve_subject`` (F3, chat_endpoint's caller) can decide whether
+    resolving this token is a cache hit (safe in-loop) or a cache miss (must
+    be dispatched to the threadpool; a real, blocking introspection HTTP
+    call otherwise runs directly on the event loop).
+    """
+
+    def __init__(self, introspector: Introspector) -> None:
+        self._introspector = introspector
+
+    def __call__(self, token: str) -> str | None:
+        return self._introspector.introspect(token).sub
+
+    def peek_cached(self, token: str) -> IntrospectionResult | None:
+        peek = getattr(self._introspector, "peek_cached", None)
+        return peek(token) if peek is not None else None
+
+
+def get_subject_resolver() -> SubjectResolver:
+    """FastAPI dependency: resolve a bearer token to its OpenEMR subject id
+    (#185). Override in tests.
+
+    Flag ON (``copilot_per_user_token_enabled``): returns OpenEMR's
+    signature-verified introspection ``sub`` claim
+    (``app.openemr_auth.IntrospectionResult.sub``) for a token, via the SAME
+    process-wide ``TokenIntrospector`` the token validator and
+    ``LaunchPatientBinder`` already use -- so this call is USUALLY a cache
+    hit off the same introspection ``get_authenticated_token``/
+    ``launch_binding_checker`` already performed for this token. It is not
+    *guaranteed* to be one: the cache deadline is ``min(now+ttl, exp)`` (see
+    ``TokenIntrospector``), so a token whose ``exp`` falls inside the window
+    between that earlier validation and this resolution can still miss and
+    make a second, real HTTP round trip. ``_resolve_subject`` (chat_endpoint's
+    caller) handles that miss the same way ``_validate_token`` handles one --
+    see its docstring. Flag OFF: the default no-op above, so
+    ``/chat``/``/feedback`` stay byte-identical to today's #180 behaviour.
+
+    Shared by ``app.chat`` (records the ``REQUEST`` span's owner) and
+    ``app.feedback`` (checks + records the ``FEEDBACK`` span's owner) so
+    both sides of the #185 ownership check resolve a token to a subject the
+    exact same way.
+    """
+    if get_settings().copilot_per_user_token_enabled:
+        return _IntrospectionSubjectResolver(get_token_introspector())
+    return _default_subject_resolver
+
+
+async def _resolve_subject(subject_resolver: SubjectResolver, token: str) -> str | None:
+    """Invoke ``subject_resolver(token)``, dispatching to FastAPI's threadpool
+    only when necessary (F3, mirrors ``_validate_token``).
+
+    A cache-MISS introspection makes a real, blocking HTTP call and must not
+    occupy the event loop inside the ``async`` ``chat_endpoint`` body. A
+    cache-HIT (or the flag-off no-op, which does no I/O at all) is cheap
+    enough to call directly, in-loop.
+
+    ``subject_resolver`` optionally exposes ``peek_cached`` (see
+    ``_IntrospectionSubjectResolver``); its absence (the flag-off default, or
+    any ``SubjectResolver`` double without it, e.g. a test override) means "no
+    fast path available" -> call in-loop, byte-identical to before this
+    dispatcher existed.
+
+    This mirrors ``_validate_token`` only for the *blocking* concern above --
+    it does NOT mirror it for the *value* on a miss. ``_validate_token``'s
+    failure raises (401, request never reaches this body). A failed/erroring
+    ``introspect`` here never raises -- it fails closed to ``sub=None``
+    (see ``Introspector.introspect``), which this function passes straight
+    through as ``None``. The caller (``chat_endpoint``) then silently
+    downgrades this trace's ownership from the SUBJECT regime to #180's
+    TOKEN_HASH regime instead of rejecting the request -- logged as a
+    warning at the call site so that downgrade is at least diagnosable.
+    """
+    peek_cached = getattr(subject_resolver, "peek_cached", None)
+    if peek_cached is None or peek_cached(token) is not None:
+        return subject_resolver(token)
+    return await run_in_threadpool(subject_resolver, token)
+
+
 _dev_token_bridge: DevTokenBridge | None = None
 
 
@@ -1669,6 +1763,7 @@ def _stream_chat(
     message: str,
     user: str,
     owner_token: str,
+    owner_subject: str | None = None,
     clock: Clock,
     roster_cache: RosterCache,
     evidence_retriever: EvidenceRetriever = _no_op_evidence_retriever,
@@ -1954,6 +2049,7 @@ def _stream_chat(
                 end_ts=time.time(),
                 ok=request_ok,
                 owner_token=owner_token,
+                owner_subject=owner_subject,
             ),
         )
 
@@ -2012,10 +2108,16 @@ def extract_bearer_token(authorization: str | None) -> str:
 # ``test_chat_endpoint.py::test_unauthenticated_chat_never_touches_dev_token_bridge_transport``)
 # will catch it. Do not "fix" this by reordering parameters here -- signature
 # order on ``chat_endpoint`` itself has never been what makes this safe.
+# ``get_subject_resolver`` (#185) fits the same "no I/O at resolution time"
+# invariant: resolving the dependency only builds a closure (flag ON) or
+# returns the flag-OFF no-op -- the actual introspection call happens
+# explicitly in the body, AFTER get_authenticated_token has already
+# succeeded (same placement as ``_user_identity_from_token`` below).
 async def chat_endpoint(
     request: ChatRequest,
     token: str = Depends(get_authenticated_token),
     launch_binding_checker: LaunchBindingChecker = Depends(get_launch_binding_checker),
+    subject_resolver: SubjectResolver = Depends(get_subject_resolver),
     planner_factory: PlannerFactory = Depends(get_planner_factory),
     extractor: ClaimExtractorLike = Depends(get_claim_extractor),
     store: ConversationStore = Depends(get_conversation_store),
@@ -2051,6 +2153,23 @@ async def chat_endpoint(
         ) from exc
 
     user = _user_identity_from_token(token)
+    # #185: resolves to OpenEMR's verified subject when
+    # copilot_per_user_token_enabled is on (usually a cache hit off the SAME
+    # introspection get_authenticated_token/launch_binding_checker already
+    # performed for this token above -- see get_subject_resolver's
+    # docstring for the rare miss case, handled by _resolve_subject the same
+    # way _validate_token handles one), or None flag-off. Recorded on the
+    # REQUEST span below so TraceStore._owner_columns can pick the #185
+    # subject-ownership regime instead of #180's token-hash one.
+    owner_subject = await _resolve_subject(subject_resolver, token)
+    if get_settings().copilot_per_user_token_enabled and owner_subject is None:
+        # #185: a failed/miss subject resolution silently downgrades this
+        # trace's ownership regime from SUBJECT to TOKEN_HASH (see
+        # _resolve_subject's docstring) -- log that fact so a token-rotation
+        # window that later makes this trace's feedback unclaimable is
+        # diagnosable after the fact. No token, hash, or PHI: correlation_id
+        # is already stamped on every LogRecord by app.correlation's factory.
+        _logger.warning("chat request: subject resolution failed; trace owned by token-hash fallback")
 
     planner = planner_factory(request.patient_id)
 
@@ -2079,6 +2198,7 @@ async def chat_endpoint(
             message=request.message,
             user=user,
             owner_token=token,
+            owner_subject=owner_subject,
             clock=clock,
             roster_cache=roster_cache,
             evidence_retriever=evidence_retriever,

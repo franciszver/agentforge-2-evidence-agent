@@ -401,6 +401,24 @@ Stated plainly, in order of what would need to change:
    UX choice, and enabling the real per-user path is a documented, **one-line
    flag flip** the owner controls. Framed precisely: proven live, flag-gated,
    default off — not shipped-on-by-default.
+
+   **Flipping ON is effectively one-way for feedback ownership (#185).**
+   Claimability of a trace's feedback is decided exclusively by that trace's
+   `POST /chat` **REQUEST span** — `TraceStore.caller_owns_trace` filters to
+   `span_type == SpanType.REQUEST` and reads the first such span's own
+   `owner_kind`/`owner_subject`/`owner_token_hash`; a `FEEDBACK` row's own
+   `owner_kind` is never consulted for authorization. So when a `REQUEST` span
+   is written while `copilot_per_user_token_enabled` is ON, its ownership is
+   recorded against the caller's verified OpenEMR `sub` (subject regime), not
+   a bearer-token hash, and every `FEEDBACK` row filed against that same trace
+   is claimable only under that regime. Rolling the flag back OFF does not
+   make such a trace reclaimable under the token-hash regime — the REQUEST
+   span fails closed for the subject regime when the caller has no subject to
+   offer (see `caller_owns_trace`'s docstring for the full mixed-regime
+   matrix), the correct choice to avoid re-litigating ownership under a
+   weaker regime, but it means there is **no recovery path**: a clinician's
+   accumulated feedback on a trace whose REQUEST span was written under
+   SUBJECT becomes permanently unclaimable once the flag is flipped back OFF.
 2. **Real token introspection at `/chat` — built.** As of #168 (VULN-0001)
    the shipped default `TokenValidator` is fail-closed, not a stub — every
    token is rejected unless the explicit, dev-only
@@ -425,10 +443,10 @@ Stated plainly, in order of what would need to change:
    anywhere in `app/` or `tests/`) and is shared by every other sync
    dependency/endpoint in the process: `/health`, `GET /chat`, `/dashboard`,
    `/review`, `/review/promote`, `/feedback`, `/documents/{source_id}`,
-   `get_planner_factory` (`chat.py:577`), plus
-   `_resolve_conversation_patient_name` (`chat.py:1961`, itself `async def`
+   `get_planner_factory` (`chat.py:661`), plus
+   `_resolve_conversation_patient_name` (`chat.py:2047`, itself `async def`
    but dispatches its own blocking resolve via `run_in_threadpool` at
-   `chat.py:1981`). Only `/ready` and `POST /chat`'s own body are otherwise
+   `chat.py:2067`). Only `/ready` and `POST /chat`'s own body are otherwise
    async. Measured: 40 concurrent unauthenticated requests drove 40/40
    concurrent validator calls (watermark == pool capacity); with the pool
    saturated, `/health` (sync, shares the pool) measured +1.25s of added

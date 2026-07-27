@@ -89,11 +89,45 @@ class IntrospectionResult:
     was issued for -- a FHIR **UUID** string echoed verbatim by OpenEMR's
     introspection ``patient`` key (see ``TokenIntrospectionRestController``);
     ``None`` when the token carries no launch context.
+
+    ``sub`` (#185) is OpenEMR's internal user id for the token's holder --
+    ``JsonWebKeyParser::parseAccessToken`` sets it from the JWT's own ``sub``
+    claim (``'sub' => $token->claims()->get('sub'), // user_id``,
+    ``src/Common/Auth/OpenIDConnect/JWT/JsonWebKeyParser.php:72``) and that
+    claim is signature-verified before ``active`` is ever reported true (the
+    ``SignedWith(new Sha256(), ...)`` check a few lines below flips
+    ``active`` to ``false``/``status`` to ``failed_verification`` on a bad
+    signature -- a ``sub`` on an ``active:true`` result was NOT forged in
+    transit). OpenEMR's own introspection controller treats it as the trust
+    anchor too: ``TokenIntrospectionRestController`` calls
+    ``$this->getTrustedUserService()->getTrustedUser($result['client_id'],
+    $result['sub'])`` (line 390) and marks the token revoked if that lookup
+    is empty -- ``sub`` is exactly the value OpenEMR itself authorizes
+    against, not merely an echoed claim. This is the checkable per-user
+    principal ``app.trace_store``'s subject-based ownership binding (#185)
+    is built on. ``None`` only if the introspection payload omits it (should
+    not happen for an ``active:true`` access-token result per the source
+    above, but parsed defensively all the same).
+
+    ``fhir_user`` (#185) is the FHIR reference OpenEMR derives from the SAME
+    underlying user id for FHIR-consumer convenience
+    (``$result['fhirUser'] = $fhirUserClaim->getFhirUser($dbTokenWithContext['user_id'])``,
+    ``TokenIntrospectionRestController.php:422``) -- e.g.
+    ``"Practitioner/<uuid>"``. Parsed here for completeness (it is part of
+    the same ``json_encode($result)`` response body at line 459) but
+    deliberately NOT used as the ownership principal: it is a display/
+    linkage reference derived from ``sub``, not itself compared by any
+    OpenEMR trust check, so binding ownership to it would add an indirection
+    with no security benefit over binding to ``sub`` directly. ``None`` when
+    the payload omits it (e.g. a refresh-token introspection, which never
+    sets ``fhirUser``).
     """
 
     active: bool
     exp: int | None
     patient: str | None = None
+    sub: str | None = None
+    fhir_user: str | None = None
 
 
 def introspect_token(
@@ -121,6 +155,11 @@ def introspect_token(
     ``IntrospectionResult(active=False, exp=None)`` so the caller maps them to
     a rejection. Never logs (nor otherwise surfaces) the token or the client
     secret.
+
+    ``sub``/``fhirUser`` (#185) are parsed the same defensive way as
+    ``patient``: only a non-empty ``str`` is kept, anything else (missing,
+    wrong type, blank) becomes ``None`` -- see ``IntrospectionResult``'s
+    docstring for what each is used for.
     """
     url = f"{base_url}{introspect_path}"
     try:
@@ -149,10 +188,14 @@ def introspect_token(
 
     exp = payload.get("exp")
     patient = payload.get("patient")
+    sub = payload.get("sub")
+    fhir_user = payload.get("fhirUser")
     return IntrospectionResult(
         active=True,
         exp=exp if isinstance(exp, int) else None,
         patient=patient if isinstance(patient, str) and patient else None,
+        sub=sub if isinstance(sub, str) and sub else None,
+        fhir_user=fhir_user if isinstance(fhir_user, str) and fhir_user else None,
     )
 
 
