@@ -68,33 +68,55 @@ def _load_pinned_spec() -> dict[str, Any]:
 # change to the actual contract. Stripping them never removes a `required`
 # entry, a `type`, an `enum` value, a `$ref`, or a path/parameter -- only
 # cosmetic text.
+#
+# CAUTION: these are also legitimate property names. A schema can have a
+# field literally named `title`/`description`/`summary`/`example`/`examples`
+# (this app already has several -- app/schemas/retrieval.py, app/schemas/
+# tools.py, app/quarantine.py, app/planner.py, app/retrieval.py) and a
+# response `headers` map can contain a header with one of these names. Only
+# strip a key when its PARENT dict is not a `properties` or `headers` map --
+# see `_strip_presentation_metadata`.
 _PRESENTATION_METADATA_KEYS = frozenset({"description", "title", "summary", "examples", "example"})
 
 # #184 diagnosis: reproduced the standing local failure with an older
-# fastapi/pydantic pin (fastapi==0.115.0, pydantic==2.9.0 vs. this repo's
-# fastapi==0.139.2, pydantic==2.13.4) and diffed the two schemas key-by-key.
-# The ENTIRE delta -- across all 8 paths and all 8 component schemas -- was
-# two optional properties on this one component: `ValidationError.properties`
-# gained `input`/`ctx` under newer pydantic. `ValidationError` is FastAPI's
-# own built-in request-validation-error model (confirmed via
-# `git grep ValidationError services/copilot-agent/app` -- no app module
-# defines or imports it), and its `required` list (`loc`, `msg`, `type`) is
-# identical across both versions tested, so this is a framework rendering
-# detail, not a change to anything this app authored. Scoped to this one
-# named schema (not a blanket "ignore extra optional properties" rule) so a
-# real optional-property change to one of OUR models (ChatRequest,
-# FeedbackRequest, etc.) still fails the drift guard.
+# fastapi pin (fastapi==0.115.0 vs. this repo's fastapi==0.139.2 -- both
+# environments run the same pydantic==2.13.4) and diffed the two schemas
+# key-by-key. The ENTIRE delta -- across all 8 paths and all 8 component
+# schemas -- was two optional properties on this one component:
+# `ValidationError.properties` gained `input`/`ctx` under the newer fastapi.
+# `ValidationError` is FastAPI's own built-in request-validation-error model,
+# hardcoded as `validation_error_definition` in `fastapi/openapi/utils.py`
+# (present in 0.139.2, absent in <=0.124.4) -- no app module defines an
+# OpenAPI component schema named `ValidationError`; the component is emitted
+# solely by fastapi's own openapi generation. Its `required` list (`loc`,
+# `msg`, `type`) is identical across both versions tested, so this is a
+# framework rendering detail, not a change to anything this app authored.
+# Scoped to this one named schema (not a blanket "ignore extra optional
+# properties" rule) so a real optional-property change to one of OUR models
+# (ChatRequest, FeedbackRequest, etc.) still fails the drift guard.
 _FRAMEWORK_VERSION_DEPENDENT_SCHEMA_PROPERTIES = {
     "ValidationError": frozenset({"input", "ctx"}),
 }
 
+# #184: dict keys under these container keys are property/header NAMES, not
+# presentation metadata -- even when a name happens to collide with one of
+# `_PRESENTATION_METADATA_KEYS` (e.g. a schema property literally named
+# `title`).
+_METADATA_EXEMPT_CONTAINER_KEYS = frozenset({"properties", "headers"})
 
-def _strip_presentation_metadata(node: Any) -> Any:
+
+def _strip_presentation_metadata(node: Any, *, is_metadata_exempt_container: bool = False) -> Any:
+    """Strip presentation-only keys, except where the parent dict is a
+    `properties` or `headers` map -- there, every key is a property/header
+    NAME (schema-meaningful), never presentation metadata, regardless of
+    whether it collides with a metadata key like `title` (#184)."""
     if isinstance(node, dict):
         return {
-            key: _strip_presentation_metadata(value)
+            key: _strip_presentation_metadata(
+                value, is_metadata_exempt_container=key in _METADATA_EXEMPT_CONTAINER_KEYS
+            )
             for key, value in node.items()
-            if key not in _PRESENTATION_METADATA_KEYS
+            if is_metadata_exempt_container or key not in _PRESENTATION_METADATA_KEYS
         }
     if isinstance(node, list):
         return [_strip_presentation_metadata(item) for item in node]
@@ -178,13 +200,14 @@ def test_pinned_spec_matches_live_schema() -> None:
     presentation-only keys ``description``/``title``/``summary``/``examples``/
     ``example`` (FastAPI/pydantic render these differently across versions --
     see #184's diagnosis), and the ``input``/``ctx`` debug properties on the
-    framework-injected ``ValidationError`` schema (pydantic-version-dependent,
-    not authored by this app -- confirmed via `git grep ValidationError
-    app/*.py`: no app module defines or imports that component; its
-    ``required`` list is untouched across the pydantic versions tested).
-    Normalization never touches ``required`` lists, so a real field gaining
-    or losing required-ness is still caught even on the ValidationError
-    schema.
+    framework-injected ``ValidationError`` schema (FastAPI-version-dependent,
+    not authored by this app -- no app module defines an OpenAPI component
+    schema named ``ValidationError``; it is emitted by fastapi's own hardcoded
+    ``validation_error_definition`` in ``fastapi/openapi/utils.py``, present
+    in 0.139.2 and absent in <=0.124.4; its ``required`` list is untouched
+    across the fastapi versions tested). Normalization never touches
+    ``required`` lists, so a real field gaining or losing required-ness is
+    still caught even on the ValidationError schema.
     """
     live_spec = _normalize_spec_for_comparison(app.openapi())
     pinned_spec = _normalize_spec_for_comparison(_load_pinned_spec())
@@ -199,10 +222,17 @@ def test_pinned_spec_matches_live_schema() -> None:
 def _normalized_before_and_after(mutate) -> tuple[dict[str, Any], dict[str, Any]]:
     """Shared setup for the mutation-parametrized tests below: deep-copy the
     live schema, apply one mutation, and normalize both the original and the
-    mutated copy for comparison."""
+    mutated copy for comparison.
+
+    #184: asserts the mutation actually changed the PRE-normalization spec.
+    Without this guard a mutate function that happens to set a key to the
+    value it already holds (a no-op) would make
+    ``test_normalization_tolerates_presentation_only_drift`` pass vacuously
+    -- proving nothing about tolerance."""
     live_spec = app.openapi()
     mutated_spec = copy.deepcopy(live_spec)
     mutate(mutated_spec)
+    assert mutated_spec != live_spec, "mutation was a no-op -- it did not change the pre-normalization spec"
     return _normalize_spec_for_comparison(live_spec), _normalize_spec_for_comparison(mutated_spec)
 
 
@@ -261,6 +291,18 @@ def test_normalization_still_catches_structural_drift(mutate, description) -> No
     assert baseline != mutated, f"normalization hid real structural drift: {description}"
 
 
+def _toggle_validation_error_property(spec: dict[str, Any], key: str, added_value: dict[str, Any]) -> None:
+    """Add ``key`` to ``ValidationError.properties`` if absent, or remove it
+    if present -- a real, always-nonzero change regardless of which fastapi
+    version is installed locally (#184: this property is present on
+    fastapi>=0.125, absent on fastapi<=0.124.x)."""
+    properties = spec["components"]["schemas"]["ValidationError"]["properties"]
+    if key in properties:
+        properties.pop(key)
+    else:
+        properties[key] = added_value
+
+
 @pytest.mark.parametrize(
     ("mutate", "description"),
     [
@@ -277,16 +319,16 @@ def test_normalization_still_catches_structural_drift(mutate, description) -> No
             "changing a property's title",
         ),
         (
-            lambda spec: spec["components"]["schemas"]["ValidationError"]["properties"].__setitem__(
-                "input", {"title": "Input"}
-            ),
-            "adding pydantic's version-dependent ValidationError.input property",
+            lambda spec: _toggle_validation_error_property(spec, "input", {"title": "Input"}),
+            "toggling presence of FastAPI's version-dependent ValidationError.input property "
+            "(present on fastapi>=0.125, absent on fastapi<=0.124.x -- exercised in both directions "
+            "so this can't pass by accident regardless of which fastapi is installed locally)",
         ),
         (
-            lambda spec: spec["components"]["schemas"]["ValidationError"]["properties"].__setitem__(
-                "ctx", {"title": "Context", "type": "object"}
-            ),
-            "adding pydantic's version-dependent ValidationError.ctx property",
+            lambda spec: _toggle_validation_error_property(spec, "ctx", {"title": "Context", "type": "object"}),
+            "toggling presence of FastAPI's version-dependent ValidationError.ctx property "
+            "(present on fastapi>=0.125, absent on fastapi<=0.124.x -- exercised in both directions "
+            "so this can't pass by accident regardless of which fastapi is installed locally)",
         ),
     ],
 )
@@ -296,6 +338,71 @@ def test_normalization_tolerates_presentation_only_drift(mutate, description) ->
     baseline, mutated = _normalized_before_and_after(mutate)
 
     assert baseline == mutated, f"normalization failed to absorb presentation-only noise: {description}"
+
+
+def test_strip_presentation_metadata_preserves_properties_named_like_metadata_keys() -> None:
+    """Regression for #184: a schema PROPERTY (or response header) can be
+    literally named `title`/`description`/`summary`/`example`/`examples`
+    (this app has several -- app/schemas/retrieval.py, app/schemas/tools.py,
+    app/quarantine.py, app/planner.py, app/retrieval.py). Those names must
+    survive normalization even though the same words are stripped when they
+    appear as actual presentation metadata one level up."""
+    schema = {
+        "title": "SomeModel",  # presentation metadata -- must be stripped
+        "description": "docstring content",  # presentation metadata -- must be stripped
+        "required": ["title"],
+        "properties": {
+            "title": {"type": "string", "title": "Title"},
+            "description": {"type": "string"},
+            "summary": {"type": "string"},
+            "example": {"type": "string"},
+            "examples": {"type": "array"},
+        },
+    }
+    headers_schema = {"headers": {"title": {"schema": {"type": "string"}}}}
+
+    stripped = _strip_presentation_metadata(schema)
+    stripped_headers = _strip_presentation_metadata(headers_schema)
+
+    assert "title" not in stripped, "top-level presentation metadata `title` was not stripped"
+    assert "description" not in stripped, "top-level presentation metadata `description` was not stripped"
+    assert set(stripped["properties"]) == {"title", "description", "summary", "example", "examples"}, (
+        "properties literally named like metadata keys were dropped from the properties map"
+    )
+    # the nested `title` INSIDE the `title` property is real presentation
+    # metadata on that sub-schema and is correctly stripped.
+    assert "title" not in stripped["properties"]["title"]
+    assert stripped["properties"]["title"]["type"] == "string"
+    assert "title" in stripped_headers["headers"], "a header literally named `title` was dropped"
+
+    # removing or re-typing a property that happens to share a name with a
+    # metadata key must still be caught as real drift.
+    removed = copy.deepcopy(schema)
+    removed["properties"].pop("title")
+    assert _strip_presentation_metadata(removed) != stripped, "removing the `title` property went undetected"
+
+    retyped = copy.deepcopy(schema)
+    retyped["properties"]["title"]["type"] = "integer"
+    assert _strip_presentation_metadata(retyped) != stripped, "re-typing the `title` property went undetected"
+
+
+def test_validation_error_carve_out_is_scoped_to_that_one_schema() -> None:
+    """Regression for #184: the `input`/`ctx` tolerance is scoped by name to
+    `ValidationError` only. Injecting the same keys into an app-authored
+    schema (`ChatRequest`) must NOT be tolerated -- proving the carve-out
+    can't silently degrade into a blanket "ignore input/ctx everywhere"
+    rule. See this module's mutation-verification report for the manual
+    check that a blanket rule makes this test fail."""
+
+    def _inject_into_chat_request(spec: dict[str, Any]) -> None:
+        spec["components"]["schemas"]["ChatRequest"]["properties"]["input"] = {"title": "Input"}
+        spec["components"]["schemas"]["ChatRequest"]["properties"]["ctx"] = {"title": "Context", "type": "object"}
+
+    baseline, mutated = _normalized_before_and_after(_inject_into_chat_request)
+
+    assert baseline != mutated, (
+        "the ValidationError-only carve-out is not scoped -- input/ctx on ChatRequest were tolerated too"
+    )
 
 
 def test_health_response_conforms_to_spec() -> None:
