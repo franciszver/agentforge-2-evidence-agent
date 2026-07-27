@@ -3,14 +3,45 @@ name = "copilot-agent"
 version = "0.1.0"
 description = "Clinical Co-Pilot FastAPI agent service"
 requires-python = ">=3.11"
+# Issue #196: every dependency below carries an upper bound in addition to
+# its historical floor. Floors-only (no lockfile) meant every environment --
+# each dev's host venv, every CI run, a release-tag install -- could resolve
+# a different fastapi/pydantic/etc than the one the test suite actually ran
+# against. #184 was a concrete instance: fastapi changed its hardcoded
+# `validation_error_definition` (added `input`/`ctx` to the ValidationError
+# component) between 0.124.4 and 0.139.2, and the byte-compared pinned
+# openapi/openapi.json diverged purely because of WHICH fastapi resolved,
+# not any code change here (see tests/test_openapi_contract.py's docstring).
+#
+# Ceiling choice: each ceiling is the next minor above the version this
+# pyproject's full suite (1366 passed) and mypy were last verified green
+# against (see the pinned versions in this comment), not a reflexive cap at
+# the current major. This keeps patch-level security fixes flowing --
+# nothing here is an exact `==` pin -- while stopping the exact class of
+# drift #184 hit: a minor/feature release silently changing rendering,
+# schema, or type-checking behavior underneath an unpinned floor. Bumping a
+# ceiling is a deliberate, reviewed edit to this file, not a spontaneous CI
+# red on an unrelated PR.
+#
+# Full pin (`==`) was rejected: it would block security patches until a
+# human manually bumps every dependency, trading one failure mode (silent
+# drift) for another (silently stale, vulnerable pins) -- see pip-audit in
+# copilot-ci.yml's dependency-scan job, which still needs room to surface a
+# patched version inside the allowed range.
+# A lock/constraints file (issue #196's other listed option) was rejected
+# for this single small service: this repo has no pip-tools/uv/poetry
+# tooling anywhere else, and a hash-locked file needs per-platform
+# resolution (CI runs ubuntu-latest, host devs may be on Windows) to stay
+# genuinely deterministic -- introducing that tooling for one service is a
+# bigger blast-radius change than this issue's evidence justifies.
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "pydantic>=2",
-    "pydantic-settings>=2.4",
-    "httpx>=0.27",
+    "fastapi>=0.115,<0.140",  # verified: 0.139.2
+    "uvicorn[standard]>=0.30,<0.52",  # verified: 0.51.0
+    "pydantic>=2,<2.14",  # verified: 2.13.4
+    "pydantic-settings>=2.4,<2.15",  # verified: 2.14.2
+    "httpx>=0.27,<0.29",  # verified: 0.28.1
     # PDF page rendering for document ingestion (P3.1, app/ingestion.py).
-    "pypdfium2>=4",
+    "pypdfium2>=4,<5.13",  # verified: 5.12.1
     # app/ingestion.py's render_pdf_pages_to_png calls pypdfium2's
     # PdfBitmap.to_pil(), which lazy-imports PIL at call time -- undeclared
     # here, it was only ever present in this project's dev/test venvs as an
@@ -20,25 +51,27 @@ dependencies = [
     # pyproject.toml -- found live during the P5.1 demo dry run (issue #27)
     # when seed_demo_documents.py's ingestion path was run for the first
     # time against a real built image, not the dev/test venv.
-    "pillow>=10",
+    "pillow>=10,<12.4",  # verified: 12.3.0
     # YAML front-matter parsing (corpus docs, app/retrieval.py) and
     # app/review_queue.py's pre-existing (previously undeclared) use.
-    "pyyaml>=6",
+    "pyyaml>=6,<6.1",  # verified: 6.0.3
 ]
 
 [project.optional-dependencies]
+# See the dependencies list's issue #196 comment above -- same ceiling
+# policy (next minor above the last-verified-green version) applies here.
 dev = [
-    "pytest>=8",
-    "pytest-cov>=5",
-    "playwright>=1.45",
-    "pytest-playwright>=0.5",
-    "mypy>=1.11",
+    "pytest>=8,<9.2",  # verified: 9.1.1
+    "pytest-cov>=5,<7.2",  # verified: 7.1.0
+    "playwright>=1.45,<1.62",  # verified: 1.61.0
+    "pytest-playwright>=0.5,<0.9",  # verified: 0.8.0
+    "mypy>=1.11,<2.4",  # verified: 2.3.0
     # scripts/generate_lab_pdf_fixture.py only -- writing the P3.1 lab-PDF
     # test fixture, never imported by app/ code.
-    "fpdf2>=2.7",
+    "fpdf2>=2.7,<2.9",  # verified: 2.8.7
     # tests/test_openapi_contract.py only -- validating real responses
     # against the schemas declared in the pinned OpenAPI spec.
-    "jsonschema>=4.20",
+    "jsonschema>=4.20,<4.27",  # verified: 4.26.0
 ]
 
 [tool.pytest.ini_options]
