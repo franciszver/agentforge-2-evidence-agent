@@ -87,8 +87,8 @@ jobs:
       - name: Install JS dependencies
         run: npm ci --ignore-scripts
 
-      - name: Run Clinical Co-Pilot JS test suite
-        run: npx jest tests/js/
+      - name: Run JS unit tests (jest)
+        run: npm run test:js
 
   module-isolated-tests:
     runs-on: ubuntu-latest
