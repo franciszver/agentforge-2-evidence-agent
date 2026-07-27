@@ -11,10 +11,24 @@ the flag on.
 Gate-3 review finding (issue #170, MAJOR 4): nothing in ``tests/`` referenced
 ``get_source_ref_relevance_judge_provider``, ``copilot_source_ref_relevance_
 enabled``, or ``run_verification(source_ref_relevance_judge=...)`` before
-this file -- a future edit flipping the config default to ``True``, or
-dropping the wiring in ``app.chat``, would leave the whole suite green. This
-file closes that gap, plus a ``run_verification``-level byte-identity check
-that the flag-off default path is untouched."""
+this file. This file closes PART of that gap: it pins the FIELD's default
+(``False``), and the PROVIDER function's own behavior in isolation (builds a
+real client when the flag is on, is the no-op when off) -- a future edit
+flipping the config default to ``True`` would be caught here.
+
+**What this file does NOT cover (gate-3 review, MINOR 3): the CALL-SITE
+WIRING.** Dropping ``source_ref_relevance_judge=source_ref_relevance_judge_
+provider()`` from ``app.chat._stream_chat``'s ``run_verification`` call, or
+dropping ``source_ref_relevance_judge_provider`` from ``chat_endpoint``'s
+own parameters, would leave every test in THIS file green -- both exercise
+the provider function directly, never the endpoint. That gap is closed
+separately, in ``tests/test_chat_endpoint.py::
+test_chat_source_ref_relevance_flag_on_reaches_the_judge_end_to_end``,
+which forces the flag on via ``app.dependency_overrides`` and asserts a
+scripted judge is actually invoked through a real ``/chat`` request --
+confirmed to fail if the wiring is dropped (deliberately verified live
+during review by removing the ``run_verification`` kwarg and re-running
+it)."""
 
 from __future__ import annotations
 

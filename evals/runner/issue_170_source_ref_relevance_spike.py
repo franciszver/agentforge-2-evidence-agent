@@ -115,15 +115,26 @@ for _root in reversed(_agent_root_candidates(_REPO_ROOT, _MONOREPO_AGENT_ROOT) +
     if _root_str not in sys.path:
         sys.path.insert(0, _root_str)
 
+import datetime  # noqa: E402
+
 from app.config import Settings  # noqa: E402
 from app.llama_server_client import LlamaServerClient  # noqa: E402
 from app.rendering import RenderedClaim  # noqa: E402
+from app.schemas.common import SourceRef  # noqa: E402
+from app.schemas.ingestion import DocumentCitation  # noqa: E402
+from app.schemas.reranking import RerankedChunk  # noqa: E402
+from app.schemas.tools import AppointmentItem, AppointmentsOutput, AppointmentStatus  # noqa: E402
+from app.schemas.verification import Claim  # noqa: E402
 from app.source_ref_relevance import (  # noqa: E402
     SemanticSupportJudgeLike,
     SemanticSupportJudgement,
     SupportVerdict,
+    _established_facts_for_source_ref_claim,
+    _is_source_ref_only_claim,
+    _source_ref_facts,
     judge_source_ref_relevance_full,
 )
+from app.verification import CacheIndex, check_claims  # noqa: E402
 
 from runner.loader import discover_case_files, load_case  # noqa: E402
 from runner.pipeline import run_case  # noqa: E402
@@ -306,6 +317,18 @@ class PositiveControlDraw:
     verdict: str
     reason: str
     caught: bool
+    # Gate-3 review, issue #170 MINOR 1: previously omitted, which meant the
+    # 8 with-context control artifacts -- the ones carrying the MOST
+    # evidentiary weight in the whole measurement -- were auditable only via
+    # filename plus code archaeology (a reader had to re-derive
+    # ``_POSITIVE_CONTROL_WITH_CONTEXT_FACTS`` from the source to confirm an
+    # ESTABLISHED FACTS block was genuinely on the prompt), unlike ordinary
+    # case-draw records, which always carried their own ``context_facts``.
+    # Always present now (``[]`` for the context-free control), so every
+    # positive-control artifact is self-attesting about what it actually
+    # asked the judge -- same auditability principle as
+    # ``summarize()``'s ``artifact_content_note``.
+    context_facts: list[str]
 
 
 def run_positive_control(draw_index: int, judge: SemanticSupportJudgeLike) -> PositiveControlDraw:
@@ -320,6 +343,7 @@ def run_positive_control(draw_index: int, judge: SemanticSupportJudgeLike) -> Po
         verdict=judgement.verdict.value,
         reason=judgement.reason,
         caught=would_downgrade(judgement),
+        context_facts=[],
     )
 
 
@@ -340,7 +364,133 @@ def run_positive_control_with_context(draw_index: int, judge: SemanticSupportJud
         verdict=judgement.verdict.value,
         reason=judgement.reason,
         caught=would_downgrade(judgement),
+        context_facts=list(_POSITIVE_CONTROL_WITH_CONTEXT_FACTS),
     )
+
+
+# --- upgrade-condition-3 tripwire scope check -------------------------------
+#
+# Gate-3 review, issue #170 MINOR 2: the docs' claim about the strict-xfail
+# tripwire's two in-scope claims (`evals/results/issue-170/
+# tripwire_scope_check.json`) had no committed generator -- reproducible
+# only via ad hoc code archaeology, with no timestamp/model/commit stamp the
+# way `summarize()`'s own artifacts have via `--summarize-only`. This is
+# that generator: a faithful reproduction of `tests/test_extraction.py
+# ._appointment_topical_irrelevance_fixture` (the #170 recorded VULN-0003
+# shape), run through the SAME production functions
+# `apply_source_ref_relevance` itself calls (`check_claims`,
+# `_is_source_ref_only_claim`, `_source_ref_facts`,
+# `_established_facts_for_source_ref_claim`, `judge_source_ref_relevance_
+# full`) -- not `run_verification` end to end, so the per-claim in-scope/
+# out-of-scope determination and each in-scope claim's own facts/context/
+# verdict/reason are all individually visible in the output, the same
+# things the docs quote.
+
+
+def _tripwire_fixture_claims_and_index() -> tuple[list[Claim], CacheIndex, list[RerankedChunk]]:
+    """Duplicated (not imported) from ``tests/test_extraction.py
+    ._appointment_topical_irrelevance_fixture`` -- that module isn't
+    importable outside a pytest run (it imports ``pytest`` at module scope,
+    and the flattened container image this script also runs in has no
+    ``pytest`` installed at all), so the fixture is reproduced verbatim
+    here instead. Keep in sync by hand if that fixture ever changes."""
+    appointment = AppointmentItem(
+        date=datetime.date(2014, 1, 31), time=datetime.time(14, 30, 0),
+        status=AppointmentStatus.SCHEDULED, provider="Billy Smith",
+    )
+    raw = AppointmentsOutput(items=[appointment]).model_dump(mode="json")
+    chunk = RerankedChunk(
+        chunk_id="hypertension-lifestyle#follow-up-cadence",
+        doc_id="hypertension-lifestyle",
+        title="Hypertension Management",
+        section="Follow-Up Cadence",
+        text=(
+            "Elevated blood pressure or Stage 1 hypertension managed with lifestyle alone: "
+            "recheck at roughly 3-6 months to assess response before deciding whether to add "
+            "pharmacotherapy."
+        ),
+        scores={"hybrid": 0.9},
+        rerank_score=0.9,
+    )
+    guideline_citation = DocumentCitation(
+        source_type="guideline_chunk", source_id=chunk.doc_id, page_or_section=chunk.section,
+        field_or_chunk_id=chunk.chunk_id, quote_or_value=chunk.text,
+    )
+    claims = [
+        Claim(
+            text=(
+                "The patient has an appointment scheduled with provider Billy Smith on "
+                "2014-01-31 at 14:30:00."
+            ),
+            source_refs=[
+                SourceRef(tool_call_id="call_0", record_id="0", field="date", asserted_value="2014-01-31"),
+                SourceRef(tool_call_id="call_0", record_id="0", field="time", asserted_value="14:30:00"),
+                SourceRef(tool_call_id="call_0", record_id="0", field="provider", asserted_value="Billy Smith"),
+            ],
+        ),
+        Claim(
+            text="The patient's blood pressure was elevated at the last visit.",
+            source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="status", asserted_value="scheduled")],
+            document_citations=[guideline_citation],
+        ),
+        Claim(
+            text="The patient is trying lifestyle changes.",
+            source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="status", asserted_value="scheduled")],
+            document_citations=[guideline_citation],
+        ),
+        Claim(
+            text="It is recommended to recheck in 3-6 months to assess response.",
+            source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="status", asserted_value="scheduled")],
+            document_citations=[guideline_citation],
+        ),
+        Claim(
+            text="The next follow-up should be at the scheduled appointment on 2014-01-31.",
+            source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="date", asserted_value="2014-01-31")],
+        ),
+    ]
+    index = CacheIndex.from_raw_results([raw])
+    return claims, index, [chunk]
+
+
+def run_tripwire_scope_check(judge: SemanticSupportJudgeLike) -> list[dict]:
+    """Re-validate the #170 recorded fixture's 5 claims (provenance only --
+    no document-fact/corpus index is built, so the 3 claims carrying a
+    ``DocumentCitation`` resolve ``UNKNOWN_CHUNK`` on that citation and are
+    irrelevant to this check either way), then run the SAME per-claim scope
+    + established-facts + judge path ``apply_source_ref_relevance`` uses on
+    the 2 claims that ARE in scope (pure ``SourceRef``, already passed
+    provenance). Returns one dict per claim: ``in_scope=False`` for the 3
+    claims carrying a ``DocumentCitation`` (out of #130-ADR scope, module
+    docstring), or the claim's own facts / established-facts context /
+    judge verdict / reason for the 2 that are in scope."""
+    claims, index, _chunks = _tripwire_fixture_claims_and_index()
+    claim_results = check_claims(claims, index)
+    out: list[dict] = []
+    for claim_result in claim_results:
+        if not _is_source_ref_only_claim(claim_result.claim):
+            out.append({"claim": claim_result.claim.text, "in_scope": False})
+            continue
+        own_facts = _source_ref_facts(claim_result.claim)
+        context_facts = _established_facts_for_source_ref_claim(claim_result, claim_results)
+        judgement = judge_source_ref_relevance_full(claim_result.claim.text, own_facts, judge, context_facts)
+        out.append(
+            {
+                "claim": claim_result.claim.text,
+                "in_scope": True,
+                "own_facts": own_facts,
+                "context_facts": context_facts,
+                "verdict": judgement.verdict.value,
+                "reason": judgement.reason,
+            }
+        )
+    return out
+
+
+def save_tripwire_scope_check(records: list[dict]) -> Path:
+    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _RESULTS_DIR / "tripwire_scope_check.json"
+    path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    return path
 
 
 # --- incremental save / summarize ------------------------------------------
@@ -495,7 +645,25 @@ def main() -> None:
             "an existing draws/ directory, without re-spending the full ~96-draw session."
         ),
     )
+    parser.add_argument(
+        "--tripwire-scope-check",
+        action="store_true",
+        help=(
+            "run ONLY the MINOR-2 upgrade-condition-3 tripwire scope check (one live call per "
+            "in-scope claim, no --draws loop) and write evals/results/issue-170/"
+            "tripwire_scope_check.json -- skips every other control and all case-draw sets."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.tripwire_scope_check:
+        tripwire_settings = Settings(llama_server_api_timeout_seconds=180.0)
+        tripwire_judge = LlamaServerClient.from_settings(tripwire_settings)
+        records = run_tripwire_scope_check(tripwire_judge)
+        path = save_tripwire_scope_check(records)
+        print(json.dumps(records, indent=2))
+        print(f"[spike] tripwire scope check -> {path}")
+        return
 
     if not args.summarize_only:
         settings = Settings(llama_server_api_timeout_seconds=180.0)
