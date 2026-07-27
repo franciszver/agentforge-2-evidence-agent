@@ -95,7 +95,11 @@ CHAT_SHELL_HTML = """<!DOCTYPE html>
 
 def create_app() -> FastAPI:
     """Build and return the FastAPI application."""
-    app = FastAPI(title="copilot-agent")
+    # Issue 214: version-leads-tag from v2.3.0 onward -- this literal must
+    # stay in lockstep with pyproject.toml's [project].version (enforced by
+    # tests/test_package_version.py) and the pinned openapi/openapi.json
+    # (regenerate via `python scripts/generate_openapi_spec.py`).
+    app = FastAPI(title="copilot-agent", version="2.3.0")
     app.add_middleware(CorrelationIdMiddleware)
     # Issue #173: registered AFTER CorrelationIdMiddleware above -- Starlette
     # applies add_middleware in REVERSE order of registration (last added =

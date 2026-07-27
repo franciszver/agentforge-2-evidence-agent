@@ -1,6 +1,6 @@
 [project]
 name = "copilot-agent"
-version = "0.1.0"
+version = "2.3.0"
 description = "Clinical Co-Pilot FastAPI agent service"
 requires-python = ">=3.11"
 # Issue #196: every dependency below is bounded on floor AND ceiling, so
