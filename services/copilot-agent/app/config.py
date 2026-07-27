@@ -33,15 +33,25 @@ DEFAULT_MAX_TURNS_PER_CONVERSATION = 50
 # justification.
 DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 
-# Issue #182: cap on the number of distinct AUTHENTICATED PRINCIPALS
-# app.chat.RosterCache tracks at once when copilot_per_user_token_enabled is
-# ON (see Settings.copilot_roster_cache_max_principals's docstring for the
-# full bound analysis). 512 comfortably covers a large single-facility
-# clinician panel (a deployment with 512 distinct clinicians authenticating
-# within one TTL window would be unusually large) while keeping the
-# per-entry memory cost (one full roster copy) bounded by a fixed constant
-# regardless of how many distinct users a long-lived process ever sees.
-DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS = 512
+# Issue #182 (Gate 3 HIGH): cap on the total number of ROSTER ROWS
+# app.chat.RosterCache retains across every principal's entry at once, when
+# copilot_per_user_token_enabled is ON (see
+# Settings.copilot_roster_cache_max_rows's docstring for the full bound
+# analysis). Deliberately a ROW bound, not a principal-count bound (the
+# pre-fix ``max_principals`` this replaces): principal count is a proxy that
+# varies with how many clinicians a deployment has, but each cached roster
+# scales with TOTAL PATIENT COUNT
+# (``app.tools.patient_summary._fetch_all_patients`` pages nothing -- one
+# roster is the whole patient table), so a principal-count cap does not
+# bound bytes -- ``max_principals=512`` against a 50,000-patient roster is
+# ~4.35 GB, which alone exceeds the 2 GB container budget
+# (``docker/development-easy/docker-compose.copilot.yml``'s ``mem_limit``).
+# Measured ~156 bytes per ``app.tools.patient_summary.RosterEntry`` row
+# (``(pid: int, name: str)``); 250,000 rows is ~40 MB -- comfortably inside
+# the 2 GB budget alongside #167's ConversationStore (~1 GB documented
+# worst case) -- while still covering any deployment-size patient panel
+# this service targets.
+DEFAULT_ROSTER_CACHE_MAX_ROWS = 250_000
 
 # Issue #173: default cap for app.body_size_limit.BodySizeLimitMiddleware --
 # the OUTERMOST-registered ASGI middleware (see app/main.py's
@@ -360,15 +370,20 @@ class Settings(BaseSettings):
     # not the raw bearer token -- a token rotates, so keying by token would
     # make the cache grow unboundedly and reintroduce #174's own memory
     # defect under a different key) instead of sharing one entry across every
-    # caller. Bounding entry COUNT still matters even keyed correctly: a
-    # long-lived process could otherwise accumulate one full roster copy per
-    # distinct clinician who EVER authenticates against it, unbounded over
-    # the process's lifetime. This cap makes that bound explicit rather than
-    # relying on "a real deployment doesn't have that many clinicians" --
-    # once at capacity, the entry with the earliest expiry is evicted to
-    # admit a new principal (see RosterCache's docstring). Irrelevant with
-    # the flag OFF (one shared, unkeyed entry, as before #182).
-    copilot_roster_cache_max_principals: int = DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS
+    # caller. Bounding entry COUNT alone does NOT bound bytes (Gate 3 HIGH):
+    # each principal's entry is a full roster copy that scales with TOTAL
+    # PATIENT COUNT, which no per-principal cap constrains -- a large-panel
+    # deployment times a large principal-count cap multiplies straight
+    # through. This bounds total retained ROSTER ROWS across every
+    # principal's entry instead -- deployment-size-insensitive, since it
+    # bounds bytes directly rather than via a count proxy. Once at capacity,
+    # entries are evicted (earliest expiry first, an already-tracked-
+    # timestamp approximation of LRU) until a new/updated entry fits; a
+    # single roster larger than the whole bound is not cached at all rather
+    # than evicting everything and still not fitting (see RosterCache's
+    # docstring). Irrelevant with the flag OFF (one shared, unkeyed entry, as
+    # before #182).
+    copilot_roster_cache_max_rows: int = DEFAULT_ROSTER_CACHE_MAX_ROWS
 
     # Issue #47: when true, POST /chat additionally runs the semantic-support
     # LLM-judge (app.semantic_support) over every DocumentCitation whose

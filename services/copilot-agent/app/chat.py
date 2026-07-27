@@ -99,7 +99,7 @@ from pydantic import BaseModel, Field
 from app.config import (
     DEFAULT_MAX_STORED_CONVERSATIONS,
     DEFAULT_MAX_TURNS_PER_CONVERSATION,
-    DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS,
+    DEFAULT_ROSTER_CACHE_MAX_ROWS,
     DEFAULT_ROSTER_CACHE_TTL_SECONDS,
     Settings,
     get_settings,
@@ -1076,30 +1076,53 @@ class RosterCache:
     closed to ``get_patient_roster``'s ``[]`` fail-safe, which
     ``get_or_fetch`` never caches (see below) -- so scope differences
     across tokens for the same subject cannot poison another token's cached
-    entry either. #182 therefore keys ``require_principal=True`` caching by
-    ``principal`` (the introspected ``sub`` -- see ``_stream_chat``'s
-    ``_roster_provider``): each distinct principal gets its OWN cached
-    entry, so caller B (a different principal) is never served caller A's
-    roster, while a SECOND request under the SAME principal (e.g. a token
-    refresh, or simply a second session) still hits the cache. ``principal
-    is None`` (subject resolution failed or is otherwise unavailable --
-    see ``_resolve_subject``'s docstring) degrades SAFELY to a bypass:
-    ``fetch`` runs on every such call and nothing is read or written to any
-    cache entry -- never a fall back to the shared, unkeyed entry, which
-    would silently cross principals again. Deliberately NOT a per-token
-    cache: token rotation would make such a cache grow unboundedly,
-    reintroducing the exact unbounded-memory defect #174 exists to fix,
-    just keyed by token instead of by conversation.
+    entry either (see the row-bound paragraph below for the one narrower
+    scope-mismatch case this does NOT cover). #182 therefore keys
+    ``require_principal=True`` caching by ``principal``
+    (the introspected ``sub`` -- see ``_stream_chat``'s ``_roster_provider``):
+    each distinct principal gets its OWN cached entry, so caller B (a
+    different principal) is never served caller A's roster, while a SECOND
+    request under the SAME principal (e.g. a token refresh, or simply a
+    second session) still hits the cache. ``principal is None`` (subject
+    resolution failed or is otherwise unavailable -- see
+    ``_resolve_subject``'s docstring) degrades SAFELY to a bypass: ``fetch``
+    runs on every such call and nothing is read or written to any cache
+    entry -- never a fall back to the shared, unkeyed entry, which would
+    silently cross principals again. Deliberately NOT a per-token cache:
+    token rotation would make such a cache grow unboundedly, reintroducing
+    the exact unbounded-memory defect #174 exists to fix, just keyed by
+    token instead of by conversation.
 
-    Entry-count bound: ``max_principals`` caps the number of distinct,
-    non-``None`` ``principal`` keys tracked at once (irrelevant when
+    Row bound (Gate 3 HIGH, replaces the earlier ``max_principals``
+    entry-count bound): ``max_rows`` caps the TOTAL number of roster rows
+    retained across every principal's entry at once (irrelevant when
     ``require_principal`` is ``False`` -- there is only ever the one shared
-    entry). Bounded by the number of distinct clinicians who authenticate
-    against a real deployment within a TTL window in practice, but this cap
-    makes the bound explicit rather than relying on that: once at capacity,
-    admitting a new principal evicts whichever existing entry expires
-    soonest (a cheap, already-tracked-timestamp approximation of LRU) rather
-    than growing without limit.
+    entry). An entry-COUNT bound does not bound bytes: each cached roster
+    scales with total patient count
+    (``app.tools.patient_summary._fetch_all_patients`` pages nothing -- one
+    roster is the whole patient table), so a fixed principal-count cap times
+    a large deployment's roster is unbounded in the dimension that actually
+    matters (measured ~156 bytes/row; ``max_principals=512`` against a
+    50,000-patient roster is ~4.35 GB, alone exceeding the 2 GB container
+    budget this cache shares with #167's ``ConversationStore``). Bounding
+    rows directly is deployment-size-insensitive. Once at capacity, admitting
+    or refreshing an entry evicts whichever OTHER existing entry expires
+    soonest (a cheap, already-tracked-timestamp approximation of LRU --
+    insertion/write order, not true access-recency LRU; see ``get_or_fetch``)
+    until the new/updated entry fits, rather than growing without limit. A
+    single roster larger than the WHOLE bound is never cached at all (not
+    evicted-then-still-doesn't-fit) -- it is simply served uncached for that
+    one call, same cost as a cache miss.
+
+    A too-narrow-scope token's fetch failing closed to ``get_patient_roster``
+    's ``[]`` -- never cached, see below -- means scope differences across
+    tokens for the SAME subject cannot poison another token's cached entry
+    via that path. This is the only scope-mismatch scenario actually
+    verified here; a hypothetical 200 response containing a *filtered
+    subset* for a narrower-scoped token (rather than an outright failure)
+    would be cached and served to any other token resolving to the same
+    ``sub``, same as any other same-``sub`` cache hit -- this class has no
+    mechanism to detect or guard against that narrower case.
 
     TTL semantics: one ``ttl_seconds`` shared across every principal's
     entry, not a per-principal override -- staleness tolerance for the
@@ -1131,23 +1154,32 @@ class RosterCache:
         ttl_seconds: float,
         clock: Clock,
         *,
-        require_principal: bool = False,
-        max_principals: int = DEFAULT_ROSTER_CACHE_MAX_PRINCIPALS,
+        require_principal: bool,
+        max_rows: int = DEFAULT_ROSTER_CACHE_MAX_ROWS,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
-        if max_principals <= 0:
-            raise ValueError("max_principals must be positive")
+        if max_rows <= 0:
+            raise ValueError("max_rows must be positive")
         self._ttl_seconds = ttl_seconds
         self._clock = clock
         self._require_principal = require_principal
-        self._max_principals = max_principals
+        self._max_rows = max_rows
         self._lock = threading.Lock()
         # Plain dict, not OrderedDict: eviction below picks the entry with
         # the earliest ``expires_at`` (a ``min()`` scan), never insertion or
         # access order, so no ``move_to_end``/LRU behavior is needed here
         # (contrast ``ConversationStore._conversations`` above, which IS a
-        # true LRU and relies on ``OrderedDict`` for it).
+        # true LRU and relies on ``OrderedDict`` for it). Because every entry
+        # shares the same ``ttl_seconds``, "earliest ``expires_at``" is
+        # equivalent to "written longest ago" -- this is FIFO-by-write-time,
+        # NOT access-recency LRU: a cache HIT never touches ``expires_at``
+        # (``get_or_fetch`` returns the cached value directly on the fast
+        # path, see below), so a heavily-read old entry is evicted exactly
+        # as readily as a never-re-read one written at the same time.
+        # Accepted (a real deployment's principal set within one TTL window
+        # is expected to be small relative to ``max_rows``); flagged here so
+        # a future reader does not mistake this for true LRU.
         self._entries: dict[str, tuple[list[RosterEntry], datetime]] = {}
 
     def get_or_fetch(
@@ -1170,6 +1202,20 @@ class RosterCache:
           keyed by that principal -- isolated from every other principal's
           entry.
 
+        Gate 3 MINOR-3 (defense in depth): ``require_principal is False`` and
+        ``principal`` is a real (non-``None``) value is ALSO a passthrough,
+        same as the ``None``-principal case above -- a cache built in shared
+        mode must never serve or populate its one frozen shared entry for a
+        call that carries a real principal. Unreachable via the current
+        production call site (``_stream_chat``'s ``_roster_provider`` always
+        threads ``owner_subject``, which ``_default_subject_resolver``
+        guarantees is ``None`` whenever ``copilot_per_user_token_enabled`` is
+        off -- see ``get_subject_resolver``'s docstring), but a future call
+        site, or a hypothetical mid-process mode change against the frozen
+        ``get_roster_cache`` singleton (see its docstring), must not silently
+        share one principal's roster with another just because this cache
+        happened to be built with ``require_principal=False``.
+
         Gate 2 (security) re-review, CONFIRMED MAJOR: an empty ``fetch()``
         result is NEVER cached (``if roster:`` below). ``get_patient_roster``
         (``app.tools.patient_summary``) returns ``[]`` fail-safe on ANY
@@ -1187,12 +1233,21 @@ class RosterCache:
         exactly what calling ``fetch()`` on every matching turn cost before
         this cache existed, until a fetch actually succeeds.
         """
-        if self._require_principal and principal is None:
+        if self._require_principal:
+            if principal is None:
+                # Subject unresolved -- safe bypass, never a fall back to
+                # sharing.
+                return fetch()
+        elif principal is not None:
+            # Gate 3 MINOR-3: a real principal against a shared-mode
+            # (``require_principal=False``) cache -- refuse to share the
+            # frozen shared entry. Fail closed to a bypass, never to
+            # serving/writing it.
             return fetch()
-        # ``principal`` is guaranteed non-``None`` here whenever
-        # ``_require_principal`` is ``True`` (the guard above already
-        # returned otherwise), so no separate ``principal is not None``
-        # check is needed on top of ``_require_principal``.
+        # Either ``_require_principal`` is ``False`` (shared mode, and
+        # ``principal`` is ``None`` per the ``elif`` above) or
+        # ``_require_principal`` is ``True`` and ``principal`` is a real
+        # value -- the only two cases reaching here.
         key = principal if self._require_principal else self._SHARED_KEY
         assert key is not None  # narrows for mypy; guaranteed by the guard above
         now = self._clock()
@@ -1202,12 +1257,28 @@ class RosterCache:
                 return entry[0]
         roster = fetch()
         if roster:
+            new_rows = len(roster)
             with self._lock:
-                if key not in self._entries and len(self._entries) >= self._max_principals:
-                    # Bound entry count: evict whichever existing entry
-                    # expires soonest to admit this new principal (see the
-                    # class docstring's entry-count-bound analysis).
+                if key in self._entries:
+                    # Replacing this key's own (expired) entry: its current
+                    # rows no longer count against the budget once it is
+                    # dropped below.
+                    del self._entries[key]
+                if new_rows > self._max_rows:
+                    # Gate 3 HIGH: a single roster alone exceeds the WHOLE
+                    # row bound -- do not cache it at all. Evicting every
+                    # other entry still would not make it fit, so there is
+                    # no eviction amount that helps; serve it uncached this
+                    # one call instead (same cost as a cache miss).
+                    return roster
+                retained_rows = sum(len(cached) for cached, _ in self._entries.values())
+                while self._entries and retained_rows + new_rows > self._max_rows:
+                    # Bound total retained ROWS, not entry count (see the
+                    # class docstring's row-bound analysis): evict whichever
+                    # existing entry expires soonest until the new/updated
+                    # entry fits.
                     oldest_key = min(self._entries, key=lambda k: self._entries[k][1])
+                    retained_rows -= len(self._entries[oldest_key][0])
                     del self._entries[oldest_key]
                 self._entries[key] = (roster, now + timedelta(seconds=self._ttl_seconds))
         return roster
@@ -1245,7 +1316,7 @@ def get_roster_cache(
             ttl_seconds=settings.copilot_roster_cache_ttl_seconds,
             clock=clock,
             require_principal=settings.copilot_per_user_token_enabled,
-            max_principals=settings.copilot_roster_cache_max_principals,
+            max_rows=settings.copilot_roster_cache_max_rows,
         )
     return _default_roster_cache
 
