@@ -151,21 +151,37 @@ def _fetch_demographics(client: OpenEmrClient, token: str, patient_id: int) -> d
 
 
 def get_patient_roster(client: OpenEmrClient, token: str) -> list[RosterEntry]:
-    """Every patient's (pid, "First Last" display name) pair (#237
+    """Every patient's (pid, "First Last" display name) pair (Phase 1 #237
     roster-based cross-patient detection).
 
     Issue #174: deliberately does NOT take a ``patient_id`` to exclude, and
-    no longer excludes anyone. The roster is byte-identical across every
-    conversation regardless of which patient it is bound to (this fetch has
-    no per-caller state at all), which is what makes it safe to serve from
-    ONE process-wide, TTL'd cache (``app.chat.RosterCache``) shared by every
-    conversation instead of being resolved -- and retained -- separately per
-    conversation. Excluding the CALLER's bound patient is the caller's job
-    now, at COMPARISON time, keyed by ``pid`` (see
+    no longer excludes anyone. Excluding the CALLER's bound patient is the
+    caller's job now, at COMPARISON time, keyed by ``pid`` (see
     ``app.extraction._matches_roster``) rather than by name -- a name
     comparison could wrongly exclude a different patient who happens to
     share the bound patient's name, and pid is already known to every
     caller with no extra fetch.
+
+    This fetch runs AS ``token``'s own bearer, so it has exactly the
+    per-caller state that implies -- NOT none. Whether the result is
+    actually caller-invariant depends entirely on the auth mode; see
+    ``app.chat.RosterCache`` for the full analysis. With
+    ``copilot_per_user_token_enabled`` OFF, every caller authenticates as
+    the same dev-bridge demo-clinician identity, so the roster genuinely
+    IS byte-identical across every conversation, which is what makes it
+    safe to serve from ONE process-wide, TTL'd, unkeyed cache entry
+    (``app.chat.RosterCache``) shared by every conversation instead of
+    being resolved -- and retained -- separately per conversation. With
+    the flag ON, each caller authenticates as their OWN OpenEMR user
+    account, and OpenEMR's role- and resource-scoped REST authorization
+    can return a genuinely DIFFERENT roster to a different principal from
+    the identical endpoint -- which is exactly why #182 keys
+    ``RosterCache`` by principal (the introspected ``sub``) rather than
+    serving one shared entry in that mode. Callers of this function do not
+    need to pick which mode applies -- ``RosterCache.get_or_fetch`` makes
+    that decision -- but this fetch itself must never be described as
+    having no per-caller state; it has exactly as much as OpenEMR's own
+    authorization model gives ``token``.
 
     Fail-safe: ``[]`` on any OpenEMR API error (timeout, insufficient scope,
     ...), never a raised exception -- callers
