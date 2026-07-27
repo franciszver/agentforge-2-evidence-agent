@@ -414,7 +414,7 @@ Stated plainly, in order of what would need to change:
 
    **Residual exposure, accepted (#188): unauthenticated threadpool
    occupancy via introspection, once the flag above is ON.** `_validate_token`
-   (`app/chat.py:334-355`) dispatches to `run_in_threadpool` on a
+   (`app/chat.py:334-365`) dispatches to `run_in_threadpool` on a
    `peek_cached` miss. Per `app/introspection.py`'s own docstring, only
    *positive* (`active: true`) introspection results are cached — an
    attacker-chosen token is a guaranteed miss on every request, so an
@@ -423,12 +423,12 @@ Stated plainly, in order of what would need to change:
    (10s default), through FastAPI's threadpool. That pool is anyio's
    process-wide *default* thread limiter (capacity 40; no override exists
    anywhere in `app/` or `tests/`) and is shared by every other sync
-   dependency/endpoint in the process: `/health`, `/dashboard`, `/review`,
-   `/review/promote`, `/feedback`, `/documents/{source_id}`,
-   `get_planner_factory` (`chat.py:567`), plus
-   `_resolve_conversation_patient_name` (`chat.py:1951`, itself `async def`
+   dependency/endpoint in the process: `/health`, `GET /chat`, `/dashboard`,
+   `/review`, `/review/promote`, `/feedback`, `/documents/{source_id}`,
+   `get_planner_factory` (`chat.py:577`), plus
+   `_resolve_conversation_patient_name` (`chat.py:1961`, itself `async def`
    but dispatches its own blocking resolve via `run_in_threadpool` at
-   `chat.py:1971`). Only `/ready` and `POST /chat`'s own body are otherwise
+   `chat.py:1981`). Only `/ready` and `POST /chat`'s own body are otherwise
    async. Measured: 40 concurrent unauthenticated requests drove 40/40
    concurrent validator calls (watermark == pool capacity); with the pool
    saturated, `/health` (sync, shares the pool) measured +1.25s of added
@@ -436,11 +436,28 @@ Stated plainly, in order of what would need to change:
    control endpoints exercised, 1 affected, cleanly separated by
    sync-vs-async as the mechanism predicts. At 80 requests (2x capacity),
    all 80 queued with zero errors and tail latency ≈ 2x the introspection
-   timeout. Same shape as the dev-token-bridge exposure item 1 above
-   describes for the flag-OFF path (#177's fix removed that one); this is
-   the flag-ON counterpart, and it is a strict *improvement* over pre-#177
+   timeout. Same shape as the dev-token-bridge exposure `_validate_token`'s
+   own docstring describes for the flag-OFF path
+   (`app/chat.py:410-429`, `#177`'s fix removed that one); this is the
+   flag-ON counterpart, and it is a strict *improvement* over pre-#177
    behavior, which burned two threadpool slots per unauthenticated request
    instead of this one.
+
+   **How these numbers were derived (and how to re-derive them).** Not run
+   by hand against a live stack — a hermetic in-process harness: the real
+   FastAPI app object (`create_app()`), driven over httpx's `ASGITransport`
+   (no sockets, no docker), with anyio's real process-wide threadpool
+   limiter left at its actual default (no override), and a test-only
+   `TokenValidator` double that sleeps for a fixed delay in place of a real
+   introspection HTTP call — enough to hold a threadpool worker occupied
+   without an outbound network dependency. Concurrent unauthenticated
+   requests are fired at `POST /chat` with `asyncio.gather`, and at a
+   pure-async control route, while the limiter's active-worker count is
+   sampled to find the watermark. Re-deriving these numbers means
+   reconstructing that harness shape (app + ASGITransport + slow validator
+   double + concurrent client fan-out) — no such script is currently
+   checked into this repo; the harness above is a description, not a
+   pointer to an in-tree file.
 
    **Why accepted rather than mitigated.** Two preconditions keep this
    inert today: `copilot_per_user_token_enabled` defaults `False`
@@ -453,6 +470,19 @@ Stated plainly, in order of what would need to change:
    With the flag off, `get_token_validator` returns the fail-closed or
    dev-permissive stub, neither of which exposes `peek_cached` or does any
    I/O — this code path is unreachable in the shipped default.
+
+   **Limit of this coverage, stated explicitly.** The test named below pins
+   only the *in-repo* premises: the shipped `app/config.py` default and
+   every compose file's `environment:`/`env_file:` surface. The **primary,
+   unguardable enablement path** is an operator setting
+   `COPILOT_PER_USER_TOKEN_ENABLED=true` directly in a deployment
+   environment that never touches this repo at all — a Kubernetes manifest,
+   a systemd unit's `Environment=`, a bare `docker run -e`, or a CI secret
+   injected at deploy time. That flip takes effect with zero repo change,
+   so no test in this repo (or any repo) can pin it. Closing #188 before
+   flipping the flag anywhere reachable is therefore the **operator's own
+   responsibility at flip time**, not something this test — or any other
+   in-repo guard — can enforce on its behalf.
 
    **Mitigation options considered, none implemented (accept, not defer):**
    1. *Negative caching of failed introspections* — a short TTL on "this
@@ -481,7 +511,8 @@ Stated plainly, in order of what would need to change:
    grounds. Do not flip this flag on in any shared or reachable deployment
    without first closing #188. A test pins both preconditions
    (`services/copilot-agent/tests/test_issue188_threadpool_accept_precondition.py`)
-   and fails loudly, naming this section, if either stops holding.
+   and fails loudly — naming that file and this "Path to Production" item 2
+   section by name in its assertion messages — if either stops holding.
 3. **Patient-context binding upgrade.** The current binding (every
    conversation anchored to the `pid` the panel was opened on; the tool
    layer refuses any other patient id, logging the attempt) is

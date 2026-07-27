@@ -22,15 +22,24 @@ specifically because the flag defaults OFF today (flag-off routes to
 ``_fail_closed_token_validator``/``_dev_permissive_token_validator``,
 neither of which does any I/O, so there is no threadpool exposure at all
 in the shipped default). That premise is exactly what this test pins.
+It also only covers the in-repo premises: an operator setting
+``COPILOT_PER_USER_TOKEN_ENABLED=true`` directly in a deployment
+environment (a k8s manifest, a systemd unit, `docker run -e`, a CI
+secret) turns the flag on with zero repo change, and no test in this
+repo can pin that -- see docs/ARCHITECTURE.md's "Path to Production"
+item 2 for that limit stated explicitly.
 
 **What this test does NOT do.** It does not exercise the threadpool
-exhaustion itself (that is #188's own measurement, run by hand against a
-live stack, not a hermetic unit test) and it does not re-derive the
-mitigation options. It exists solely so that if a future change flips the
-shipped default or a compose file's override, this test fails LOUDLY and
-names the reopened issue -- instead of the accept's premise silently
-stopping to hold while docs/ARCHITECTURE.md still describes the old,
-now-false state.
+exhaustion itself -- that measurement came from a hermetic in-process
+harness (the real FastAPI app object driven over httpx's ASGI transport,
+with anyio's real threadpool limiter and a deliberately slow validator
+double standing in for a live introspection call; no docker, no live
+stack) and it does not re-derive the mitigation options. It exists solely
+so that if a future change flips the shipped default or a compose file's
+override, this test fails LOUDLY -- naming both this file and
+docs/ARCHITECTURE.md's "Path to Production" item 2 section -- instead of
+the accept's premise silently stopping to hold while docs/ARCHITECTURE.md
+still describes the old, now-false state.
 """
 
 from __future__ import annotations
@@ -42,27 +51,37 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONFIG_PY = _REPO_ROOT / "services" / "copilot-agent" / "app" / "config.py"
 _COPILOT_COMPOSE = _REPO_ROOT / "docker" / "development-easy" / "docker-compose.copilot.yml"
 
-# Every compose file in the repo, not just the one copilot dev overlay --
-# a future override file (e.g. a `docker-compose.copilot.override.yml`, or
-# a compose file added under `ci/`) that flips the flag ON would otherwise
-# silently defeat this guard while the docs still claim "no compose file
-# sets it". Globbed fresh on every run, not hardcoded, precisely because
-# the whole point is to survive new compose files being added.
+# Directories that are never source-of-truth for this repo's own compose
+# files -- vendored/virtualenv/dependency trees can contain arbitrarily many
+# *compose*.y*ml files (e.g. inside a packaged dependency's test fixtures)
+# that have nothing to do with this repo's own deploy surface.
+_EXCLUDED_DIR_NAMES = frozenset({".venv", "node_modules", "vendor", ".git"})
+
+
+def _is_excluded(path: Path) -> bool:
+    return any(part in _EXCLUDED_DIR_NAMES for part in path.relative_to(_REPO_ROOT).parts)
+
+
+# Every compose file anywhere in the repo, not just the ones under docker/
+# and ci/ -- the Compose Specification's *preferred* canonical filenames
+# (`compose.yaml`, `compose.yml`, `compose.override.yaml`, auto-loaded by
+# `docker compose` with no `-f`) live at arbitrary paths (e.g.
+# `.github/docker/compose.yml`, `ci/inferno/compose.yml`,
+# `ci/compose-shared-mailpit/compose.yml`), and a future override file
+# anywhere that flips the flag ON would otherwise silently defeat this
+# guard while the docs still claim "no compose file sets it". Globbed
+# fresh on every run, not hardcoded, precisely because the whole point is
+# to survive new compose files being added in new locations.
 _ALL_COMPOSE_FILES = sorted(
-    {
-        *_REPO_ROOT.glob("docker/**/docker-compose*.yml"),
-        *_REPO_ROOT.glob("docker/**/docker-compose*.yaml"),
-        *_REPO_ROOT.glob("ci/**/docker-compose*.yml"),
-        *_REPO_ROOT.glob("ci/**/docker-compose*.yaml"),
-        *_REPO_ROOT.glob("docker-compose*.yml"),
-        *_REPO_ROOT.glob("docker-compose*.yaml"),
-    }
+    p for p in _REPO_ROOT.rglob("*compose*.y*ml") if not _is_excluded(p)
 )
 
 _REOPEN_MESSAGE = (
     "issue #188's documented accept assumed this flag ships OFF -- if it is "
     "being turned on, the threadpool starvation mitigation is now a "
-    "blocking pre-condition."
+    "blocking pre-condition. See "
+    "services/copilot-agent/tests/test_issue188_threadpool_accept_precondition.py "
+    "and docs/ARCHITECTURE.md's \"Path to Production\" item 2."
 )
 
 # Matches the Settings field declaration, e.g.
@@ -74,21 +93,76 @@ _CONFIG_DEFAULT_RE = re.compile(
     re.MULTILINE,
 )
 
-# Any assignment of the env var inside a compose ``environment:`` block, in
-# either mapping (``COPILOT_PER_USER_TOKEN_ENABLED: "true"``) or list
-# (``- COPILOT_PER_USER_TOKEN_ENABLED=true``) form -- deliberately NOT
-# scoped to a single service or a single compose file, since the accept's
-# premise is that NO compose file in the repo (nor any service within one)
-# sets the flag, not just that the ``agent`` service block in one known
-# file happens not to. The captured group is intentionally permissive
-# (``\S+``, not ``\w+``) so it also captures a ``${...}`` env-substitution
-# reference -- see the fail-closed handling below; we deliberately do NOT
-# attempt to resolve substitutions, we just refuse to treat them as proven
-# falsy.
-_COMPOSE_ENV_SET_RE = re.compile(
-    r"^\s*(?:-\s*)?COPILOT_PER_USER_TOKEN_ENABLED\s*[:=]\s*[\"']?(\S+)",
-    re.MULTILINE,
+# Matches any line that *mentions* the env var as a key, in mapping form
+# (``COPILOT_PER_USER_TOKEN_ENABLED: true``), list form
+# (``- COPILOT_PER_USER_TOKEN_ENABLED=true``), a bare list entry with no
+# operator at all (``- COPILOT_PER_USER_TOKEN_ENABLED``), or an empty
+# mapping (``COPILOT_PER_USER_TOKEN_ENABLED:`` with nothing after the
+# colon) -- deliberately NOT scoped to a single service or a single compose
+# file, since the accept's premise is that NO compose file in the repo (nor
+# any service within one) sets the flag. The ``value`` group is ``None``
+# when there is no ``[:=]`` at all (bare list entry) and ``""`` when there
+# is an operator but nothing follows (empty mapping) -- both of those forms
+# mean "inherits from the host environment" in Compose semantics, which
+# this guard cannot prove is falsy, so both are handled as failures below
+# rather than silently passing.
+_COMPOSE_ENV_KEY_RE = re.compile(
+    r"^-?\s*COPILOT_PER_USER_TOKEN_ENABLED(?!\w)\s*(?:[:=]\s*(?P<value>.*))?$"
 )
+
+# pydantic's bool parsing (see pydantic_core's `str_as_bool`) treats these
+# case-insensitively as False; anything else -- including values it would
+# reject outright -- cannot be proven falsy, so this guard fails closed on
+# everything not in this set.
+_PYDANTIC_FALSY_VALUES = frozenset({"false", "0", "no", "off", "n"})
+
+_SERVICE_HEADER_RE = re.compile(r"^([A-Za-z0-9_.-]+):\s*(#.*)?$")
+_AGENT_RELEVANT_SERVICE_RE = re.compile(r"agent|copilot", re.IGNORECASE)
+_ENV_FILE_RE = re.compile(r"^env_file\s*:\s*(?P<inline>.*?)\s*(#.*)?$")
+_ENV_FILE_ITEM_RE = re.compile(r"^-\s*(?P<path>[^#]+?)\s*(#.*)?$")
+
+
+def _find_env_file_references_for_relevant_services(text: str) -> list[str]:
+    """Return every ``env_file`` path referenced by a service block whose
+    name looks agent/copilot-relevant. Deliberately simple, indentation-based
+    block tracking -- this repo's compose files use a flat 2-space-per-level
+    style, and erring toward checking more service blocks (rather than fewer)
+    is the fail-closed direction here. Does not resolve YAML anchors/merges."""
+    refs: list[str] = []
+    current_service_indent: int | None = None
+    current_service_relevant = False
+    current_env_file_indent: int | None = None
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.strip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = raw_line.strip()
+        header = _SERVICE_HEADER_RE.match(stripped)
+        if header and 0 < indent <= 4 and (
+            current_service_indent is None or indent <= current_service_indent
+        ):
+            current_service_indent = indent
+            current_service_relevant = bool(_AGENT_RELEVANT_SERVICE_RE.search(header.group(1)))
+            current_env_file_indent = None
+            continue
+        if current_service_indent is None or indent <= current_service_indent:
+            continue
+        if not current_service_relevant:
+            continue
+        env_file_match = _ENV_FILE_RE.match(stripped)
+        if env_file_match:
+            current_env_file_indent = indent
+            inline = env_file_match.group("inline").strip().strip("\"'")
+            if inline:
+                refs.append(inline)
+            continue
+        if current_env_file_indent is not None and indent > current_env_file_indent:
+            item = _ENV_FILE_ITEM_RE.match(stripped)
+            if item:
+                refs.append(item.group("path").strip().strip("\"'"))
+                continue
+        current_env_file_indent = None
+    return refs
 
 
 def test_repo_layout_assumptions_hold() -> None:
@@ -100,8 +174,8 @@ def test_repo_layout_assumptions_hold() -> None:
     # test exists to prevent, so the discovered set must be non-empty and
     # must include the one compose file #188's accept explicitly names.
     assert _ALL_COMPOSE_FILES, (
-        "the docker-compose*.y*ml glob under docker/ and ci/ matched zero "
-        f"files -- something broke the discovery glob itself. {_REOPEN_MESSAGE}"
+        "the repo-wide *compose*.y*ml scan matched zero files -- something "
+        f"broke the discovery glob itself. {_REOPEN_MESSAGE}"
     )
     assert _COPILOT_COMPOSE in _ALL_COMPOSE_FILES, (
         f"{_COPILOT_COMPOSE} was not among the {len(_ALL_COMPOSE_FILES)} "
@@ -130,25 +204,48 @@ def test_copilot_per_user_token_enabled_defaults_false() -> None:
 
 def test_no_compose_file_enables_copilot_per_user_token() -> None:
     """No compose file anywhere in the repo -- not just the known dev
-    overlay -- may flip the flag on, whether as a direct assignment or an
-    unresolved ``${...}`` env-substitution reference (treated fail-closed:
-    we can't prove it's falsy, so it counts as set). Today it only appears
-    in an explanatory comment (see the ``COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN``
-    block in ``docker-compose.copilot.yml``), never as a live
-    ``environment:`` assignment, and no compose file references it via
-    ``${...}`` substitution at all. Verified by mutation: adding an
-    override file, or a compose file in an unrelated directory, that sets
-    the flag truthy fails this test; deleting it passes again."""
+    overlay -- may flip the flag on, whether as a direct assignment, an
+    unresolved ``${...}`` env-substitution reference, or a bare/empty form
+    that inherits from the host environment (all treated fail-closed: we
+    can't prove any of them falsy, so they all count as set). Today it only
+    appears in an explanatory comment (see the
+    ``COPILOT_DEV_ACCEPT_ANY_BEARER_TOKEN`` block in
+    ``docker-compose.copilot.yml``), never as a live ``environment:``
+    assignment. Verified by mutation: adding an override file, or a compose
+    file in an unrelated directory, that sets the flag truthy (or leaves it
+    to inherit from the host env) fails this test; deleting it passes
+    again."""
     for compose_file in _ALL_COMPOSE_FILES:
         text = compose_file.read_text(encoding="utf-8")
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            match = _COMPOSE_ENV_SET_RE.match(stripped)
+            match = _COMPOSE_ENV_KEY_RE.match(stripped)
             if match is None:
                 continue
-            raw_value = match.group(1).strip().rstrip("\"'")
+            value = match.group("value")
+            if value is None:
+                # Bare list entry, e.g. "- COPILOT_PER_USER_TOKEN_ENABLED",
+                # with no "=" at all -- Compose resolves this from the host
+                # environment at deploy time. Unprovable, so fail-closed.
+                raise AssertionError(
+                    f"{compose_file} lists COPILOT_PER_USER_TOKEN_ENABLED "
+                    "with no explicit value -- this form inherits from the "
+                    "host environment at deploy time and cannot be proven "
+                    f"OFF. {_REOPEN_MESSAGE}"
+                )
+            raw_value = value.strip()
+            if raw_value == "":
+                # Empty mapping, e.g. "COPILOT_PER_USER_TOKEN_ENABLED:" with
+                # nothing after the colon -- same host-inherits semantics.
+                raise AssertionError(
+                    f"{compose_file} maps COPILOT_PER_USER_TOKEN_ENABLED to "
+                    "an empty/null value -- this form inherits from the "
+                    "host environment at deploy time and cannot be proven "
+                    f"OFF. {_REOPEN_MESSAGE}"
+                )
+            raw_value = raw_value.strip("\"'")
             if raw_value.startswith("${"):
                 # Fail-closed: an env-substitution reference could resolve
                 # to anything at deploy time and we deliberately do not
@@ -156,11 +253,53 @@ def test_no_compose_file_enables_copilot_per_user_token() -> None:
                 # proven falsy.
                 raise AssertionError(
                     f"{compose_file} sets COPILOT_PER_USER_TOKEN_ENABLED via "
-                    f"an unresolved substitution ({match.group(1)!r}) whose "
-                    f"value cannot be proven falsy. {_REOPEN_MESSAGE}"
+                    f"an unresolved substitution ({value!r}) whose value "
+                    f"cannot be proven falsy. {_REOPEN_MESSAGE}"
                 )
-            value = raw_value.lower()
-            assert value in ("false", "0", ""), (
-                f"{compose_file} sets COPILOT_PER_USER_TOKEN_ENABLED to a "
-                f"truthy value ({match.group(1)!r}). {_REOPEN_MESSAGE}"
-            )
+            if raw_value.lower() not in _PYDANTIC_FALSY_VALUES:
+                raise AssertionError(
+                    f"{compose_file} sets COPILOT_PER_USER_TOKEN_ENABLED to "
+                    f"{value!r}, which is not one of pydantic's recognized "
+                    f"falsy strings {sorted(_PYDANTIC_FALSY_VALUES)!r} and so "
+                    f"cannot be proven OFF. {_REOPEN_MESSAGE}"
+                )
+
+
+def test_no_compose_file_env_file_enables_copilot_per_user_token() -> None:
+    """An agent/copilot-relevant service's ``env_file:`` reference is
+    another route to turning the flag on without a live
+    ``environment:`` assignment ever appearing in the compose file itself.
+    This deliberately does not trust a referenced file's *absence* of the
+    setting as proof of OFF -- if the file cannot be read, that is treated
+    the same as "cannot be proven falsy" and fails, naming the unreadable
+    path, rather than silently passing. Today no compose file in the repo
+    declares ``env_file`` at all, so this test currently has nothing to
+    walk."""
+    for compose_file in _ALL_COMPOSE_FILES:
+        text = compose_file.read_text(encoding="utf-8")
+        for raw_ref in _find_env_file_references_for_relevant_services(text):
+            ref_path = (compose_file.parent / raw_ref).resolve()
+            if not ref_path.is_file():
+                raise AssertionError(
+                    f"{compose_file} declares env_file {raw_ref!r} for an "
+                    f"agent/copilot-relevant service, but {ref_path} could "
+                    "not be read -- whether it sets "
+                    "COPILOT_PER_USER_TOKEN_ENABLED cannot be proven, so "
+                    f"this cannot be treated as OFF. {_REOPEN_MESSAGE}"
+                )
+            ref_text = ref_path.read_text(encoding="utf-8")
+            for line in ref_text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, _, raw_value = stripped.partition("=")
+                if key.strip() != "COPILOT_PER_USER_TOKEN_ENABLED":
+                    continue
+                value = raw_value.strip().strip("\"'")
+                if value.lower() not in _PYDANTIC_FALSY_VALUES:
+                    raise AssertionError(
+                        f"{ref_path} (referenced via {compose_file}'s "
+                        "env_file) sets COPILOT_PER_USER_TOKEN_ENABLED to "
+                        f"{raw_value.strip()!r}, which is not a known-falsy "
+                        f"value. {_REOPEN_MESSAGE}"
+                    )
