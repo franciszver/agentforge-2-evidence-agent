@@ -543,8 +543,9 @@ def test_resolve_patient_name_returns_none_when_patient_not_found(make_openemr_c
 # ``self._patient_id``), this no longer excludes the bound patient's own
 # entry; that exclusion moved to comparison time
 # (app.extraction._matches_roster, keyed by pid). This is what lets
-# app.chat.RosterCache serve ONE fetch from a process-wide cache shared
-# across every conversation, instead of each conversation needing its own,
+# app.chat.RosterCache serve ONE fetch from a cache shared by every
+# conversation under the same principal (keyed per-principal otherwise --
+# see RosterCache), instead of each conversation needing its own,
 # differently-filtered copy.
 
 

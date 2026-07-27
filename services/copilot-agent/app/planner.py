@@ -592,10 +592,14 @@ class Planner:
         .detect_foreign_patient_reference``'s "switch to <Name>" signal.
 
         Issue #174: patient-agnostic -- unlike pre-#174, this does NOT
-        exclude ``self._patient_id``'s own entry (the fetch has no per-caller
-        state at all, which is what lets ``app.chat.RosterCache`` serve it
-        from ONE process-wide, TTL'd cache shared across every conversation
-        instead of resolving and retaining it separately per conversation).
+        exclude ``self._patient_id``'s own entry. This fetch runs as
+        ``self._token``'s own bearer, so it is NOT caller-invariant in
+        general -- see ``app.tools.patient_summary.get_patient_roster`` and
+        ``app.chat.RosterCache`` for the full per-auth-mode analysis --
+        which is why ``RosterCache`` caches it as ONE shared, process-wide
+        entry only when every caller is provably the same principal, keyed
+        by principal otherwise, instead of resolving and retaining it
+        separately per conversation.
         The bound patient's own entry is excluded by the CALLER, at
         comparison time, keyed by pid (see
         ``app.extraction._matches_roster``).

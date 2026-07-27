@@ -196,9 +196,11 @@ def test_no_new_bare_dangling_references() -> None:
     existing anchor, or a brand-new bare citation this PR never touched.
 
     **Mutation-verified:** temporarily appending a bare ``#237`` anywhere in
-    the swept trees (outside the exemptions below) turns this test red with
-    the offending file:line quoted in the failure message; removing it turns
-    the test green again.
+    the swept trees turns this test red with the offending file:line quoted
+    in the failure message; removing it turns the test green again.
+    ``_EXEMPT`` is currently empty (see its own comment for why) but the
+    per-line carve-out below is retained deliberately, for any future
+    same-file, non-citation prose occurrence of a dangling number.
     """
     import re
 

@@ -163,25 +163,16 @@ def get_patient_roster(client: OpenEmrClient, token: str) -> list[RosterEntry]:
     caller with no extra fetch.
 
     This fetch runs AS ``token``'s own bearer, so it has exactly the
-    per-caller state that implies -- NOT none. Whether the result is
-    actually caller-invariant depends entirely on the auth mode; see
-    ``app.chat.RosterCache`` for the full analysis. With
-    ``copilot_per_user_token_enabled`` OFF, every caller authenticates as
-    the same dev-bridge demo-clinician identity, so the roster genuinely
-    IS byte-identical across every conversation, which is what makes it
-    safe to serve from ONE process-wide, TTL'd, unkeyed cache entry
-    (``app.chat.RosterCache``) shared by every conversation instead of
-    being resolved -- and retained -- separately per conversation. With
-    the flag ON, each caller authenticates as their OWN OpenEMR user
-    account, and OpenEMR's role- and resource-scoped REST authorization
-    can return a genuinely DIFFERENT roster to a different principal from
-    the identical endpoint -- which is exactly why #182 keys
-    ``RosterCache`` by principal (the introspected ``sub``) rather than
-    serving one shared entry in that mode. Callers of this function do not
-    need to pick which mode applies -- ``RosterCache.get_or_fetch`` makes
-    that decision -- but this fetch itself must never be described as
-    having no per-caller state; it has exactly as much as OpenEMR's own
-    authorization model gives ``token``.
+    per-caller state that implies -- NOT none, and it must never be
+    described that way. Whether the result is actually caller-invariant
+    depends entirely on the auth mode -- byte-identical across every
+    conversation with ``copilot_per_user_token_enabled`` OFF (one shared
+    demo-clinician identity), genuinely different per principal with it ON
+    (OpenEMR's role- and resource-scoped REST authorization), and never
+    cached at all when the principal cannot be resolved. See
+    ``app.chat.RosterCache`` for the full per-mode analysis and why it
+    caches accordingly; callers of this function do not need to pick which
+    mode applies -- ``RosterCache.get_or_fetch`` makes that decision.
 
     Fail-safe: ``[]`` on any OpenEMR API error (timeout, insufficient scope,
     ...), never a raised exception -- callers

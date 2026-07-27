@@ -854,12 +854,14 @@ class Conversation:
         of memory, and would have mattered more once ``ConversationStore``'s
         TODO(P4.2) durable, DB-backed store lands.
 
-    The roster is byte-identical across every conversation (nothing in the
-    fetch is caller-specific -- see
-    ``app.tools.patient_summary.get_patient_roster``), so there was nothing
-    conversation-specific here worth keeping: ``app.chat.RosterCache`` now
-    serves it from ONE process-wide, TTL'd cache instead, and no
-    ``Conversation`` object holds any other patient's name at all.
+    The roster fetch runs as the caller's own bearer, so whether it is
+    byte-identical across conversations depends on the auth mode -- see
+    ``app.tools.patient_summary.get_patient_roster`` and
+    ``app.chat.RosterCache`` for the full analysis -- but either way there
+    was nothing CONVERSATION-specific here worth keeping: ``RosterCache``
+    now serves it from a cache keyed at most by principal (never by
+    conversation), and no ``Conversation`` object holds any other
+    patient's name at all.
     ``_stream_chat``'s ``_roster_provider`` closure reads that shared cache
     directly; see its docstring for the resolve-lazily behavior this
     replaces.
