@@ -326,15 +326,10 @@ def test_total_failure_stays_distinguishable_from_an_empty_document(store):
     if that regresses: a total failure must raise, not return."""
     failing_vlm = _FakeVlmOllama(error=True)
 
-    raised = False
-    try:
+    with pytest.raises(IngestionError):
         attach_and_extract(
             1, _FIXTURE_PATH, "lab_pdf", ollama_client=failing_vlm, document_store=store, fact_store=store
         )
-    except IngestionError:
-        raised = True
-
-    assert raised, "total extraction failure must raise IngestionError, not return normally"
 
 
 # ---------------------------------------------------------------------------
