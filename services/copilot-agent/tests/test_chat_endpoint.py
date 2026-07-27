@@ -1339,7 +1339,7 @@ def test_roster_cache_returns_cached_value_without_refetching_within_ttl():
     clock.advance(30.0)  # still within the 60s TTL
     second = cache.get_or_fetch(fetch)
 
-    assert first == [RosterEntry(pid=1, name="Bob Smith")]
+    assert first == (RosterEntry(pid=1, name="Bob Smith"),)
     assert second == first
     assert len(fetch_calls) == 1
 
@@ -1392,10 +1392,10 @@ def test_roster_cache_does_not_cache_a_failed_fetchs_empty_result():
     clock.advance(1.0)  # well within the 300s TTL -- a cache bug would serve the stale [] here
     second = cache.get_or_fetch(fetch)
 
-    assert first == []
+    assert first == ()
     # Presence: the second call actually reached `fetch` again (not served a
     # cached [] from the first call) and got the real, non-empty roster.
-    assert second == [RosterEntry(pid=1, name="Bob Smith")]
+    assert second == (RosterEntry(pid=1, name="Bob Smith"),)
     assert len(fetch_calls) == 2
 
 
@@ -1435,7 +1435,7 @@ def test_roster_cache_refuses_to_share_when_given_a_real_principal_in_shared_mod
 
     # (1) Bypassed to a fresh fetch, not served the pre-existing shared entry.
     assert real_principal_calls == 1
-    assert result == [RosterEntry(pid=2, name="Should Not Be Cached")]
+    assert result == (RosterEntry(pid=2, name="Should Not Be Cached"),)
 
     # (2) The shared entry (``principal=None`` callers) is untouched by the
     # real-principal call above -- still the original content, and this call
@@ -1449,7 +1449,7 @@ def test_roster_cache_refuses_to_share_when_given_a_real_principal_in_shared_mod
 
     shared_result = cache.get_or_fetch(counting_shared_fetch)
     assert shared_calls == 0  # cache hit -- still the original shared entry
-    assert shared_result == [RosterEntry(pid=1, name="Shared Roster")]
+    assert shared_result == (RosterEntry(pid=1, name="Shared Roster"),)
 
 
 def test_roster_cache_rejects_a_non_positive_ttl():
@@ -1513,7 +1513,7 @@ def test_roster_cache_bounds_total_retained_rows_by_evicting_the_soonest_to_expi
 
     result_b = cache.get_or_fetch(counting_fetch_b, principal="user-b")
     assert b_calls == 0  # cache hit
-    assert result_b == [RosterEntry(pid=1, name="Bob")]
+    assert result_b == (RosterEntry(pid=1, name="Bob"),)
 
     # "user-a" was evicted: re-fetching it must call fetch() again (a fresh
     # roster), not return a stale hit.
@@ -1575,7 +1575,7 @@ def test_roster_cache_never_caches_a_single_roster_larger_than_the_whole_row_bou
     result = cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
 
     # The caller still gets the full (uncached) roster back...
-    assert result == oversized_roster
+    assert result == tuple(oversized_roster)
     # ...but it was never admitted to the cache...
     assert "user-a" not in cache._entries
     # ...and the unrelated pre-existing entry was NOT sacrificed trying (and
@@ -1593,6 +1593,130 @@ def test_roster_cache_never_caches_a_single_roster_larger_than_the_whole_row_bou
 
     cache.get_or_fetch(counting_fetch, principal="user-a")
     assert calls == 1
+
+
+def test_roster_cache_caches_a_roster_of_exactly_max_rows_but_not_one_row_more():
+    """M-1: pins the boundary the oversize short-circuit
+    (``new_rows > self._max_rows``) actually draws. A roster of exactly
+    ``max_rows`` is the LARGEST roster that can still be cached -- flipping
+    ``>`` to ``>=`` would reject that exact-fit case too, and nothing else
+    in this suite reaches the boundary itself (every other row-bound test
+    uses rosters clearly under or clearly over the cap)."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=3)
+
+    exact_fit_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(3)]
+    cache.get_or_fetch(lambda: exact_fit_roster, principal="user-a")
+
+    # Exactly at the bound: cached (a second call within the TTL is a cache
+    # hit -- fetch() is not called again).
+    exact_fit_calls = 0
+
+    def counting_exact_fit() -> list[RosterEntry]:
+        nonlocal exact_fit_calls
+        exact_fit_calls += 1
+        return exact_fit_roster
+
+    cache.get_or_fetch(counting_exact_fit, principal="user-a")
+    assert exact_fit_calls == 0  # cache hit -- the exact-fit roster WAS cached
+    assert "user-a" in cache._entries
+
+    now[0] += datetime.timedelta(seconds=1)
+    one_over_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(4)]
+    cache.get_or_fetch(lambda: one_over_roster, principal="user-b")
+
+    # One row over the bound: never cached at all.
+    assert "user-b" not in cache._entries
+
+
+def test_roster_cache_same_key_refresh_does_not_double_count_the_stale_entry():
+    """M-2: pins the ``del self._entries[key]`` that runs BEFORE the
+    eviction loop when refreshing an already-present key. Without it, the
+    refreshed entry's OWN stale rows would still be counted against the
+    budget (double-counted alongside the new rows), which can force an
+    eviction of an UNRELATED principal's entry that would otherwise fit.
+
+    ``max_rows=10``: "a" (1 row, never touched again) and "b" (5 rows) both
+    expire; "b" is then refreshed with 9 rows. 1 + 9 = 10 fits the bound
+    exactly if "b"'s stale 5 rows are correctly dropped first -- "a" must
+    survive. Without the ``del``, the accounting sees 1 + 5 (stale "b") + 9
+    (new "b") = 15 > 10, forcing "a" (the soonest-to-expire OTHER entry) to
+    be evicted for no reason -- it never needed the room.
+    """
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=10.0, clock=lambda: now[0], require_principal=True, max_rows=10)
+
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=i, name=f"B{i}") for i in range(5)], principal="b")
+
+    # Expire both entries, then refresh "b" only.
+    now[0] += datetime.timedelta(seconds=20)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=i, name=f"B{i}") for i in range(9)], principal="b")
+
+    assert "a" in cache._entries, "unrelated entry 'a' must survive a same-key refresh of 'b'"
+    assert "b" in cache._entries
+    assert len(cache._entries["a"][0]) == 1
+    assert len(cache._entries["b"][0]) == 9
+
+
+def test_roster_cache_requires_explicit_require_principal_kwarg():
+    """M-3: ``require_principal`` must have NO default -- a prior gate
+    (Gate 2, #174) found the fail-open ``require_principal: bool = False``
+    default unsafe once #182 added per-principal keying, and required every
+    caller to state its authorization posture explicitly. Restoring the
+    default would leave every existing call site green (they all already
+    pass the kwarg) -- only a constructor call that OMITS it, expecting a
+    ``TypeError``, catches a regression here."""
+    with pytest.raises(TypeError):
+        RosterCache(  # type: ignore[call-arg]
+            ttl_seconds=60.0,
+            clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+        )
+
+
+def test_roster_cache_warns_once_when_a_single_roster_exceeds_the_row_bound(caplog):
+    """M-7: an oversized roster (bigger than the whole ``max_rows`` bound)
+    disables caching for that roster PERMANENTLY (every matching call hits
+    the same short-circuit) -- #174's amplification fix silently goes dark
+    with no operator-visible signal unless something logs it. Must fire
+    exactly ONCE per cache instance, not once per call (no log spam on every
+    turn for the life of a deployment whose roster never shrinks)."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=2)
+    oversized_roster = [RosterEntry(pid=i, name=f"Patient {i}") for i in range(5)]
+
+    with caplog.at_level(logging.WARNING):
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+        now[0] += datetime.timedelta(seconds=1)
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+        now[0] += datetime.timedelta(seconds=1)
+        cache.get_or_fetch(lambda: oversized_roster, principal="user-a")
+
+    oversize_warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(oversize_warnings) == 1
+
+
+def test_roster_cache_returns_an_immutable_tuple_that_a_caller_cannot_corrupt():
+    """M-6: the cached roster is returned as a ``tuple``, not a ``list`` --
+    a caller that mutates a returned ``list`` in place (e.g. ``.extend()``)
+    would silently desync the cache's own row-count bookkeeping from what
+    it actually holds. Storing/returning a ``tuple`` makes that mutation
+    impossible by construction: there is no in-place-mutating method to
+    call, and even attempting the ``list``-only ``.extend()`` API itself
+    must fail with ``AttributeError``."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_rows=10)
+    cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+
+    got = cache.get_or_fetch(lambda: [RosterEntry(pid=1, name="A")], principal="a")
+    assert isinstance(got, tuple)
+    with pytest.raises(AttributeError):
+        got.extend([RosterEntry(pid=99, name="Injected")])  # type: ignore[attr-defined]
+
+    # The cache's own accounting is unaffected by the caller's failed
+    # mutation attempt.
+    assert len(cache._entries["a"][0]) == 1
 
 
 def test_conversation_store_bounds_retained_conversations():

@@ -1076,9 +1076,13 @@ class RosterCache:
     closed to ``get_patient_roster``'s ``[]`` fail-safe, which
     ``get_or_fetch`` never caches (see below) -- so scope differences
     across tokens for the same subject cannot poison another token's cached
-    entry either (see the row-bound paragraph below for the one narrower
-    scope-mismatch case this does NOT cover). #182 therefore keys
-    ``require_principal=True`` caching by ``principal``
+    entry via that path. This is the only scope-mismatch scenario actually
+    verified here; a hypothetical 200 response containing a *filtered
+    subset* for a narrower-scoped token (rather than an outright failure)
+    would be cached and served to any other token resolving to the same
+    ``sub``, same as any other same-``sub`` cache hit -- this class has no
+    mechanism to detect or guard against that narrower case. #182 therefore
+    keys ``require_principal=True`` caching by ``principal``
     (the introspected ``sub`` -- see ``_stream_chat``'s ``_roster_provider``):
     each distinct principal gets its OWN cached entry, so caller B (a
     different principal) is never served caller A's roster, while a SECOND
@@ -1102,27 +1106,24 @@ class RosterCache:
     (``app.tools.patient_summary._fetch_all_patients`` pages nothing -- one
     roster is the whole patient table), so a fixed principal-count cap times
     a large deployment's roster is unbounded in the dimension that actually
-    matters (measured ~156 bytes/row; ``max_principals=512`` against a
-    50,000-patient roster is ~4.35 GB, alone exceeding the 2 GB container
-    budget this cache shares with #167's ``ConversationStore``). Bounding
-    rows directly is deployment-size-insensitive. Once at capacity, admitting
+    matters (measured ~173 bytes/row via ``tracemalloc`` over realistic,
+    distinct ``(pid, name)`` pairs -- see ``app.config``'s
+    ``DEFAULT_ROSTER_CACHE_MAX_ROWS`` comment for the full measurement note;
+    ``max_principals=512`` against a 50,000-patient roster is ~4.12 GB, alone
+    exceeding the 2 GB container budget this cache shares with #167's
+    ``ConversationStore``). Bounding rows directly is deployment-size-insensitive.
+    Once at capacity, admitting
     or refreshing an entry evicts whichever OTHER existing entry expires
     soonest (a cheap, already-tracked-timestamp approximation of LRU --
     insertion/write order, not true access-recency LRU; see ``get_or_fetch``)
     until the new/updated entry fits, rather than growing without limit. A
     single roster larger than the WHOLE bound is never cached at all (not
     evicted-then-still-doesn't-fit) -- it is simply served uncached for that
-    one call, same cost as a cache miss.
-
-    A too-narrow-scope token's fetch failing closed to ``get_patient_roster``
-    's ``[]`` -- never cached, see below -- means scope differences across
-    tokens for the SAME subject cannot poison another token's cached entry
-    via that path. This is the only scope-mismatch scenario actually
-    verified here; a hypothetical 200 response containing a *filtered
-    subset* for a narrower-scoped token (rather than an outright failure)
-    would be cached and served to any other token resolving to the same
-    ``sub``, same as any other same-``sub`` cache hit -- this class has no
-    mechanism to detect or guard against that narrower case.
+    one call, same cost as a cache miss. This key's own pre-existing
+    (expired) entry, if any, has already been deleted before this check runs
+    (see ``get_or_fetch``), so a refresh that turns out to be oversized still
+    drops its own stale rows from the budget rather than leaving them
+    double-counted alongside the uncached return.
 
     TTL semantics: one ``ttl_seconds`` shared across every principal's
     entry, not a per-principal override -- staleness tolerance for the
@@ -1180,11 +1181,19 @@ class RosterCache:
         # Accepted (a real deployment's principal set within one TTL window
         # is expected to be small relative to ``max_rows``); flagged here so
         # a future reader does not mistake this for true LRU.
-        self._entries: dict[str, tuple[list[RosterEntry], datetime]] = {}
+        self._entries: dict[str, tuple[tuple[RosterEntry, ...], datetime]] = {}
+        # #182 follow-up (Gate 3 MINOR): set the first time ``get_or_fetch``
+        # hits the "single roster bigger than the whole bound" short-circuit
+        # below, so the one-time operator warning fires exactly once per
+        # cache instance -- not once per call, which would spam the log on
+        # EVERY turn for the lifetime of a process whose deployment roster
+        # permanently exceeds ``max_rows`` (#174's amplification fix would
+        # otherwise be silently off with no operator-visible signal at all).
+        self._oversize_warned = False
 
     def get_or_fetch(
         self, fetch: Callable[[], list[RosterEntry]], principal: str | None = None
-    ) -> list[RosterEntry]:
+    ) -> tuple[RosterEntry, ...]:
         """Return the cached roster if still fresh; otherwise call ``fetch``
         (``Planner.resolve_patient_roster``, an OpenEMR round trip),
         cache the result, and return it.
@@ -1237,13 +1246,13 @@ class RosterCache:
             if principal is None:
                 # Subject unresolved -- safe bypass, never a fall back to
                 # sharing.
-                return fetch()
+                return tuple(fetch())
         elif principal is not None:
             # Gate 3 MINOR-3: a real principal against a shared-mode
             # (``require_principal=False``) cache -- refuse to share the
             # frozen shared entry. Fail closed to a bypass, never to
             # serving/writing it.
-            return fetch()
+            return tuple(fetch())
         # Either ``_require_principal`` is ``False`` (shared mode, and
         # ``principal`` is ``None`` per the ``elif`` above) or
         # ``_require_principal`` is ``True`` and ``principal`` is a real
@@ -1255,7 +1264,13 @@ class RosterCache:
             entry = self._entries.get(key)
             if entry is not None and now < entry[1]:
                 return entry[0]
-        roster = fetch()
+        # Stored and returned as an immutable ``tuple``, never the ``list``
+        # ``fetch()`` itself returns: the row-count accounting below (and on
+        # every subsequent cache hit) depends on the retained rows never
+        # changing after this point, so a caller mutating the returned value
+        # (e.g. ``.extend()``) must not be able to silently desync the
+        # cache's own bookkeeping from what it actually holds.
+        roster = tuple(fetch())
         if roster:
             new_rows = len(roster)
             with self._lock:
@@ -1270,6 +1285,23 @@ class RosterCache:
                     # other entry still would not make it fit, so there is
                     # no eviction amount that helps; serve it uncached this
                     # one call instead (same cost as a cache miss).
+                    #
+                    # #182 follow-up (Gate 3 MINOR): without this, a
+                    # deployment whose roster permanently exceeds
+                    # ``max_rows`` hits this branch on EVERY matching turn,
+                    # forever, with no operator-visible signal that #174's
+                    # amplification fix is effectively off. Logged ONCE per
+                    # cache instance (``_oversize_warned``), row COUNT only
+                    # -- never names or any other roster content -- so an
+                    # operator can raise ``copilot_roster_cache_max_rows``.
+                    if not self._oversize_warned:
+                        self._oversize_warned = True
+                        _logger.warning(
+                            "Roster exceeds RosterCache row bound; caching "
+                            "disabled for this roster until max_rows is "
+                            "raised",
+                            extra={"roster_rows": new_rows, "max_rows": self._max_rows},
+                        )
                     return roster
                 retained_rows = sum(len(cached) for cached, _ in self._entries.values())
                 while self._entries and retained_rows + new_rows > self._max_rows:
@@ -1945,7 +1977,7 @@ def _stream_chat(
         # available below regardless of which branch runs next.
         run_streaming = getattr(planner, "run_streaming", None)
 
-        def _roster_provider() -> list[RosterEntry]:
+        def _roster_provider() -> Sequence[RosterEntry]:
             # #237: resolved LAZILY -- this closure is only ever CALLED by
             # detect_foreign_patient_reference when a "switch to <Name>"
             # construction has already matched and isn't the bound patient,
@@ -1961,11 +1993,14 @@ def _stream_chat(
             # #182: ``owner_subject`` (the #185 introspected principal, or
             # ``None`` flag-off / on a resolution miss) is threaded through
             # as the cache key unconditionally -- ``RosterCache`` itself
-            # decides whether to use it (flag ON) or ignore it in favor of
-            # the one shared entry (flag OFF), and a ``None`` principal
-            # under flag ON safely bypasses caching entirely rather than
-            # falling back to the shared entry. See ``RosterCache.
-            # get_or_fetch``'s and ``get_roster_cache``'s docstrings.
+            # decides what to do with it: flag ON keys the shared cache by
+            # this value; flag OFF, a non-``None`` ``owner_subject`` is NOT
+            # ignored in favor of the one shared entry -- Gate 3 MINOR-3
+            # bypasses caching entirely for that call instead (fail closed,
+            # never a silent fall back to sharing). A ``None`` principal
+            # under flag ON safely bypasses caching entirely too, for the
+            # same reason. See ``RosterCache.get_or_fetch``'s and
+            # ``get_roster_cache``'s docstrings.
             resolve_roster = getattr(planner, "resolve_patient_roster", None)
             if resolve_roster is None:
                 return []

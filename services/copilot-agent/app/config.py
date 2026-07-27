@@ -44,13 +44,19 @@ DEFAULT_ROSTER_CACHE_TTL_SECONDS = 300.0
 # (``app.tools.patient_summary._fetch_all_patients`` pages nothing -- one
 # roster is the whole patient table), so a principal-count cap does not
 # bound bytes -- ``max_principals=512`` against a 50,000-patient roster is
-# ~4.35 GB, which alone exceeds the 2 GB container budget
+# ~4.12 GB, which alone exceeds the 2 GB container budget
 # (``docker/development-easy/docker-compose.copilot.yml``'s ``mem_limit``).
-# Measured ~156 bytes per ``app.tools.patient_summary.RosterEntry`` row
-# (``(pid: int, name: str)``); 250,000 rows is ~40 MB -- comfortably inside
-# the 2 GB budget alongside #167's ConversationStore (~1 GB documented
-# worst case) -- while still covering any deployment-size patient panel
-# this service targets.
+# Measured ~173 bytes per ``app.tools.patient_summary.RosterEntry`` row
+# (``(pid: int, name: str)``) via ``tracemalloc`` over 250,000 realistic,
+# distinct ``(int, str)`` pairs -- NOT ``sys.getsizeof`` summed per object,
+# which ignores allocator/list-over-allocation overhead and understates the
+# true figure; 512 * 50,000 * ~173 B is the ~4.12 GB above, and 250,000 rows
+# at the same per-row figure is ~41 MB -- comfortably inside the 2 GB budget
+# alongside #167's ConversationStore (its own merged PR estimates ~1 GB
+# realistic worst case, see
+# ``docker/development-easy/docker-compose.copilot.yml``'s ``agent.mem_limit``
+# comment) -- while still covering any deployment-size patient panel this
+# service targets.
 DEFAULT_ROSTER_CACHE_MAX_ROWS = 250_000
 
 # Issue #173: default cap for app.body_size_limit.BodySizeLimitMiddleware --
