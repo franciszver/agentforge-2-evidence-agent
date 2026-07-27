@@ -1344,6 +1344,39 @@ def get_support_judge_provider(settings: Settings = Depends(get_settings)) -> Su
     return _provide
 
 
+def _no_op_source_ref_relevance_judge_provider() -> None:
+    """Flag-OFF default (issue #170): no judge, no extra LLM call --
+    ``run_verification`` treats ``source_ref_relevance_judge=None`` as "skip
+    the SourceRef-relevance gate entirely," same posture as
+    ``_no_op_support_judge_provider`` above."""
+    return None
+
+
+def get_source_ref_relevance_judge_provider(
+    settings: Settings = Depends(get_settings),
+) -> SupportJudgeProvider:
+    """FastAPI dependency: the active SourceRef-relevance judge provider for
+    /chat's issue #170 gate. Override in tests.
+
+    Flag ON (``copilot_source_ref_relevance_enabled``): the provider builds
+    the SAME text-generation client selected by ``copilot_llm_engine``, same
+    posture as ``get_support_judge_provider`` above -- the two gates are
+    duck-typed against the identical ``SemanticSupportJudgeLike`` protocol
+    (see ``app.source_ref_relevance``'s module docstring).
+
+    Flag OFF (default, and the ONLY state this has ever shipped in --
+    MEASUREMENT-gated, see ``app.source_ref_relevance``'s module docstring):
+    ``_no_op_source_ref_relevance_judge_provider`` -- ``None`` every time, so
+    ``run_verification`` skips the gate with zero added latency."""
+    if not settings.copilot_source_ref_relevance_enabled:
+        return _no_op_source_ref_relevance_judge_provider
+
+    def _provide() -> SemanticSupportJudgeLike:
+        return get_text_llm_client(settings)
+
+    return _provide
+
+
 def get_require_answer_grounding(settings: Settings = Depends(get_settings)) -> bool:
     """FastAPI dependency: whether ``run_verification`` should run the issue
     #153 claim-in-answer grounding gate this request. Override in tests.
@@ -1633,6 +1666,7 @@ def _stream_chat(
     support_judge_provider: SupportJudgeProvider = _no_op_support_judge_provider,
     require_answer_grounding: bool = False,
     require_tool_call_scoping: bool = False,
+    source_ref_relevance_judge_provider: SupportJudgeProvider = _no_op_source_ref_relevance_judge_provider,
 ) -> Iterable[str]:
     correlation_id = get_correlation_id()
     request_start_ts = time.time()
@@ -1855,6 +1889,7 @@ def _stream_chat(
             support_judge=support_judge_provider(),
             require_answer_grounding=require_answer_grounding,
             require_tool_call_scoping=require_tool_call_scoping,
+            source_ref_relevance_judge=source_ref_relevance_judge_provider(),
         )
         verification_end_ts = time.time()
         _emit_llm_spans(trace_store, correlation_id, getattr(extractor, "llm_calls", []))
@@ -1982,6 +2017,7 @@ async def chat_endpoint(
     support_judge_provider: SupportJudgeProvider = Depends(get_support_judge_provider),
     require_answer_grounding: bool = Depends(get_require_answer_grounding),
     require_tool_call_scoping: bool = Depends(get_require_tool_call_scoping),
+    source_ref_relevance_judge_provider: SupportJudgeProvider = Depends(get_source_ref_relevance_judge_provider),
 ) -> StreamingResponse:
     # #177: token extraction + validation now happens in the
     # ``get_authenticated_token`` dependency itself (see its docstring), so
@@ -2040,6 +2076,7 @@ async def chat_endpoint(
             support_judge_provider=support_judge_provider,
             require_answer_grounding=require_answer_grounding,
             require_tool_call_scoping=require_tool_call_scoping,
+            source_ref_relevance_judge_provider=source_ref_relevance_judge_provider,
         ),
         media_type="text/event-stream",
     )

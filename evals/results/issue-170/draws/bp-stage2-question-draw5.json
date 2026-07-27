@@ -1,0 +1,34 @@
+{
+  "case_id": "bp-stage2-question",
+  "draw_index": 5,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 2,
+  "exposure_claim_count": 2,
+  "judge_records": [
+    {
+      "claim_text": "The patient's systolic blood pressure was recorded as 148 mmHg.",
+      "source_ref_facts": [
+        "blood_pressure_systolic: 148.0"
+      ],
+      "context_facts": [
+        "blood_pressure_diastolic: 94.0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the patient's systolic blood pressure as 148.0, which matches the CLAIM.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient's diastolic blood pressure was recorded as 94 mmHg.",
+      "source_ref_facts": [
+        "blood_pressure_diastolic: 94.0"
+      ],
+      "context_facts": [
+        "blood_pressure_systolic: 148.0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS directly state the patient's diastolic blood pressure as 94.0 mmHg, which matches the CLAIM.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

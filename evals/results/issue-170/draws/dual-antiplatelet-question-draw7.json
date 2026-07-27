@@ -1,0 +1,55 @@
+{
+  "case_id": "dual-antiplatelet-question",
+  "draw_index": 7,
+  "answer_verdict": "verified",
+  "eligible_claim_count": 3,
+  "exposure_claim_count": 3,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking aspirin.",
+      "source_ref_facts": [
+        "name: Aspirin",
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Clopidogrel",
+        "status: active",
+        "name: Aspirin"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS and ESTABLISHED FACTS both indicate that Aspirin is active, which directly supports the CLAIM that the patient is currently taking aspirin.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient is currently taking clopidogrel.",
+      "source_ref_facts": [
+        "name: Clopidogrel",
+        "status: active"
+      ],
+      "context_facts": [
+        "name: Aspirin",
+        "status: active",
+        "name: Clopidogrel"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS and ESTABLISHED FACTS both indicate that Clopidogrel is active, which directly supports the CLAIM that the patient is currently taking clopidogrel.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient's medication list confirms the use of both aspirin and clopidogrel.",
+      "source_ref_facts": [
+        "name: Aspirin",
+        "name: Clopidogrel"
+      ],
+      "context_facts": [
+        "name: Aspirin",
+        "status: active",
+        "name: Clopidogrel"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS and ESTABLISHED FACTS together confirm the patient is taking both aspirin and clopidogrel, directly supporting the CLAIM.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

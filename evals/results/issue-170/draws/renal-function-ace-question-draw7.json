@@ -1,0 +1,74 @@
+{
+  "case_id": "renal-function-ace-question",
+  "draw_index": 7,
+  "answer_verdict": "partially_verified",
+  "eligible_claim_count": 4,
+  "exposure_claim_count": 4,
+  "judge_records": [
+    {
+      "claim_text": "The patient is currently taking Lisinopril.",
+      "source_ref_facts": [
+        "name: Lisinopril",
+        "status: active"
+      ],
+      "context_facts": [
+        "dose: 10mg",
+        "route: oral",
+        "recent_lab_count: 0",
+        "problem_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS state that Lisinopril is active, which directly supports the CLAIM that the patient is currently taking Lisinopril.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "Lisinopril is taken orally at a dose of 10mg.",
+      "source_ref_facts": [
+        "dose: 10mg",
+        "route: oral"
+      ],
+      "context_facts": [
+        "name: Lisinopril",
+        "status: active",
+        "recent_lab_count: 0",
+        "problem_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS provide the dose (10mg) and route (oral), and the ESTABLISHED FACTS confirm the medication name is Lisinopril, together supporting the CLAIM that Lisinopril is taken orally at a dose of 10mg.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "There are no recent lab results available for the patient.",
+      "source_ref_facts": [
+        "recent_lab_count: 0"
+      ],
+      "context_facts": [
+        "name: Lisinopril",
+        "status: active",
+        "dose: 10mg",
+        "route: oral",
+        "problem_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACT 'recent_lab_count: 0' directly supports the CLAIM that there are no recent lab results available for the patient.",
+      "would_downgrade": false
+    },
+    {
+      "claim_text": "The patient has no existing problems related to kidney function.",
+      "source_ref_facts": [
+        "problem_count: 0"
+      ],
+      "context_facts": [
+        "name: Lisinopril",
+        "status: active",
+        "dose: 10mg",
+        "route: oral",
+        "recent_lab_count: 0"
+      ],
+      "verdict": "supported",
+      "reason": "The SOURCE FACTS indicate that the patient has 0 problems, which directly supports the CLAIM that the patient has no existing problems related to kidney function.",
+      "would_downgrade": false
+    }
+  ],
+  "exception": null
+}

@@ -1,0 +1,9 @@
+{
+  "case_id": "renal-function-ace-question",
+  "draw_index": 1,
+  "answer_verdict": "blocked",
+  "eligible_claim_count": 0,
+  "exposure_claim_count": 0,
+  "judge_records": [],
+  "exception": null
+}

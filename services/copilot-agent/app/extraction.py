@@ -97,6 +97,7 @@ from app.schemas.tools import (
 )
 from app.schemas.verification import Claim, VerifiedAnswer
 from app.semantic_support import SemanticSupportJudgeLike, apply_semantic_support
+from app.source_ref_relevance import apply_source_ref_relevance
 from app.tool_call_scoping import apply_tool_call_scoping, engaged_call_ids
 from app.tools.patient_summary import RosterEntry
 from app.verdict import VerdictResult, compute_verdict
@@ -699,6 +700,7 @@ def run_verification(
     support_judge: SemanticSupportJudgeLike | None = None,
     require_answer_grounding: bool = False,
     require_tool_call_scoping: bool = False,
+    source_ref_relevance_judge: SemanticSupportJudgeLike | None = None,
 ) -> tuple[VerdictResult, RenderedAnswer]:
     """Fold a completed ``PlannerResult`` into the verification frame's inputs.
 
@@ -803,7 +805,19 @@ def run_verification(
 
     Default ``False`` (what every caller not opting into
     ``Settings.copilot_extraction_tool_call_scoping_enabled`` passes) skips
-    both prevention and enforcement entirely -- byte-identical to today."""
+    both prevention and enforcement entirely -- byte-identical to today.
+
+    ``source_ref_relevance_judge`` (issue #170, additive): when supplied,
+    every claim whose citations already all passed provenance re-validation
+    AND are ALL ``SourceRef``s (zero ``DocumentCitation``s -- the #130-census
+    population) is additionally re-judged by ``app.source_ref_relevance
+    .apply_source_ref_relevance`` for topical relevance, not just provenance.
+    ``None`` (the default, and what every caller not opting into
+    ``Settings.copilot_source_ref_relevance_enabled`` passes) skips this step
+    entirely -- byte-identical to today, no extra LLM call. See
+    ``app.source_ref_relevance``'s module docstring: this mechanism is
+    MEASUREMENT-gated (a live re-measurement against #130's own pre-
+    registered kill criterion), never enabled based on this comment alone."""
     tools = [entry.tool for entry in result.trace]
     normalized = normalize_raw_results(tools, result.raw_results)
     # See "Engagement is computed..." above: deliberately result.answer_pre_
@@ -858,6 +872,8 @@ def run_verification(
         claim_results = apply_answer_grounding(claim_results, result.answer)
     if support_judge is not None:
         claim_results = apply_semantic_support(claim_results, support_judge)
+    if source_ref_relevance_judge is not None:
+        claim_results = apply_source_ref_relevance(claim_results, source_ref_relevance_judge)
     rendered = render_answer(claim_results)
 
     medications = collect_medications(tools, result.raw_results)

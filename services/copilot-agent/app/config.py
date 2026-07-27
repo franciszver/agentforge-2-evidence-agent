@@ -350,6 +350,15 @@ class Settings(BaseSettings):
     # the P3.9b measurement showed the gate reliable (6/6 adversarial caught,
     # 6/6 supported-correct), so "verified" now means provenance AND semantic
     # support in production. See app/semantic_support.py.
+    #
+    # Issue #192 (BLOCKING, filed): this judge (and copilot_source_ref_
+    # relevance_enabled below) interpolates claim text / quote / fact values
+    # into the judge prompt with only a soft system-prompt instruction as
+    # injection defence -- no structural mitigation. #192 tracks structural
+    # mitigation across BOTH judge modules and is a pre-condition the owner
+    # has marked BLOCKING for this flag's continued default-ON status, not
+    # just for source_ref_relevance's own enablement. See app/source_ref_
+    # relevance.py's module docstring, "Injection posture".
     copilot_semantic_support_enabled: bool = True
 
     # Issue #153: when true, run_verification additionally requires that each
@@ -424,6 +433,45 @@ class Settings(BaseSettings):
     # suite with `COPILOT_EXTRACTION_TOOL_CALL_SCOPING_ENABLED=true` exercises
     # this gate against the existing recordings.
     copilot_extraction_tool_call_scoping_enabled: bool = False
+
+    # Issue #170: when true, ``run_verification`` additionally runs the
+    # SourceRef-relevance LLM-judge (app.source_ref_relevance) over every
+    # claim whose surviving citations are ALL ``SourceRef``s (zero
+    # ``DocumentCitation``s -- the #130-census population,
+    # ``evals/runner/census_source_ref_claims.py``) and which already passed
+    # provenance re-validation -- the ``SourceRef`` counterpart to
+    # ``copilot_semantic_support_enabled`` above. A claim carrying even one
+    # DocumentCitation is untouched by this gate (already
+    # ``copilot_semantic_support_enabled``'s territory).
+    #
+    # THIS IS THE #130/#170 MECHANISM CLASS, MEASURED AND DECLINED TWICE
+    # ALREADY (#130: context-free judge, false-rejected genuinely valid terse
+    # claims; #164/#163: a structurally different but adjacent gate, declined
+    # for prevention-driven false blocks on absence-shaped answers). Default
+    # OFF, and stays OFF unless a live re-measurement under the SAME protocol
+    # #130 used (``evals/runner/issue_170_source_ref_relevance_spike.py`` --
+    # 12 ``citation_present`` cases, >=8 draws/case) shows the established-
+    # facts-context fix (module docstring's "Established-facts context")
+    # closes the false-reject gap #130 found, per #130's own pre-registered
+    # upgrade criteria. See ``docs/MODEL_AND_HARDWARE_SELECTION.md``'s issue
+    # #130/#170 findings sections for the measured numbers before ever
+    # flipping this default. Flag OFF: byte-identical to today, no extra LLM
+    # call.
+    #
+    # Issue #192 (BLOCKING, filed): this judge interpolates claim text /
+    # fact values into the judge prompt with only a soft system-prompt
+    # instruction as injection defence -- no structural mitigation, same
+    # posture as ``copilot_semantic_support_enabled`` above since #47. #192
+    # tracks structural mitigation across both judge modules and is a
+    # pre-condition the owner has marked BLOCKING for ever flipping THIS
+    # flag on -- the #170 zero-false-reject measurement above does not
+    # clear that separate risk. See app/source_ref_relevance.py's module
+    # docstring, "Injection posture".
+    #
+    # `evals/runner/pipeline.py`'s `run_case` threads this setting through to
+    # `run_verification` exactly parallel to
+    # `copilot_extraction_tool_call_scoping_enabled` above.
+    copilot_source_ref_relevance_enabled: bool = False
 
     # Issue #173: request-body-size cap enforced by
     # app.body_size_limit.BodySizeLimitMiddleware, the outermost ASGI

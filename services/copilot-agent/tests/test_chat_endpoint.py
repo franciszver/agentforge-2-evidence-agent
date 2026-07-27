@@ -35,6 +35,7 @@ from app.chat import (
     get_planner_factory,
     get_require_tool_call_scoping,
     get_roster_cache,
+    get_source_ref_relevance_judge_provider,
     get_token_validator,
 )
 from app.config import Settings, get_settings
@@ -1700,6 +1701,76 @@ def test_chat_tool_call_scoping_flag_on_exercises_prevention_and_enforcement_end
     assert "call_0" in sent_text  # the engaged call is still present
 
     # ENFORCEMENT: the claim citing the unengaged call still fails to verify.
+    events = _iter_sse_events(response.text)
+    verification_data = json.loads(next(data for name, data in events if name == "verification"))
+    assert verification_data["verdict"] != "verified"
+
+
+class _ScriptedSourceRefRelevanceJudge:
+    """A ``SemanticSupportJudgeLike`` double (issue #170): always returns a
+    scripted ``NOT_SUPPORTED`` verdict, and records every call it received."""
+
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    def extract(self, prompt_or_messages: object, schema: type, *, options: object = None):
+        from app.semantic_support import SemanticSupportJudgement, SupportVerdict
+
+        self.calls.append(prompt_or_messages)
+        return SemanticSupportJudgement(verdict=SupportVerdict.NOT_SUPPORTED, reason="scripted: topically irrelevant")
+
+
+def test_chat_source_ref_relevance_flag_on_reaches_the_judge_end_to_end():
+    """Gate-3 review, issue #170 MINOR 3: ``tests/test_source_ref_relevance_
+    judge_provider.py`` pins the DEFAULT (``False``) and the PROVIDER
+    (``get_source_ref_relevance_judge_provider`` builds a real client when
+    the flag is on / is the no-op when off) -- but neither of those proves
+    the CALL-SITE WIRING (``app.chat``'s ``_stream_chat``/``chat_endpoint``
+    actually threading the provider's judge into ``run_verification``) is
+    intact. Dropping that wiring would leave every existing test green,
+    because ``_stream_chat``'s parameter defaults to the no-op provider and
+    the flag defaults off. This test forces the flag ON via
+    ``app.dependency_overrides`` (the SAME mechanism the #158 tool-call-
+    scoping enforcement test above uses) and proves the scripted judge is
+    actually invoked and its verdict actually reaches the SSE verification
+    frame -- if the wiring were ever dropped, this test would fail (the
+    claim would verify, since the no-op provider would be used instead)."""
+    allergies_raw = AllergiesOutput(
+        items=[AllergyItem(substance="Penicillin", severity=AllergySeverity.SEVERE)]
+    ).model_dump(mode="json")
+    trace = [ToolCallTrace(tool=ToolName.GET_ALLERGIES, args={}, result={"summary": "q"}, error=None)]
+    fake_planner = FakePlanner(trace=trace, answer="She is allergic to Penicillin.", raw_results=[allergies_raw])
+
+    # A single SourceRef-only claim (no DocumentCitation), citing a field
+    # that DOES resolve against the raw record -- so it passes provenance
+    # re-validation and is squarely in `app.source_ref_relevance`'s scope
+    # (module docstring, "Scope"); the ONLY thing that can still fail it is
+    # the relevance judge itself.
+    claim = Claim(
+        text="She is allergic to Penicillin.",
+        source_refs=[SourceRef(tool_call_id="call_0", record_id="0", field="substance", asserted_value="Penicillin")],
+    )
+    fake_extractor = FakeExtractor(claims=[claim])
+    scripted_judge = _ScriptedSourceRefRelevanceJudge()
+
+    _override_ok_validator()
+    _override_planner_factory(fake_planner)
+    _override_extractor(fake_extractor)
+    app.dependency_overrides[get_source_ref_relevance_judge_provider] = lambda: (lambda: scripted_judge)
+
+    response = client.post(
+        "/chat",
+        json={"message": "Is she allergic to anything?", "patient_id": 1},
+        headers={"Authorization": "Bearer good-token"},
+    )
+
+    # The scripted judge was actually reached -- proves the wiring, not just
+    # the default/provider in isolation.
+    assert scripted_judge.calls, "expected the source-ref-relevance judge to be invoked"
+
+    # Its NOT_SUPPORTED verdict actually reached the verdict/verification
+    # frame -- a claim that would otherwise verify (real provenance match)
+    # is downgraded by the judge's call.
     events = _iter_sse_events(response.text)
     verification_data = json.loads(next(data for name, data in events if name == "verification"))
     assert verification_data["verdict"] != "verified"
