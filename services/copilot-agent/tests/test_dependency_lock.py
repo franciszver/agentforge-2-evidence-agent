@@ -81,15 +81,23 @@ def test_requirements_lockfile_exists() -> None:
     )
 
 
-def test_every_runtime_dependency_is_pinned_in_lockfile() -> None:
-    specs = _load_runtime_dependency_specs()
-    logical_lines = _load_logical_lines()
+def _load_pinned_entries() -> list[tuple[str, str]]:
+    """(name, version) for every pinned requirement line, in file order.
 
-    pinned_names = set()
-    for line in logical_lines:
+    Shared by every test below that needs to know what's pinned, so the
+    `name==version` parsing lives in exactly one place.
+    """
+    entries: list[tuple[str, str]] = []
+    for line in _load_logical_lines():
         match = _PIN_RE.match(line)
         if match:
-            pinned_names.add(Requirement(f"{match.group(1)}=={match.group(2)}").name)
+            entries.append((Requirement(f"{match.group(1)}=={match.group(2)}").name, match.group(2)))
+    return entries
+
+
+def test_every_runtime_dependency_is_pinned_in_lockfile() -> None:
+    specs = _load_runtime_dependency_specs()
+    pinned_names = {name for name, _ in _load_pinned_entries()}
 
     missing = [name for name, _ in specs if name not in pinned_names]
     assert not missing, (
@@ -113,15 +121,10 @@ def test_every_lockfile_requirement_has_a_hash() -> None:
 
 def test_starlette_transitive_is_pinned() -> None:
     """#184's motivating transitive (fastapi's own dependency) must be locked too."""
-    logical_lines = _load_logical_lines()
-    starlette_lines = [
-        line for line in logical_lines if _PIN_RE.match(line) and Requirement(
-            f"{_PIN_RE.match(line).group(1)}=={_PIN_RE.match(line).group(2)}"  # type: ignore[union-attr]
-        ).name == "starlette"
-    ]
-    assert len(starlette_lines) == 1, (
+    starlette_entries = [name for name, _ in _load_pinned_entries() if name == "starlette"]
+    assert len(starlette_entries) == 1, (
         "expected exactly one pinned `starlette==` line in requirements.txt "
-        f"(found {len(starlette_lines)}) -- fastapi's transitive dependency must "
+        f"(found {len(starlette_entries)}) -- fastapi's transitive dependency must "
         "be locked, not left to resolve freely."
     )
 
@@ -136,13 +139,7 @@ def test_lockfile_pins_satisfy_pyproject_ranges() -> None:
     not a replacement for it.
     """
     specs = _load_runtime_dependency_specs()
-    logical_lines = _load_logical_lines()
-
-    pinned_versions: dict[str, str] = {}
-    for line in logical_lines:
-        match = _PIN_RE.match(line)
-        if match:
-            pinned_versions[Requirement(f"{match.group(1)}=={match.group(2)}").name] = match.group(2)
+    pinned_versions = dict(_load_pinned_entries())
 
     out_of_range = [
         f"{name}=={pinned_versions[name]} does not satisfy pyproject's {specifier}"

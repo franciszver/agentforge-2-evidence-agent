@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerates services/copilot-agent/requirements.txt (board issue #213).
+# Regenerates services/copilot-agent/requirements.txt (board issue 213).
 #
 # Runs pip-compile INSIDE the exact digest-pinned base image the Dockerfile
 # installs into (python:3.11-slim@sha256:...), so the hashes and pins this

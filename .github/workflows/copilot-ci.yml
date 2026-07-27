@@ -74,7 +74,7 @@ jobs:
         working-directory: services/copilot-agent
         # Separate from the env audit above: this reads requirements.txt (the
         # hash-locked production runtime closure the Dockerfile installs,
-        # issue #213) directly, so a vulnerable transitive pinned in the lock
+        # issue 213) directly, so a vulnerable transitive pinned in the lock
         # is caught even if the dev/test env above resolved something else.
         run: pip-audit -r requirements.txt
 
@@ -88,7 +88,7 @@ jobs:
 
       - name: Build copilot-agent image
         # No push -- this job exists purely to catch a broken lockfile or
-        # Dockerfile (issue #213) before merge; nothing else in this
+        # Dockerfile (issue 213) before merge; nothing else in this
         # workflow builds the image.
         run: docker build services/copilot-agent
 

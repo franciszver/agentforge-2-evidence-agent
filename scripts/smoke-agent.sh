@@ -3,7 +3,7 @@
 #
 # Builds the production image (the same hash-locked `requirements.txt` +
 # `pip install --no-deps .` path the Dockerfile uses, i.e. no dev extras --
-# see issue #213) and verifies the container actually boots and serves
+# see issue 213) and verifies the container actually boots and serves
 # /health, rather than crashing on a missing runtime dependency.
 set -euo pipefail
 

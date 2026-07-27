@@ -3,7 +3,7 @@ FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7e
 WORKDIR /app
 
 COPY pyproject.toml requirements.txt ./
-# requirements.txt (scripts/lock-deps.sh, issue #213) hash-pins the entire
+# requirements.txt (scripts/lock-deps.sh, issue 213) hash-pins the entire
 # production runtime closure -- transitives included -- so every build from
 # this commit resolves byte-identical dependencies, not just something
 # inside pyproject.toml's floor/ceiling ranges.
