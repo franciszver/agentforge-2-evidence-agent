@@ -24,17 +24,22 @@ declares, so it fails loudly if the two are ever allowed to disagree.
 
 from __future__ import annotations
 
-import tomllib
+import sys
 from importlib import metadata
 from pathlib import Path
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - project requires-python >=3.11
+    import tomli as tomllib
+
 EXPECTED_VERSION = "2.3.0"
 
-_PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
+PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 
 def _declared_pyproject_version() -> str:
-    with _PYPROJECT_PATH.open("rb") as fh:
+    with PYPROJECT_PATH.open("rb") as fh:
         data = tomllib.load(fh)
     return data["project"]["version"]
 
