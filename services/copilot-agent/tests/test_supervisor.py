@@ -291,6 +291,36 @@ def test_total_failure_ingestion_records_an_extraction_span_then_propagates(
     assert span.error_category == "IngestionError"
 
 
+def test_vision_model_misconfigured_records_a_worker_span_but_no_extraction_span(
+    tmp_path: Path, trace_store: TraceStore
+) -> None:
+    """Issue #206 (supervisor docstring, ~L367-369): a failure with no page
+    bookkeeping at all -- ``VisionModelMisconfiguredError``, raised before
+    any page is ever attempted -- must still get a ``worker`` span (the
+    handoff failed and that's always recorded), but no ``EXTRACTION`` span,
+    since ``_record_extraction_span`` has nothing to report pages_total/
+    pages_failed from."""
+    ollama = _FakeVlmOllama(
+        [LabPageExtraction(rows=_PAGE_1_ROWS), LabPageExtraction(rows=_PAGE_2_ROWS)], model="qwen3:4b"
+    )
+    store = LocalIngestionStore(tmp_path / "ingestion")
+    intake = IntakeExtractorWorker(ollama_client=ollama, document_store=store, fact_store=store)
+    retriever = _FakeWorker(name="evidence-retriever")
+    supervisor = Supervisor(intake_worker=intake, evidence_worker=retriever, trace_store=trace_store)
+
+    with correlation_scope() as correlation_id:
+        with pytest.raises(VisionModelMisconfiguredError):
+            supervisor.handle(IngestSubTask(patient_id=1, file_path=str(_FIXTURE_PATH), doc_type="lab_pdf"))
+
+    spans = trace_store.get_spans(correlation_id)
+    worker_spans = [s for s in spans if s.span_type == SpanType.WORKER]
+    assert len(worker_spans) == 1
+    assert worker_spans[0].status == SpanStatus.FAIL
+
+    extraction_spans = [s for s in spans if s.span_type == SpanType.EXTRACTION]
+    assert extraction_spans == []
+
+
 def test_retrieve_sub_task_never_records_an_extraction_span(trace_store: TraceStore) -> None:
     intake = _FakeWorker(name="intake-extractor")
     retriever = _FakeWorker(name="evidence-retriever", payload=["chunk"])
