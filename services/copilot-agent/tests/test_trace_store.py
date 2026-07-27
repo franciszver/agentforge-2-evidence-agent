@@ -78,6 +78,39 @@ CREATE TABLE IF NOT EXISTS spans (
 )
 """
 
+# The exact pre-#206 schema (committed on main before this branch added
+# pages_total/pages_failed) -- #185's full column set, nothing else. Models
+# a REAL production traces.db recorded before extraction spans existed.
+_PRE_206_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
+    span_type TEXT NOT NULL,
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_name TEXT,
+    args_hash TEXT,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    verdict TEXT,
+    claim_count INTEGER,
+    stripped_count INTEGER,
+    feedback_thumb TEXT,
+    feedback_comment TEXT,
+    error_category TEXT,
+    span_id TEXT,
+    parent_span_id TEXT,
+    worker_name TEXT,
+    sub_task_type TEXT,
+    owner_token_hash TEXT,
+    owner_kind TEXT,
+    owner_subject TEXT
+)
+"""
+
 # Derived (not a hardcoded literal) so no secret-shaped string is committed;
 # stable within a run, so the store fixture and the hash-equality assertions
 # below share the SAME key and still prove HMAC keying.
@@ -224,6 +257,31 @@ def test_migrates_a_pre_185_db_with_existing_token_hash_rows_so_they_stay_claima
     new_span = store.get_spans("corr-post-185")[0]
     assert new_span.owner_kind == "subject"
     assert new_span.owner_subject == "user-1"
+
+
+def test_migrates_a_pre_206_db_so_extraction_span_columns_are_writable(db_path: str) -> None:
+    """A REAL pre-existing ``traces.db`` predating issue #206 has the full
+    #185 column set but no ``pages_total``/``pages_failed``. Constructing a
+    ``TraceStore`` against it must migrate those columns in so
+    ``record_extraction_span`` succeeds, exactly the same discipline as the
+    P3.8 migration test above."""
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_PRE_206_SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+    # Must not raise sqlite3.OperationalError: no column named pages_total/...
+    store.record_extraction_span(
+        correlation_id="corr-migrate-206", start_ts=0.0, end_ts=1.0, ok=True, pages_total=2, pages_failed=0
+    )
+
+    span = store.get_spans("corr-migrate-206")[0]
+    assert span.pages_total == 2
+    assert span.pages_failed == 0
 
 
 def test_migration_tolerates_a_concurrent_racing_alter_table(db_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -677,6 +735,41 @@ def test_record_llm_span_write_and_read_back(store: TraceStore) -> None:
     assert span.model == "qwen3:4b"
     assert span.tokens_in == 120
     assert span.tokens_out == 45
+
+
+def test_record_extraction_span_write_and_read_back(store: TraceStore) -> None:
+    store.record_extraction_span(
+        correlation_id="corr-extraction-1",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        pages_total=3,
+        pages_failed=0,
+    )
+
+    span = store.get_spans("corr-extraction-1")[0]
+    assert span.span_type == SpanType.EXTRACTION
+    assert span.status == SpanStatus.OK
+    assert span.pages_total == 3
+    assert span.pages_failed == 0
+
+
+def test_record_extraction_span_total_failure_records_fail_status_and_error_category(store: TraceStore) -> None:
+    store.record_extraction_span(
+        correlation_id="corr-extraction-2",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=False,
+        pages_total=2,
+        pages_failed=2,
+        error_category="IngestionError",
+    )
+
+    span = store.get_spans("corr-extraction-2")[0]
+    assert span.status == SpanStatus.FAIL
+    assert span.pages_total == 2
+    assert span.pages_failed == 2
+    assert span.error_category == "IngestionError"
 
 
 def test_record_verification_span_write_and_read_back(store: TraceStore) -> None:

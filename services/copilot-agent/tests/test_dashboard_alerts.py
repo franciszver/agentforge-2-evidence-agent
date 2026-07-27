@@ -187,8 +187,8 @@ def test_verification_fail_rate_none_does_not_fire() -> None:
 
 
 # ---------------------------------------------------------------------------
-# extraction-failure rate (P3G.4 / #24, real data source not yet wired --
-# see module docstring)
+# extraction-failure rate (P3G.4 / #24, wired to live data by #206 -- see
+# module docstring)
 # ---------------------------------------------------------------------------
 
 

@@ -212,20 +212,23 @@ def test_schema_valid_intake_not_found_fields_are_none_or_empty_never_fabricated
 # ---------------------------------------------------------------------------
 
 
-def test_schema_valid_all_pages_failing_yields_no_facts_never_guessed(store: LocalIngestionStore) -> None:
+def test_schema_valid_all_pages_failing_raises_never_returns_zero_facts_normally(store: LocalIngestionStore) -> None:
+    # Issue #206: a total extraction failure (every page failed) must raise
+    # IngestionError, not return normally with facts == [] -- that shape was
+    # indistinguishable from a legitimately empty document.
     class _FailingVlm:
         def extract(
             self, prompt_or_messages: Any, schema: type, *, options: Any = None, images: list[str] | None = None
         ) -> Any:
             raise OllamaError("scripted VLM extraction failure")
 
-    result = attach_and_extract(
-        1, _LAB_FIXTURE_PATH, "lab_pdf", ollama_client=_FailingVlm(), document_store=store, fact_store=store
-    )
+    with pytest.raises(IngestionError) as exc_info:
+        attach_and_extract(
+            1, _LAB_FIXTURE_PATH, "lab_pdf", ollama_client=_FailingVlm(), document_store=store, fact_store=store
+        )
 
-    assert result.facts == []
-    assert result.failed_pages == [1, 2]
-    assert result.pages_total == 2
+    assert exc_info.value.pages_total == 2
+    assert exc_info.value.failed_pages == [1, 2]
 
 
 def test_schema_valid_malformed_pdf_raises_and_persists_nothing(tmp_path: Path) -> None:

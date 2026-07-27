@@ -87,7 +87,7 @@ _LAB_PDF_FIXTURE = _SERVICE_ROOT / "tests" / "fixtures" / "lab_report_synthetic.
 sys.path.insert(0, str(_REPO_ROOT / "evals"))
 
 from app.config import get_settings  # noqa: E402
-from app.ingestion import LocalIngestionStore  # noqa: E402
+from app.ingestion import IngestionError, LocalIngestionStore  # noqa: E402
 from app.ollama_client import OllamaClient  # noqa: E402
 from app.supervisor import IngestSubTask, IntakeExtractorWorker, VisionModelMisconfiguredError  # noqa: E402
 from fixtures.seed import ALLERGY_CONFLICT_PUBPID, SeedError, get_pid_for_pubpid  # noqa: E402
@@ -133,6 +133,14 @@ def seed_demo_documents() -> int:
         )
     except VisionModelMisconfiguredError as exc:
         raise DemoDocumentSeedError(str(exc)) from exc
+    except IngestionError as exc:
+        # Issue #206: attach_and_extract now raises when EVERY page failed
+        # extraction, distinct from the partial-failure case below.
+        raise DemoDocumentSeedError(
+            f"lab PDF ingestion FAILED ENTIRELY for patient_id={patient_id}, file={_LAB_PDF_FIXTURE} "
+            f"(pages_total={exc.pages_total}, failed_pages={exc.failed_pages}) "
+            "-- check Ollama reachability/model before running the demo"
+        ) from exc
     if result.failed_pages:
         raise DemoDocumentSeedError(
             f"lab PDF ingestion had failed pages {result.failed_pages} for patient_id={patient_id} "

@@ -79,11 +79,31 @@ MAX_PAGE_POINTS = 8000.0
 
 class IngestionError(Exception):
     """Raised when a source document cannot be safely parsed/rendered for
-    ingestion -- malformed/corrupt input, too many pages, or an oversized
-    page dimension. Callers see this ONE stable, log-safe error type
-    regardless of the underlying parser failure -- never a raw pdfium
-    exception, and never a partially-completed ingestion (see
-    ``attach_and_extract``'s validate-then-store ordering)."""
+    ingestion -- malformed/corrupt input, too many pages, an oversized page
+    dimension, or (issue #206) every one of its pages failing VLM extraction
+    outright. Callers see this ONE stable, log-safe error type regardless of
+    the underlying failure -- never a raw pdfium exception.
+
+    **``pages_total``/``failed_pages`` (issue #206).** Populated ONLY for the
+    total-extraction-failure case (``attach_and_extract`` raising after
+    ``len(failed_pages) == pages_total``, ``pages_total > 0``) -- ``None`` for
+    every other raise site (malformed PDF, page-count/dimension limits),
+    which fail before any page bookkeeping exists to report. Callers that
+    care about page counts (e.g. ``app.supervisor``'s extraction-span
+    recording) must check ``pages_total is not None`` before reading either
+    field, exactly the same fail-closed discipline as everywhere else in this
+    module."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pages_total: int | None = None,
+        failed_pages: Sequence[int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.pages_total = pages_total
+        self.failed_pages: list[int] | None = list(failed_pages) if failed_pages is not None else None
 
 _LAB_EXTRACTION_PROMPT = """\
 You are extracting a lab-report page image into structured data. Read ONLY \
@@ -155,9 +175,26 @@ class DocumentStore(Protocol):
 class FactStore(Protocol):
     """Where extracted facts are persisted. A stopgap for FHIR
     ``Observation``/``Patient``/``Condition``/``AllergyIntolerance`` writes
-    -- see module docstring."""
+    -- see module docstring.
 
-    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None: ...
+    ``pages_total``/``failed_pages`` (issue #206): the same per-page
+    bookkeeping ``IngestionResult`` carries, persisted alongside ``facts`` so
+    a later reader of the sidecar (not just the in-process caller) can tell a
+    document that had every page succeed from one with a partially-failed
+    extraction. Only ever called for a SUCCESSFUL or PARTIALLY-failed
+    extraction -- ``attach_and_extract`` raises ``IngestionError`` instead of
+    calling this at all on total failure, so no sidecar is ever written for
+    that case (see ``attach_and_extract``'s docstring)."""
+
+    def save_facts(
+        self,
+        patient_id: int,
+        source_id: str,
+        facts: Sequence[DocumentFact],
+        *,
+        pages_total: int,
+        failed_pages: Sequence[int],
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -173,6 +210,17 @@ class IngestionResult:
     ever reflects the pages that succeeded, and a caller presenting this
     result to a clinician must surface which pages could not be processed
     rather than silently presenting ``facts`` as complete for the whole
+    document.
+
+    **Issue #206: this type is only ever returned for a SUCCESSFUL or
+    PARTIALLY-failed extraction.** A TOTAL failure (``pages_total > 0`` and
+    every page in ``failed_pages``) never reaches a caller as an
+    ``IngestionResult`` at all -- ``attach_and_extract`` raises
+    ``IngestionError`` instead, so this dataclass's own ``failed_pages`` can
+    never equal ``pages_total`` for ``pages_total > 0``. This is what keeps a
+    fully-failed ingestion distinguishable from an empty/all-legible
+    document on disk: before this fix, both cases returned this same
+    zero-facts, non-raising result, byte-identical to a legitimately empty
     document.
     """
 
@@ -486,7 +534,21 @@ def attach_and_extract(
     in the returned ``IngestionResult.failed_pages`` (1-based) rather than
     silently contributing zero facts indistinguishable from "this page had
     nothing to extract" -- see that field's docstring for the caller
-    obligation.
+    obligation. One aggregate ``WARNING`` log line is emitted for a partial
+    failure (failed-page count and ``pages_total``) before returning.
+
+    **Total extraction failure raises (issue #206).** When ``pages_total >
+    0`` and EVERY page failed (``len(failed_pages) == pages_total``), this
+    raises ``IngestionError`` (carrying ``pages_total``/``failed_pages`` --
+    see that exception's docstring) instead of returning a zero-facts
+    result. Before this fix, a fully-failed extraction returned normally
+    with ``facts == []``, indistinguishable on disk from a legitimately
+    empty document -- the source document itself (already persisted via
+    ``document_store.save_source_document`` before extraction runs) is kept
+    as an honest record of what was attempted, but ``fact_store.save_facts``
+    is never called for this case, so no facts sidecar is written. One
+    aggregate ``ERROR`` log line (failed-page count and ``pages_total``) is
+    emitted before raising.
     """
     handler = _DOC_TYPE_HANDLERS.get(doc_type)
     if handler is None:
@@ -519,8 +581,26 @@ def attach_and_extract(
             continue
         facts.extend(handler.assemble(extraction, source_id=source_id, page_index=page_index))
 
-    fact_store.save_facts(patient_id, source_id, facts)
-    return IngestionResult(source_id=source_id, facts=facts, pages_total=len(pages), failed_pages=failed_pages)
+    pages_total = len(pages)
+    if pages_total > 0 and len(failed_pages) == pages_total:
+        _logger.error(
+            "document ingestion failed entirely: every page failed extraction",
+            extra={"pages_total": pages_total, "failed_page_count": len(failed_pages)},
+        )
+        raise IngestionError(
+            f"all {pages_total} page(s) failed extraction; no facts recorded",
+            pages_total=pages_total,
+            failed_pages=failed_pages,
+        )
+
+    if failed_pages:
+        _logger.warning(
+            "document ingestion partially failed: some pages failed extraction",
+            extra={"pages_total": pages_total, "failed_page_count": len(failed_pages)},
+        )
+
+    fact_store.save_facts(patient_id, source_id, facts, pages_total=pages_total, failed_pages=failed_pages)
+    return IngestionResult(source_id=source_id, facts=facts, pages_total=pages_total, failed_pages=failed_pages)
 
 
 class LocalIngestionStore:
@@ -548,12 +628,29 @@ class LocalIngestionStore:
         meta_dest.write_text(json.dumps({"patient_id": patient_id}))
         return source_id
 
-    def save_facts(self, patient_id: int, source_id: str, facts: Sequence[DocumentFact]) -> None:
+    def save_facts(
+        self,
+        patient_id: int,
+        source_id: str,
+        facts: Sequence[DocumentFact],
+        *,
+        pages_total: int,
+        failed_pages: Sequence[int],
+    ) -> None:
+        """Persist the extracted ``facts`` plus the ``pages_total``/
+        ``failed_pages`` bookkeeping (issue #206) alongside them -- a reader
+        of this sidecar (not just the in-process caller that already has
+        ``IngestionResult``) can tell a fully-succeeded document from a
+        partially-failed one. Only ever called for a successful or
+        partially-failed extraction -- see ``FactStore.save_facts``'s
+        docstring."""
         dest = self._base_dir / "facts" / f"{source_id}.json"
         payload = {
             "patient_id": patient_id,
             "source_id": source_id,
             "facts": [fact.model_dump(mode="json") for fact in facts],
+            "pages_total": pages_total,
+            "failed_pages": list(failed_pages),
         }
         dest.write_text(json.dumps(payload, indent=2))
 
