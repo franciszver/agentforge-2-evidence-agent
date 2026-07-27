@@ -1,4 +1,4 @@
-"""Capacity load-test harness for the SSE ``POST /chat`` endpoint (P5.1/#60).
+"""Capacity load-test harness for the SSE ``POST /chat`` endpoint (P5.1/Phase 1 #60).
 
 Sends concurrent chat requests, fully consumes each SSE stream to the
 ``done`` frame, and reports latency/throughput/verdict statistics. Does NOT

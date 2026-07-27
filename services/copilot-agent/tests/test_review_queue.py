@@ -81,7 +81,7 @@ def test_verified_verdict_does_not_appear_in_the_queue(tmp_path: Path) -> None:
 
 
 def test_feedback_is_deduped_preferring_the_row_with_a_comment(tmp_path: Path) -> None:
-    # Mirrors the P4.5 dashboard's dedup (#54): an immediate {thumb: down}
+    # Mirrors the P4.5 dashboard's dedup (Phase 1 #54): an immediate {thumb: down}
     # click, then a follow-up comment -- both share correlation_id and must
     # collapse into ONE queue entry carrying the comment.
     store = _store(tmp_path)

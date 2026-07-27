@@ -14,7 +14,7 @@ real Ollama call. These tests pin four things the pipeline must guarantee:
      lists ``(call, record, field)`` positions but omits values.
   3. **EAV normalization** -- long-format vitals output is reshaped to
      wide-format so a claim citing the vital *concept* (``field="weight"``)
-     resolves VALID against the checker (the #140 fix, 17% -> ~100%).
+     resolves VALID against the checker (the Phase 1 #140 fix, 17% -> ~100%).
   4. **Orchestration** -- ``run_verification`` folds extraction + citation
      checking + allergy/interaction checks into one ``VerdictResult`` +
      ``RenderedAnswer``, fail-closed on unverifiable claims.
@@ -364,7 +364,7 @@ def test_extract_claims_logs_retry_exhaustion_with_correlation_id(caplog: pytest
 
 
 # --------------------------------------------------------------------------
-# 3. EAV normalization (the #140 vitals fix)
+# 3. EAV normalization (the Phase 1 #140 vitals fix)
 # --------------------------------------------------------------------------
 
 
@@ -407,7 +407,7 @@ def test_normalized_vitals_citation_resolves_valid():
 
 def test_unnormalized_vitals_concept_citation_fails_unknown_field():
     # Proves the normalization is load-bearing: without it, citing the concept
-    # ("weight") is UNKNOWN_FIELD -- exactly the #140 defect.
+    # ("weight") is UNKNOWN_FIELD -- exactly the Phase 1 #140 defect.
     index = CacheIndex.from_raw_results([_vitals_raw()])
     claim = Claim(
         text="Weight is 220 lb.",
@@ -1042,7 +1042,7 @@ def test_extract_claims_narrows_catalog_and_messages_to_engaged_calls_preserving
 
 
 def test_run_verification_flag_on_tool_call_scoping_ignores_recency_notice_text_when_computing_engagement():
-    """Gate-3 review MAJOR finding: ``apply_recency_notice`` (#153) appends a
+    """Gate-3 review MAJOR finding: ``apply_recency_notice`` (Phase 1 #153) appends a
     machine-generated notice built from the STALE RECORD'S OWN DATE onto
     ``result.answer`` BEFORE ``run_verification`` ever sees it (both
     ``app.chat`` and ``runner.pipeline`` call it first). Naively computing

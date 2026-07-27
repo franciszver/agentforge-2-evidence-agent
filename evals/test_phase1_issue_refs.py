@@ -1,6 +1,31 @@
 """Regression guard for issue #199: stale Phase-1 issue-tracker numbers must
 stay marked, not silently drift back to a bare ``#N``.
 
+**Gate-3 MAJOR-3 follow-up.** The positive assertions below (``anchor in
+text``) only prove the marked spelling still exists somewhere in the file --
+they do NOT fail if the SAME line reverts to a bare ``#N`` elsewhere, or if a
+brand-new bare ``#N`` citation of a Phase-1 number is introduced anywhere
+else in the swept trees. That gap is exactly how issue #199 itself shipped
+30 wrong references over a green suite. A blanket "no bare ``#N`` anywhere"
+rule is wrong for most of these numbers: ``#130``, ``#149``, ``#153``,
+``#185``, ``#176``, ``#124``, ``#140``, ``#144``, ``#157``, ``#54``, and
+``#60`` all also name real, differently-scoped Phase-2 issues in *this*
+repo's own tracker, and their bare (correct) citations must stay bare.
+Telling those apart requires either a full allowlist of legitimate bare
+sites or a snapshot of every bare occurrence -- both bigger than this
+follow-up's scope.
+
+A strict subset does NOT have that ambiguity: ``#223``, ``#224``, ``#225``,
+``#237``, ``#209``, ``#211``, and ``#212``/``#213`` name Phase-1-only
+mechanisms (the cross-patient guard family and the streaming epic) that this
+repo's tracker has never reused -- see each anchor's comment above for the
+"this repo has no #N at all" note. For those numbers, ANY bare occurrence in
+the swept trees (outside this file's own commentary, and outside the
+``#201``-owned carve-out in ``app/tools/patient_summary.py``) is
+unconditionally wrong, so a negative assertion is both cheap and safe.
+``test_no_new_bare_dangling_references`` below enforces exactly that,
+scoped to only those numbers.
+
 **The defect this guards against.** The Phase-1 -> Phase-2 sync merge
 (``chore(sync): merge Phase 1 final state (v1.0) into Phase 2 base``) carried
 Phase-1 commit history straight into this repo's tree, including comments and
@@ -40,8 +65,15 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # (file relative to repo root, exact substring that must be present).
-# One anchor per distinct Phase-1-number/file group fixed by issue #199 --
-# not every touched line, just enough to catch a revert of any of them.
+# One anchor per distinct Phase-1 number fixed by issue #199 -- not every
+# (number, file) group touched (measured: 21 of 102 such groups have an
+# anchor here, and only 9 of the 46 files issue #199 changed have any anchor
+# at all) and not every touched line. This proves the marker survives for
+# each number somewhere, so a wholesale revert of a number's fix goes red;
+# it does NOT prove every individual fixed line stays fixed, and it does NOT
+# catch a brand-new bare citation elsewhere -- see
+# ``test_no_new_bare_dangling_references`` below for that gap, currently
+# closed only for the genuinely-dangling numbers.
 _ANCHORS: list[tuple[str, str]] = [
     # #185: cache-miss introspection dispatch (Phase 1) vs this repo's real
     # #185 (subject-based feedback ownership) -- the exact collision #199
@@ -93,4 +125,73 @@ def test_phase1_marker_still_present(relpath: str, anchor: str) -> None:
         f"marker ({anchor!r}). A bare, unmarked issue number here would "
         f"resolve to a DIFFERENT, unrelated issue in this repo's tracker "
         f"(or to nothing at all) -- see issue #199."
+    )
+
+
+# Numbers that name Phase-1-only mechanisms this repo's own tracker has never
+# reused -- unlike #130/#149/#153/#185/#176/#124/#140/#144/#157/#54/#60, a
+# bare occurrence of any of these is unconditionally wrong, never a
+# legitimate same-numbered Phase-2 issue.
+_DANGLING_NUMBERS: tuple[str, ...] = ("223", "224", "225", "237", "209", "211", "212", "213")
+
+# Trees this guard sweeps -- same scope issue #199's own sweep covered.
+_SWEPT_DIRS: tuple[str, ...] = ("services/copilot-agent", "evals")
+
+# (relpath, 1-indexed line number) pairs exempt from the negative check --
+# the #201-owned carve-out, and this file's own commentary above (which
+# names the dangling numbers in prose, not as citations).
+_EXEMPT: frozenset[tuple[str, int]] = frozenset(
+    {("services/copilot-agent/app/tools/patient_summary.py", 154)}
+)
+_SELF_RELPATH = "evals/test_phase1_issue_refs.py"
+
+
+def _iter_swept_files() -> list[Path]:
+    files: list[Path] = []
+    for tree in _SWEPT_DIRS:
+        root = _REPO_ROOT / tree
+        for pattern in ("*.py", "*.yaml", "*.yml", "*.md"):
+            for path in root.rglob(pattern):
+                if any(
+                    part in {".venv", "__pycache__", ".pytest_cache", "node_modules"}
+                    for part in path.parts
+                ):
+                    continue
+                files.append(path)
+    return files
+
+
+def test_no_new_bare_dangling_references() -> None:
+    """MAJOR-3: a bare ``#N`` for a genuinely-dangling Phase-1 number is
+    unconditionally wrong anywhere in the swept trees -- this repo's tracker
+    has never reused these numbers for anything else. Unlike
+    ``test_phase1_marker_still_present`` (which only proves a known-good
+    spelling survives), this fails on ANY bare occurrence: a revert of an
+    existing anchor, or a brand-new bare citation this PR never touched.
+
+    **Mutation-verified:** temporarily appending a bare ``#237`` anywhere in
+    the swept trees (outside the exemptions below) turns this test red with
+    the offending file:line quoted in the failure message; removing it turns
+    the test green again.
+    """
+    import re
+
+    offenders: list[str] = []
+    for number in _DANGLING_NUMBERS:
+        bare_pattern = re.compile(rf"(?<!Phase 1 )#{number}\b")
+        for path in _iter_swept_files():
+            relpath = path.relative_to(_REPO_ROOT).as_posix()
+            if relpath == _SELF_RELPATH:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if (relpath, lineno) in _EXEMPT:
+                    continue
+                if bare_pattern.search(line):
+                    offenders.append(f"{relpath}:{lineno}: bare #{number} -- {line.strip()!r}")
+
+    assert not offenders, (
+        "Bare reference(s) to a genuinely-dangling Phase-1-only issue number "
+        "found (must read 'Phase 1 #N' -- this repo's tracker has never "
+        f"reused these numbers for anything else):\n" + "\n".join(offenders)
     )

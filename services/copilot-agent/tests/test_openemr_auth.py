@@ -232,7 +232,7 @@ def test_dev_register_cli_payload_unchanged(tmp_path, monkeypatch):
     )
 
 
-# --- #176: OAuth client-secret creds file must be owner-only (0o600) --------
+# --- Phase 1 #176: OAuth client-secret creds file must be owner-only (0o600) --------
 
 
 def _stub_prod_registration(monkeypatch, tmp_path):

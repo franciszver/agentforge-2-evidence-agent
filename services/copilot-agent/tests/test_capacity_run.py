@@ -1,4 +1,4 @@
-"""Tests for the capacity load-test harness's pure aggregation (P5.1/#60).
+"""Tests for the capacity load-test harness's pure aggregation (P5.1/Phase 1 #60).
 
 Only ``summarize()`` is under test here -- no network, no subprocess, no
 ``httpx``. The percentile math is hand-verified against linear interpolation

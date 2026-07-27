@@ -482,7 +482,7 @@ def test_validator_rejects_empty_token_without_introspecting():
     assert fake.seen == []  # short-circuited before any network round-trip
 
 
-# --- TokenIntrospector.peek_cached (#185) ----------------------------------
+# --- TokenIntrospector.peek_cached (Phase 1 #185) ----------------------------------
 
 
 def test_peek_cached_returns_none_on_miss(tmp_path):
@@ -512,7 +512,7 @@ def test_peek_cached_returns_result_after_a_warm_hit(tmp_path):
     assert len(calls) == 1  # peek itself made no additional call
 
 
-# --- #185: validator dispatch stays off the event loop on a cache miss,
+# --- Phase 1 #185: validator dispatch stays off the event loop on a cache miss,
 # and skips the threadpool entirely on a cache hit -------------------------
 
 

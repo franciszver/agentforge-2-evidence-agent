@@ -171,7 +171,7 @@ def test_feedback_up_and_down_counts_no_duplicates(store: TraceStore, db_path: s
 
 
 def test_feedback_dedup_commented_downvote_counted_once(store: TraceStore, db_path: str) -> None:
-    # This is the exact P4.4 UI shape (issue #54): a thumbs-down click posts
+    # This is the exact P4.4 UI shape (issue Phase 1 #54): a thumbs-down click posts
     # {thumb: down} immediately, then an optional comment box reveals and its
     # submission posts a SECOND {thumb: down, comment: "..."} span for the
     # SAME correlation id. Both rows share span_type=feedback and

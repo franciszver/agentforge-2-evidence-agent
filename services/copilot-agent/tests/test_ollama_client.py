@@ -740,7 +740,7 @@ def test_extract_http_error_propagates_immediately_without_retry():
     assert client.call_stats[0].tokens_out is None
 
 
-# --- failure/retry outcome logging (#144) --------------------------------
+# --- failure/retry outcome logging (Phase 1 #144) --------------------------------
 #
 # ``chat()``/``extract()`` already logged call *starts* (see the "ollama
 # chat call"/"ollama extract call" info lines above) but never logged

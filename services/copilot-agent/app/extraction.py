@@ -7,7 +7,7 @@ already-built, already-tested verification functions consume, and folds them
 into one ``VerdictResult`` + ``RenderedAnswer`` for the P3.8 SSE frame:
 
     PlannerResult
-      -> normalize_raw_results        (EAV -> wide-format, the #140 fix)
+      -> normalize_raw_results        (EAV -> wide-format, the Phase 1 #140 fix)
       -> ClaimExtractor.extract_claims (LLM: answer -> list[Claim])
       -> app.verification.check_claims (deterministic re-validation vs RAW)
       -> app.rendering.render_answer   (strip unverifiable claims)
@@ -54,13 +54,13 @@ The extraction LLM MUST see raw values because that is what lets it map its
 claims to the right record for citation: without values it cannot tell
 record 0 = Lisinopril from record 1 = Norvasc, so it cannot cite correctly.
 The catalog it is given omits values (positions only); the raw values are
-supplied as inert tool-result data alongside, exactly as #140 measured at
+supplied as inert tool-result data alongside, exactly as Phase 1 #140 measured at
 100% citation-validity for wide-format tools.
 
-**EAV normalization (the #140 fix).** ``get_vitals`` returns long-format /
+**EAV normalization (the Phase 1 #140 fix).** ``get_vitals`` returns long-format /
 EAV records ``{vital_type: "weight", value: 220, unit, date}``. The model
 naturally cites ``field="weight"`` (the concept), but the literal field is
-``"value"`` -> ``UNKNOWN_FIELD`` (spike #140: vitals cited at 17%, every
+``"value"`` -> ``UNKNOWN_FIELD`` (spike Phase 1 #140: vitals cited at 17%, every
 other UC at 100%, record selection always perfect). ``normalize_raw_results``
 reshapes each vitals record so the concept becomes a real field name
 (``{weight: 220, unit, date}``) BEFORE both the catalog and the checker index
@@ -396,7 +396,7 @@ class ClaimExtractor:
         if fact_catalog:
             instructions += "\n" + _FACT_INSTRUCTIONS.format(fact_catalog=fact_catalog)
 
-        # Message layout matches the structure spike #140 measured at 100%
+        # Message layout matches the structure spike Phase 1 #140 measured at 100%
         # citation-validity for wide-format tools: the tool-result DATA first,
         # then the answer as the model's own ASSISTANT turn, then the
         # decomposition instruction + catalog. Placing the answer *after* the
@@ -1297,7 +1297,7 @@ def _is_foreign_switch_to_name(
     bound_patient_name: str | None,
     roster_provider: Callable[[], Sequence[RosterEntry]] | None,
 ) -> bool:
-    """The roster-based "switch (over) to <Name>" signal (#237): ``True``
+    """The roster-based "switch (over) to <Name>" signal (Phase 1 #237): ``True``
     only when a captured 2-3 word name (i) is not the bound patient and (ii)
     matches a roster entry. The roster is resolved LAZILY, via
     ``roster_provider()``, and ONLY when a candidate has already matched and

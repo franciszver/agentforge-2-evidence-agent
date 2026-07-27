@@ -165,7 +165,7 @@ def test_promote_returns_a_yaml_body_for_a_known_correlation_id(tmp_path: Path) 
     assert response.status_code == 200
     assert "category: regression" in response.text
     assert "corr-3" in response.text
-    # #157: the raw clinician comment is scrubbed from the promoted export
+    # Phase 1 #157: the raw clinician comment is scrubbed from the promoted export
     # (public evals/ repo) -- only a neutral TODO placeholder referencing the
     # correlation id is emitted. The comment is not shown on /review either
     # (#176 redacts it there too) -- it remains only in the trace store.

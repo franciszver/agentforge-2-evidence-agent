@@ -1,4 +1,4 @@
-"""Hermetic tests for the JSON structured-log formatter (P4.1 follow-up, #144).
+"""Hermetic tests for the JSON structured-log formatter (P4.1 follow-up, Phase 1 #144).
 
 ``app.correlation.configure_logging`` stamps every ``LogRecord`` with a
 ``correlation_id`` attribute (and call sites attach ``stage``/other fields via
