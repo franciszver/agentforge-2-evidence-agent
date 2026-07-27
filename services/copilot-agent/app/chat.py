@@ -1143,11 +1143,12 @@ class RosterCache:
         self._require_principal = require_principal
         self._max_principals = max_principals
         self._lock = threading.Lock()
-        # OrderedDict for its (cheap) ability to re-insert-to-move-to-end --
-        # not currently relied on for eviction order (eviction below picks
-        # the earliest ``expires_at``, not insertion order), but keeps
-        # iteration order deterministic for that eviction scan.
-        self._entries: OrderedDict[str, tuple[list[RosterEntry], datetime]] = OrderedDict()
+        # Plain dict, not OrderedDict: eviction below picks the entry with
+        # the earliest ``expires_at`` (a ``min()`` scan), never insertion or
+        # access order, so no ``move_to_end``/LRU behavior is needed here
+        # (contrast ``ConversationStore._conversations`` above, which IS a
+        # true LRU and relies on ``OrderedDict`` for it).
+        self._entries: dict[str, tuple[list[RosterEntry], datetime]] = {}
 
     def get_or_fetch(
         self, fetch: Callable[[], list[RosterEntry]], principal: str | None = None
@@ -1188,7 +1189,12 @@ class RosterCache:
         """
         if self._require_principal and principal is None:
             return fetch()
-        key = principal if self._require_principal and principal is not None else self._SHARED_KEY
+        # ``principal`` is guaranteed non-``None`` here whenever
+        # ``_require_principal`` is ``True`` (the guard above already
+        # returned otherwise), so no separate ``principal is not None``
+        # check is needed on top of ``_require_principal``.
+        key = principal if self._require_principal else self._SHARED_KEY
+        assert key is not None  # narrows for mypy; guaranteed by the guard above
         now = self._clock()
         with self._lock:
             entry = self._entries.get(key)
