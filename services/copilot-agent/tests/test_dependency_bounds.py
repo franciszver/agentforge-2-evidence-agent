@@ -1,11 +1,18 @@
 """Guards issue #196's fix: every declared dependency stays upper-bounded.
 
-pyproject.toml used to declare version FLOORS ONLY (``fastapi>=0.115``, no
-lockfile). Every environment -- each dev's host venv, every CI run, a
-release-tag install -- could then resolve a different framework version.
-#184 was a concrete instance: fastapi's own hardcoded OpenAPI schema
-rendering changed between 0.124.4 and 0.139.2, and the byte-compared pinned
+pyproject.toml used to declare version FLOORS ONLY (``fastapi>=0.115``).
+Every environment -- each dev's host venv, every CI run, a release-tag
+install -- could then resolve a different framework version. #184 was a
+concrete instance: fastapi's own hardcoded OpenAPI schema rendering changed
+between 0.124.4 and 0.139.2, and the byte-compared pinned
 ``openapi/openapi.json`` diverged purely on WHICH fastapi resolved.
+
+pyproject.toml's floor/ceiling ranges remain the human-facing contract this
+test guards. The production container build additionally hash-locks an
+exact point inside that range via ``requirements.txt``
+(``scripts/lock-deps.sh``, issue 213; see ``tests/test_dependency_lock.py``)
+so every image build resolves byte-identical dependencies -- that lock does
+not relax or replace the range check here.
 
 This test does not re-check that #184's specific fastapi delta is handled
 (``tests/test_openapi_contract.py`` already covers that byte-for-byte

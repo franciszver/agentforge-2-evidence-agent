@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Container-boot smoke test for the copilot-agent service (board issue #93).
 #
-# Builds the production image (the same `pip install .` path the Dockerfile
-# uses, i.e. no dev extras) and verifies the container actually boots and
-# serves /health, rather than crashing on a missing runtime dependency.
+# Builds the production image (the same hash-locked `requirements.txt` +
+# `pip install --no-deps .` path the Dockerfile uses, i.e. no dev extras --
+# see issue 213) and verifies the container actually boots and serves
+# /health, rather than crashing on a missing runtime dependency.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

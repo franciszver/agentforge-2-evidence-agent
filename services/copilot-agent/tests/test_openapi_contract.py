@@ -80,8 +80,12 @@ _PRESENTATION_METADATA_KEYS = frozenset({"description", "title", "summary", "exa
 
 # #184 diagnosis: reproduced the standing local failure with an older
 # fastapi pin (the diagnosis environment resolved fastapi 0.139.2 vs. fastapi
-# 0.124.4 -- pyproject only floors on `fastapi>=0.115`, there is no lockfile
-# pinning an exact version; both environments ran the same pydantic 2.13.4)
+# 0.124.4 -- pyproject only floored on `fastapi>=0.115` at the time, with no
+# lockfile pinning an exact version; both environments ran the same pydantic
+# 2.13.4). Issue 213 later added services/copilot-agent/requirements.txt,
+# hash-locking the production container build's exact fastapi resolution --
+# this diagnosis predates that and is left as historical record of how the
+# drift was found.
 # and diffed the two schemas key-by-key. The ENTIRE delta -- across all 8
 # paths and all 8 component schemas -- was two optional properties on this
 # one component: `ValidationError.properties` gained `input`/`ctx` under the
@@ -217,8 +221,10 @@ def test_pinned_spec_matches_live_schema() -> None:
     ``input``/``ctx`` properties are present in the diagnosis environment's
     fastapi 0.139.2 and absent in its fastapi 0.124.4 (see #184's diagnosis
     comment above the module-level constants for how those two versions were
-    resolved -- there is no repo lockfile pinning an exact fastapi version);
-    its ``required`` list is untouched across the fastapi versions tested).
+    resolved, back when there was no repo lockfile pinning an exact fastapi
+    version -- issue 213 has since added one for the production container
+    build, ``services/copilot-agent/requirements.txt``); its ``required``
+    list is untouched across the fastapi versions tested).
     Normalization never touches
     ``required`` lists, so a real field gaining or losing required-ness is
     still caught even on the ValidationError schema.
