@@ -86,3 +86,10 @@ services/copilot-agent/.openemr-dev-client.json
 # property structural (git add -A can no longer stage one by accident)
 # rather than relying on nobody ever running a broad add.
 evals/results/**/*.calls.json
+
+# Issue #208: verbose per-run eval logs under evals/results/ are scratch,
+# not measurement records -- unlike the structured JSON summaries/draws
+# (e.g. evals/results/issue-192/) which stay tracked as the evidence of
+# record. Scoped to evals/results/ so logs elsewhere in the repo that
+# someone does want tracked are unaffected.
+evals/results/**/*.log
