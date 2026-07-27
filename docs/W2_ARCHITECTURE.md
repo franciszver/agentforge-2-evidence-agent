@@ -684,7 +684,11 @@ Mirrors Phase 1's Path-to-Production structure (`docs/ARCHITECTURE.md`
 
 1. **Flip `copilot_per_user_token_enabled` ON** — see §"Data Model, Lineage,
    and Access Control" for what this unlocks and why it is off by default.
-   Highest-leverage item, listed first for that reason.
+   Highest-leverage item, listed first for that reason. **Pre-condition
+   (#188):** flipping this flag makes the unauthenticated-threadpool-via-
+   introspection exposure documented in `docs/ARCHITECTURE.md`'s "Path to
+   Production" item 2 a *blocking* pre-condition, not merely a documented
+   accept — one of that section's mitigation options must land first.
 2. **TLS everywhere.** Today's internal Docker network traffic (including
    the new VLM/embedding/reranker calls) is unencrypted, acceptable only
    because it never leaves a single host; a real deployment needs TLS

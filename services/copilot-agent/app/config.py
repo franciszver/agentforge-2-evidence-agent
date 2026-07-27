@@ -193,6 +193,9 @@ class Settings(BaseSettings):
     # demo-clinician token, byte-identical. Flipped on with the module side in
     # Phase 6. Introspection results are cached (hash-keyed) for this many
     # seconds, further capped by each token's own ``exp``.
+    # #188: flipping this ON makes the threadpool starvation mitigation a
+    # blocking pre-condition; see docs/ARCHITECTURE.md Path to Production
+    # item 2.
     copilot_per_user_token_enabled: bool = False
     copilot_introspection_cache_ttl_seconds: float = 60.0
 
