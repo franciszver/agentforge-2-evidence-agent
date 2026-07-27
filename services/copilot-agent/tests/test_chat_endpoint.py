@@ -11,7 +11,7 @@ import base64
 import datetime
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pydantic
@@ -36,6 +36,7 @@ from app.chat import (
     get_require_tool_call_scoping,
     get_roster_cache,
     get_source_ref_relevance_judge_provider,
+    get_subject_resolver,
     get_token_validator,
 )
 from app.config import Settings, get_settings
@@ -153,7 +154,7 @@ def _override_planner_factory_keyed_by_bearer_token(planners_by_token: dict[str,
     app.dependency_overrides[get_planner_factory] = factory_dependency
 
 
-def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
+def _override_roster_cache(ttl_seconds: float = 300.0, *, require_principal: bool = False) -> RosterCache:
     """A FRESH ``RosterCache`` per test (#174): ``get_roster_cache`` is a
     process-wide singleton by default (mirrors ``get_conversation_store``'s
     ``_default_store``), so any roster-fetch-COUNT assertion needs its own
@@ -161,10 +162,29 @@ def _override_roster_cache(ttl_seconds: float = 300.0) -> RosterCache:
     could leak in. A real wall clock (not a fixed/injected one) is fine
     here: every test in this module completes in well under
     ``ttl_seconds``, so the default 300s never actually expires mid-test.
+
+    ``require_principal`` (#182): mirrors what ``get_roster_cache`` wires
+    from ``settings.copilot_per_user_token_enabled`` in production --
+    ``True`` for tests exercising principal-keyed isolation under per-user
+    tokens, ``False`` (default) for the flag-off shared-entry behavior.
     """
-    cache = RosterCache(ttl_seconds=ttl_seconds, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
+    cache = RosterCache(
+        ttl_seconds=ttl_seconds,
+        clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+        require_principal=require_principal,
+    )
     app.dependency_overrides[get_roster_cache] = lambda: cache
     return cache
+
+
+def _override_subject_resolver(mapping: dict[str, str | None]) -> None:
+    """Maps a bearer token to its (fake) resolved OpenEMR subject (#185),
+    mirroring ``test_subject_ownership.py``'s helper of the same name --
+    needed here to drive #182's principal-keyed ``RosterCache`` isolation
+    tests with two distinct, DETERMINISTIC identities rather than the real
+    ``_IntrospectionSubjectResolver`` (which would require a real
+    introspection double just to reach a fake ``sub``)."""
+    app.dependency_overrides[get_subject_resolver] = lambda: (lambda token: mapping.get(token))
 
 
 client = TestClient(app)
@@ -752,6 +772,138 @@ def test_roster_cache_bypassed_per_caller_when_per_user_token_enabled():
     assert planner_b.roster_resolve_calls == 1
 
 
+# --------------------------------------------------------------------------
+# Issue #182: restore the #174 amplification fix under
+# ``copilot_per_user_token_enabled`` via a PRINCIPAL-keyed ``RosterCache``,
+# instead of the #174 Gate 2 guard's unconditional bypass proven above
+# (``test_roster_cache_bypassed_per_caller_when_per_user_token_enabled``).
+# Each test below wires ``require_principal=True`` directly on a fresh
+# ``RosterCache`` (mirrors what ``get_roster_cache`` derives from
+# ``settings.copilot_per_user_token_enabled`` in production) plus a fake
+# ``_override_subject_resolver`` mapping so two distinct bearer tokens
+# resolve to two distinct, deterministic principals -- the real
+# ``_IntrospectionSubjectResolver`` would need a real introspection double
+# just to reach a fake ``sub``.
+# --------------------------------------------------------------------------
+
+
+def test_roster_cache_is_shared_within_a_principal_but_isolated_across_principals():
+    """RED-FIRST for #182: two requests under DISTINCT authenticated
+    principals each cause their own fetch (isolation), and a THIRD request
+    under the FIRST principal is served from cache (amplification restored
+    -- no new fetch).
+
+    Before #182 (the #174 Gate-2 guard, ``require_principal`` gate absent /
+    always bypassing under the flag): every one of the three calls would
+    fetch fresh (``roster_resolve_calls`` would read ``[1, 1]`` for
+    ``planner_a``, i.e. it fetches on BOTH of caller A's calls) -- the
+    amplification fix would still be lost, just now for every principal
+    individually instead of unconditionally. #182's fix converges caller
+    A's fetch count to 1 across its two calls while caller B still gets its
+    own, independent fetch.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": "user-alpha", "token-b": "user-beta"})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    # Caller A, first turn: a cache MISS -- fetches under principal
+    # "user-alpha".
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    # Caller B, a DIFFERENT principal: must NOT be served caller A's entry.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+    # Caller A again, a brand-new conversation (no conversation_id): SAME
+    # principal as the first call -- must be served from cache, no new fetch.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+
+    assert planner_a.roster_resolve_calls == 1  # converged: 2 calls, 1 fetch
+    assert planner_b.roster_resolve_calls == 1  # its own, independent fetch
+
+
+def test_roster_cache_never_serves_one_principals_roster_content_to_another():
+    """Cross-principal isolation, pinned by CONTENT not just call count
+    (requirement 2 of #182): principal A's roster and principal B's roster
+    are DIFFERENT patients. If caller B's cache read ever returned caller
+    A's entry, B's "switch to <Name>" refusal would fire for a name that is
+    only on A's roster -- it must not.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=1, name="Alice Alpha")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=2, name="Bob Beta")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": "user-alpha", "token-b": "user-beta"})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    # Prime principal A's cache entry with Alice Alpha.
+    client.post(
+        "/chat",
+        json={"message": "Switch to Alice Alpha and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+
+    # Principal B asks about "Alice Alpha" too -- a name that is on A's
+    # roster but NOT on B's. If B were served A's cached entry, this would
+    # match and refuse; served B's OWN roster (which doesn't contain
+    # "Alice Alpha"), it must dispatch normally instead.
+    response_b = client.post(
+        "/chat",
+        json={"message": "Switch to Alice Alpha and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
+    assert planner_b.roster_resolve_calls == 1
+    answer_b = next(data for name, data in _iter_sse_events(response_b.text) if name == "answer")
+    assert "chart is currently open" not in answer_b
+    assert planner_b.questions == ["Switch to Alice Alpha and check her allergies."]
+
+
+def test_roster_cache_degrades_to_no_caching_never_to_sharing_when_principal_unresolved():
+    """Requirement 3 of #182: when the principal cannot be determined
+    (subject resolution returns ``None`` -- #185's failed/miss path), the
+    cache degrades to NOT caching -- never to silently sharing the one
+    unkeyed entry. Two distinct callers, BOTH resolving to ``None``, must
+    each still get their OWN fetch -- if the ``None`` case fell back to the
+    shared entry, caller B's fetch count would read 0.
+    """
+    planner_a = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    planner_b = FakePlannerWithRoster(trace=[], answer="ok", roster=[RosterEntry(pid=999, name="Bob Smith")])
+    _override_ok_validator()
+    _override_planner_factory_keyed_by_bearer_token({"token-a": planner_a, "token-b": planner_b})
+    _override_subject_resolver({"token-a": None, "token-b": None})
+    _override_roster_cache(require_principal=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(copilot_per_user_token_enabled=True)
+
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-a"},
+    )
+    client.post(
+        "/chat",
+        json={"message": "Switch to Bob Smith and check her allergies.", "patient_id": 1},
+        headers={"Authorization": "Bearer token-b"},
+    )
+
+    assert planner_a.roster_resolve_calls == 1
+    assert planner_b.roster_resolve_calls == 1
+
+
 def test_roster_fetch_amplification_is_bounded_across_n_distinct_conversations():
     """RED test for #174, kept green post-fix: N>=3 ``/chat`` POSTs, each
     with NO ``conversation_id`` (so each gets its OWN, brand-new
@@ -1249,6 +1401,64 @@ def test_roster_cache_rejects_a_non_positive_ttl():
         RosterCache(ttl_seconds=0.0, clock=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 
+def test_roster_cache_rejects_a_non_positive_max_principals():
+    with pytest.raises(ValueError):
+        RosterCache(
+            ttl_seconds=60.0,
+            clock=lambda: datetime.datetime.now(datetime.timezone.utc),
+            max_principals=0,
+        )
+
+
+def test_roster_cache_bounds_entry_count_by_evicting_the_soonest_to_expire_principal():
+    """Issue #182 entry-count bound: once at ``max_principals`` capacity, a
+    NEW principal evicts the entry expiring soonest rather than growing the
+    cache without limit. Three principals, cap of 2, clock advanced between
+    each fetch so "soonest to expire" is unambiguous."""
+    now = [datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)]
+    cache = RosterCache(ttl_seconds=60.0, clock=lambda: now[0], require_principal=True, max_principals=2)
+
+    def fetch(name: str) -> Callable[[], list[RosterEntry]]:
+        return lambda: [RosterEntry(pid=1, name=name)]
+
+    cache.get_or_fetch(fetch("Alice"), principal="user-a")
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(fetch("Bob"), principal="user-b")
+    # Cap reached (2/2). "user-a" expires soonest (fetched first) -- adding a
+    # THIRD principal must evict it, not "user-b".
+    now[0] += datetime.timedelta(seconds=1)
+    cache.get_or_fetch(fetch("Carol"), principal="user-c")
+
+    assert len(cache._entries) == 2
+    assert "user-a" not in cache._entries
+    assert "user-b" in cache._entries
+    assert "user-c" in cache._entries
+
+    # "user-b" and "user-c" (never evicted yet) are still cache hits.
+    b_calls = 0
+
+    def counting_fetch_b() -> list[RosterEntry]:
+        nonlocal b_calls
+        b_calls += 1
+        return [RosterEntry(pid=1, name="Bob")]
+
+    result_b = cache.get_or_fetch(counting_fetch_b, principal="user-b")
+    assert b_calls == 0  # cache hit
+    assert result_b == [RosterEntry(pid=1, name="Bob")]
+
+    # "user-a" was evicted: re-fetching it must call fetch() again (a fresh
+    # roster), not return a stale hit.
+    a_calls = 0
+
+    def counting_fetch_a() -> list[RosterEntry]:
+        nonlocal a_calls
+        a_calls += 1
+        return [RosterEntry(pid=1, name="Alice")]
+
+    cache.get_or_fetch(counting_fetch_a, principal="user-a")
+    assert a_calls == 1  # evicted -> fresh fetch, not a cache hit
+
+
 def test_conversation_store_bounds_retained_conversations():
     # BEHAVIOUR, not vocabulary (issue-#86 failure class avoided): a class-level
     # dir()/vocabulary check would never see an instance-level cap (e.g.
@@ -1372,6 +1582,37 @@ def test_get_roster_cache_builds_singleton_from_settings():
         cache_again = chat_module.get_roster_cache(settings_b, chat_module.get_clock())
         assert cache_again is cache  # singleton: not rebuilt
         assert cache_again._ttl_seconds == 7.0  # frozen at first use, NOT 999.0
+    finally:
+        chat_module._default_roster_cache = original_default_roster_cache
+
+
+def test_get_roster_cache_wires_require_principal_from_settings_flag():
+    """#182: ``get_roster_cache`` must derive ``require_principal`` from
+    ``settings.copilot_per_user_token_enabled`` -- ``False`` (the shared,
+    unkeyed entry -- requirement 5, flag-off behavior unchanged) when the
+    flag is off, ``True`` (principal-keyed isolation) when it is on. Every
+    other roster test in this module overrides ``get_roster_cache`` directly
+    (bypassing this wiring entirely), so this calls the real dependency
+    function -- the only test that would catch a regression here, e.g. the
+    flag-off default silently becoming keyed (which would make every
+    flag-off caller a distinct, uncached principal) or flag-on silently
+    staying unkeyed (which would reopen #174 Gate 2 under per-user
+    tokens)."""
+    import app.chat as chat_module
+
+    original_default_roster_cache = chat_module._default_roster_cache
+    try:
+        chat_module._default_roster_cache = None
+        off_cache = chat_module.get_roster_cache(
+            Settings(copilot_per_user_token_enabled=False), chat_module.get_clock()
+        )
+        assert off_cache._require_principal is False
+
+        chat_module._default_roster_cache = None
+        on_cache = chat_module.get_roster_cache(
+            Settings(copilot_per_user_token_enabled=True), chat_module.get_clock()
+        )
+        assert on_cache._require_principal is True
     finally:
         chat_module._default_roster_cache = original_default_roster_cache
 
