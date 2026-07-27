@@ -44,10 +44,16 @@ only, exactly like #130's own spike.
 **MANDATORY exposure reporting (learned from #163/#169's zero-exposure
 false-clearance mistakes).** ``summarize()`` reports, per case AND overall:
 how many claims were ELIGIBLE (SourceRef-only, from
-``evals/runner/census_source_ref_claims.py``'s population definition --
-computed structurally from the rendered segments, independent of whether a
-draw happened to reach the LLM judge call), how many were actually JUDGED,
-and how many false-rejects resulted. A case with zero eligible claims across
+``evals/runner/census_source_ref_claims.py``'s population definition), how
+many were actually JUDGED, and how many false-rejects resulted.
+``eligible_claim_count`` is computed in a SEPARATE structural pass over
+``result.rendered.segments``, entirely BEFORE the judge loop runs (see
+``run_one_draw``) -- gate-3 review (issue #170 MAJOR 3) caught an earlier
+version that incremented eligible-count and appended a judge record in the
+SAME loop iteration, making ``eligible == judged`` a tautology that could
+never fail regardless of whether the judge call ran; the two are now
+independently computed and CAN diverge (e.g. if the judge loop is ever
+changed to skip or fail a subset). A case with zero eligible claims across
 every draw is reported as an explicit ``INCONCLUSIVE: zero exposure`` in
 the per-case summary, not silently folded into a "0 false rejects" that
 could misread as clearance.
@@ -230,10 +236,19 @@ def run_one_draw(case_id: str, draw_index: int, judge: SemanticSupportJudgeLike)
     eligible_claim_count = 0
     if result.rendered is not None:
         segments = [s for s in result.rendered.segments if isinstance(s, RenderedClaim)]
+        # Structural pass, computed BEFORE any judge call and independent of
+        # it (gate-3 review, issue #170 MAJOR 3): the earlier version
+        # incremented `eligible_claim_count` inside the SAME loop iteration
+        # that unconditionally appended a judge record, making
+        # `eligible == judged` a tautology that could never fail regardless
+        # of whether the judge call actually ran -- exactly the shape of
+        # check this project has now caught four times. This count is a pure
+        # function of the rendered segments alone; it does not change even
+        # if the judge loop below is skipped, errors, or is refactored.
+        eligible_claim_count = sum(1 for segment in segments if _is_source_ref_only_exposure_claim(segment))
         for index, segment in enumerate(segments):
             if not _is_source_ref_only_exposure_claim(segment):
                 continue
-            eligible_claim_count += 1
             facts = _source_ref_facts_for_segment(segment)
             context_facts = _established_facts_for_segment(index, segments)
             judgement = judge_source_ref_relevance_full(segment.text, facts, judge, context_facts)
@@ -263,6 +278,27 @@ def run_one_draw(case_id: str, draw_index: int, judge: SemanticSupportJudgeLike)
 _POSITIVE_CONTROL_CLAIM = "The patient's blood pressure was elevated."
 _POSITIVE_CONTROL_FACTS = ["problem_count: 0"]
 
+# Gate-3 review, issue #170 MAJOR 1: the context-free control above never
+# exercises the ONE variable this whole re-measurement is about -- whether
+# the judge can still REJECT when an ESTABLISHED FACTS block is present.
+# Every rejection observed anywhere in this spike's live run was made in
+# #130's context-FREE configuration (this control, and every case-draw claim
+# that happened to have no eligible siblings); every WITH-context judgement
+# was `supported`. That is exactly the failure mode a fix whose entire
+# purpose is "stop rejecting" could produce silently: if adding context
+# makes the judge broadly permissive rather than selectively so, a run with
+# no with-context negative case would look IDENTICAL to a genuinely fixed
+# one. This control adds a plausible, unrelated sibling context block (a
+# different medication's name/dose -- topically irrelevant to a blood-
+# pressure claim, same as the context-free control's own irrelevant fact) to
+# the SAME #123 claim/fact pair, so a run of this spike always includes at
+# least one negative-shaped judgement made WITH context present. See
+# ``evals/results/issue-170/summary.json``'s
+# ``positive_control_with_context_catch_rate`` for the measured result --
+# read it before trusting the aggregate 0/174 false-reject number, per the
+# module docstring's "MANDATORY exposure reporting" discipline.
+_POSITIVE_CONTROL_WITH_CONTEXT_FACTS = ["name: Simvastatin", "dose: 40mg"]
+
 
 @dataclass(frozen=True)
 class PositiveControlDraw:
@@ -287,6 +323,26 @@ def run_positive_control(draw_index: int, judge: SemanticSupportJudgeLike) -> Po
     )
 
 
+def run_positive_control_with_context(draw_index: int, judge: SemanticSupportJudgeLike) -> PositiveControlDraw:
+    """The MAJOR-1 addition: the SAME #123 claim/fact pair as
+    ``run_positive_control``, but WITH an established-facts context block
+    present (``_POSITIVE_CONTROL_WITH_CONTEXT_FACTS`` -- a different,
+    topically-irrelevant medication's name/dose). Exercises the actual
+    variable under test in this re-measurement: whether the judge can still
+    reject an irrelevant fact when sibling context is also on the prompt, or
+    whether adding context makes it broadly permissive. ``caught`` is True
+    iff the judge would still downgrade it with context present."""
+    judgement = judge_source_ref_relevance_full(
+        _POSITIVE_CONTROL_CLAIM, _POSITIVE_CONTROL_FACTS, judge, _POSITIVE_CONTROL_WITH_CONTEXT_FACTS
+    )
+    return PositiveControlDraw(
+        draw_index=draw_index,
+        verdict=judgement.verdict.value,
+        reason=judgement.reason,
+        caught=would_downgrade(judgement),
+    )
+
+
 # --- incremental save / summarize ------------------------------------------
 
 
@@ -301,9 +357,14 @@ def save_draw(draw: DrawResult) -> Path:
     return path
 
 
-def save_positive_control_draw(draw: PositiveControlDraw) -> Path:
+_CONTEXT_FREE_CONTROL_PREFIX = "positive-control-draw"
+_WITH_CONTEXT_CONTROL_PREFIX = "positive-control-with-context-draw"
+
+
+def save_positive_control_draw(draw: PositiveControlDraw, *, with_context: bool = False) -> Path:
     _DRAWS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _DRAWS_DIR / f"positive-control-draw{draw.draw_index}.json"
+    prefix = _WITH_CONTEXT_CONTROL_PREFIX if with_context else _CONTEXT_FREE_CONTROL_PREFIX
+    path = _DRAWS_DIR / f"{prefix}{draw.draw_index}.json"
     path.write_text(json.dumps(asdict(draw), indent=2), encoding="utf-8")
     return path
 
@@ -331,10 +392,23 @@ def summarize(draws_dir: Path) -> dict:
     total_false_rejects = 0
     positive_control_draws = 0
     positive_control_caught = 0
+    positive_control_with_context_draws = 0
+    positive_control_with_context_caught = 0
 
     for path in sorted(draws_dir.glob("*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if path.name.startswith("positive-control-draw"):
+        # MAJOR 1's with-context control filename is checked FIRST -- it is a
+        # more specific prefix ("positive-control-with-context-draw") than
+        # the context-free control's ("positive-control-draw"), and the two
+        # do not collide (neither is a prefix of the other), but checking
+        # order-independent would still be correct here; ordering it this
+        # way keeps the intent explicit.
+        if path.name.startswith(_WITH_CONTEXT_CONTROL_PREFIX):
+            positive_control_with_context_draws += 1
+            if payload["caught"]:
+                positive_control_with_context_caught += 1
+            continue
+        if path.name.startswith(_CONTEXT_FREE_CONTROL_PREFIX):
             positive_control_draws += 1
             if payload["caught"]:
                 positive_control_caught += 1
@@ -369,6 +443,21 @@ def summarize(draws_dir: Path) -> dict:
         "positive_control_catch_rate": (
             positive_control_caught / positive_control_draws if positive_control_draws else None
         ),
+        # MAJOR 1 (gate-3 review, issue #170): the ONLY control in this
+        # summary that exercises the variable under test -- whether the
+        # judge still rejects an irrelevant fact when an ESTABLISHED FACTS
+        # block is present. Read this rate before trusting the aggregate
+        # false-reject total: every other rejection in this run (this
+        # control included) was context-free, so a run with zero
+        # with-context negative evidence could look identical whether the
+        # established-facts fix is selectively permissive or broadly so.
+        "positive_control_with_context_draws": positive_control_with_context_draws,
+        "positive_control_with_context_caught": positive_control_with_context_caught,
+        "positive_control_with_context_catch_rate": (
+            positive_control_with_context_caught / positive_control_with_context_draws
+            if positive_control_with_context_draws
+            else None
+        ),
         "artifact_content_note": (
             "Per-draw files under draws/ intentionally retain full claim text, field/value "
             "facts, and judge rationale prose -- a deliberate deviation from #163/#169's "
@@ -397,27 +486,49 @@ def main() -> None:
         action="store_true",
         help="skip live runs; just re-aggregate evals/results/issue-170/draws/",
     )
+    parser.add_argument(
+        "--with-context-control-only",
+        action="store_true",
+        help=(
+            "run ONLY the MAJOR-1 with-context positive control (--draws draws), skipping the "
+            "context-free control and all 12 case-draw sets -- for a targeted top-up run against "
+            "an existing draws/ directory, without re-spending the full ~96-draw session."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.summarize_only:
         settings = Settings(llama_server_api_timeout_seconds=180.0)
         judge: SemanticSupportJudgeLike = LlamaServerClient.from_settings(settings)  # type: ignore[assignment]
 
-        for draw_index in range(args.draws):
-            control = run_positive_control(draw_index, judge)
-            path = save_positive_control_draw(control)
-            print(f"[spike] positive-control draw {draw_index}: verdict={control.verdict} caught={control.caught} -> {path}")
-
-        for case_id in citation_present_case_ids():
+        if not args.with_context_control_only:
             for draw_index in range(args.draws):
-                draw = run_one_draw(case_id, draw_index, judge)
-                path = save_draw(draw)
-                status = (
-                    f"EXCEPTION {draw.exception}"
-                    if draw.exception
-                    else f"{draw.eligible_claim_count} eligible, {draw.exposure_claim_count} judged"
+                control = run_positive_control(draw_index, judge)
+                path = save_positive_control_draw(control)
+                print(
+                    f"[spike] positive-control draw {draw_index}: "
+                    f"verdict={control.verdict} caught={control.caught} -> {path}"
                 )
-                print(f"[spike] {case_id} draw {draw_index}: {status} -> {path}")
+
+        for draw_index in range(args.draws):
+            control = run_positive_control_with_context(draw_index, judge)
+            path = save_positive_control_draw(control, with_context=True)
+            print(
+                f"[spike] positive-control-with-context draw {draw_index}: "
+                f"verdict={control.verdict} caught={control.caught} -> {path}"
+            )
+
+        if not args.with_context_control_only:
+            for case_id in citation_present_case_ids():
+                for draw_index in range(args.draws):
+                    draw = run_one_draw(case_id, draw_index, judge)
+                    path = save_draw(draw)
+                    status = (
+                        f"EXCEPTION {draw.exception}"
+                        if draw.exception
+                        else f"{draw.eligible_claim_count} eligible, {draw.exposure_claim_count} judged"
+                    )
+                    print(f"[spike] {case_id} draw {draw_index}: {status} -> {path}")
 
     summary = summarize(_DRAWS_DIR)
     save_summary(summary)

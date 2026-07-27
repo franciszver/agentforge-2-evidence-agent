@@ -104,20 +104,38 @@ and has ALREADY fully ``passed`` -- same safety invariant as
 ``app.semantic_support._established_facts_for_claim``, adapted here.
 
 **Self-exclusion (the one required difference from ``app.semantic_support``'s
-established-facts gathering).** ``app.semantic_support`` includes the claim's
-OWN SourceRef facts in its established-facts block, because there the thing
-being JUDGED (a ``DocumentCitation`` quote) is a DIFFERENT shape than the
-context (SourceRef facts) -- no overlap is possible. Here, the thing being
-judged IS a claim's own SourceRef facts -- the SAME shape as the context.
-Reusing ``app.semantic_support``'s helper unmodified would hand the judge
-the exact same facts twice: once as the primary SOURCE FACTS being judged,
-once again inside ESTABLISHED FACTS -- circular, and liable to read as
-independent corroboration when it is the same one assertion restated.
-``_established_facts_for_source_ref_claim`` below therefore gathers ONLY
-sibling claims' facts (``other is claim_result`` is always skipped, same as
-``app.semantic_support``), and additionally never re-derives the current
-claim's own facts at all -- there is no code path here that could
-accidentally fold them back in.
+established-facts gathering) -- by OBJECT, not by VALUE.** ``app.semantic_
+support`` includes the claim's OWN SourceRef facts in its established-facts
+block, because there the thing being JUDGED (a ``DocumentCitation`` quote)
+is a DIFFERENT shape than the context (SourceRef facts) -- no overlap is
+possible. Here, the thing being judged IS a claim's own SourceRef facts --
+the SAME shape as the context. Reusing ``app.semantic_support``'s helper
+unmodified would hand the judge the SAME citation OBJECT twice: once as the
+primary SOURCE FACTS being judged, once again inside ESTABLISHED FACTS.
+``_established_facts_for_source_ref_claim`` below prevents exactly that:
+it gathers ONLY sibling claims' facts (``other is claim_result`` is always
+skipped, same as ``app.semantic_support``), and never re-derives the
+current claim's own facts at all -- there is no code path here that could
+accidentally fold the SAME ``SourceRef`` back into its own claim's context.
+
+What this does NOT guarantee: two DIFFERENT citations that happen to
+resolve to an IDENTICAL ``"field: value"`` string are not deduplicated by
+value. ``_source_ref_facts`` formats each fact as bare ``field: value``,
+with no ``(tool_call_id, record_id)`` carried into the string, so a sibling
+citing the same field with the same value as the claim's own citation
+re-emits an identical-looking line in both the primary SOURCE FACTS and the
+ESTABLISHED FACTS block -- e.g. two claims each citing a different record's
+``date`` field, both resolving to the same calendar date. This is a
+narrower thing than the circularity self-exclusion prevents (a DIFFERENT,
+independently-verified fact that is coincidentally worded the same, not the
+SAME fact reappearing), and the measured effect (issue #170's
+re-measurement, ``evals/results/issue-170/``) runs toward MORE supporting
+context, not less -- i.e. toward the SUPPORTED verdicts this fix is trying
+to produce, not toward a false negative. Not treated as a correctness bug
+here; a future value-level (rather than object-level) dedup would need to
+decide whether coincidentally-identical wording from a genuinely distinct
+record should count as corroboration at all, which is a judgment call this
+module does not make.
 """
 
 from __future__ import annotations

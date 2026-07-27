@@ -1,0 +1,6 @@
+{
+  "draw_index": 2,
+  "verdict": "not_supported",
+  "reason": "The SOURCE FACTS indicate there are no problems (problem_count: 0), which contradicts the CLAIM that the patient's blood pressure was elevated.",
+  "caught": true
+}

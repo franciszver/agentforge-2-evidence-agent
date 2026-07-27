@@ -1,0 +1,42 @@
+[
+  {
+    "claim": "The patient has an appointment scheduled with provider Billy Smith on 2014-01-31 at 14:30:00.",
+    "in_scope": true,
+    "own_facts": [
+      "date: 2014-01-31",
+      "time: 14:30:00",
+      "provider: Billy Smith"
+    ],
+    "context_facts": [
+      "date: 2014-01-31"
+    ],
+    "verdict": "supported",
+    "reason": "The SOURCE FACTS provide the date, time, and provider information necessary to support the CLAIM that the patient has an appointment scheduled with provider Billy Smith on 2014-01-31 at 14:30:00."
+  },
+  {
+    "claim": "The patient's blood pressure was elevated at the last visit.",
+    "in_scope": false
+  },
+  {
+    "claim": "The patient is trying lifestyle changes.",
+    "in_scope": false
+  },
+  {
+    "claim": "It is recommended to recheck in 3-6 months to assess response.",
+    "in_scope": false
+  },
+  {
+    "claim": "The next follow-up should be at the scheduled appointment on 2014-01-31.",
+    "in_scope": true,
+    "own_facts": [
+      "date: 2014-01-31"
+    ],
+    "context_facts": [
+      "date: 2014-01-31",
+      "time: 14:30:00",
+      "provider: Billy Smith"
+    ],
+    "verdict": "supported",
+    "reason": "The SOURCE FACTS and ESTABLISHED FACTS provide the date of the scheduled appointment (2014-01-31), which directly supports the claim that the next follow-up should be at that appointment."
+  }
+]

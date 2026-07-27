@@ -350,6 +350,15 @@ class Settings(BaseSettings):
     # the P3.9b measurement showed the gate reliable (6/6 adversarial caught,
     # 6/6 supported-correct), so "verified" now means provenance AND semantic
     # support in production. See app/semantic_support.py.
+    #
+    # Issue #192 (BLOCKING, filed): this judge (and copilot_source_ref_
+    # relevance_enabled below) interpolates claim text / quote / fact values
+    # into the judge prompt with only a soft system-prompt instruction as
+    # injection defence -- no structural mitigation. #192 tracks structural
+    # mitigation across BOTH judge modules and is a pre-condition the owner
+    # has marked BLOCKING for this flag's continued default-ON status, not
+    # just for source_ref_relevance's own enablement. See app/source_ref_
+    # relevance.py's module docstring, "Injection posture".
     copilot_semantic_support_enabled: bool = True
 
     # Issue #153: when true, run_verification additionally requires that each
@@ -448,6 +457,16 @@ class Settings(BaseSettings):
     # #130/#170 findings sections for the measured numbers before ever
     # flipping this default. Flag OFF: byte-identical to today, no extra LLM
     # call.
+    #
+    # Issue #192 (BLOCKING, filed): this judge interpolates claim text /
+    # fact values into the judge prompt with only a soft system-prompt
+    # instruction as injection defence -- no structural mitigation, same
+    # posture as ``copilot_semantic_support_enabled`` above since #47. #192
+    # tracks structural mitigation across both judge modules and is a
+    # pre-condition the owner has marked BLOCKING for ever flipping THIS
+    # flag on -- the #170 zero-false-reject measurement above does not
+    # clear that separate risk. See app/source_ref_relevance.py's module
+    # docstring, "Injection posture".
     #
     # `evals/runner/pipeline.py`'s `run_case` threads this setting through to
     # `run_verification` exactly parallel to
