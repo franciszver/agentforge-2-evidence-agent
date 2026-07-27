@@ -1,4 +1,4 @@
-"""Production-path tests for the #153 recency notice in ``POST /chat``.
+"""Production-path tests for the Phase 1 #153 recency notice in ``POST /chat``.
 
 These guard the LIVE endpoint's behavior directly, not only via the offline
 eval: the ``answer`` SSE frame a real user receives must carry the

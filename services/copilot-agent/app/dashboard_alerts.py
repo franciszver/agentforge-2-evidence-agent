@@ -16,9 +16,9 @@ the DTO or derived from fields already on it:
   ``tool_call_count == 0``. NOTE: in production today ``tool_call_count`` is
   ALWAYS 0 -- ``app.chat`` does not yet emit per-tool spans live (see
   ``app.trace_store.TraceStore.record_tool_span``'s call sites, currently
-  none in ``app.chat``; tracked by #149). This alert is exercised here
+  none in ``app.chat``; tracked by Phase 1 #149). This alert is exercised here
   against seeded/synthetic metrics and will start evaluating real data once
-  #149 lands.
+  Phase 1 #149 lands.
 - **verification-fail rate**: DERIVED as ``1 - verification_pass_rate``.
   ``None`` (no alert) when ``verification_pass_rate`` is ``None``.
 - **extraction-failure rate** (P3G.4/#24): ``metrics.extraction_failure_rate``
@@ -231,7 +231,7 @@ def evaluate_alerts(
     document ingestion and retrieval do not record a dedicated
     ``app.trace_store`` span the way requests/tools/LLM calls/verification
     do. This mirrors the tool-failure-rate alert's own documented "dormant
-    until #149" precedent above: the rule is implemented and tested now, and
+    until Phase 1 #149" precedent above: the rule is implemented and tested now, and
     will start evaluating real data once a future issue computes this field
     from live spans. ``eval_history`` (``app.dashboard_eval_history``) IS
     real, already-committed data -- the dashboard passes it live.

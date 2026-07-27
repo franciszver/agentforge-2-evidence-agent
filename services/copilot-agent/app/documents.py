@@ -29,7 +29,7 @@ source documents.
 identifier -- not a name/DOB/MRN) and outcome are logged, never file
 contents.
 
-**Launch-patient binding (flag-gated).** Mirrors ``/chat``'s #124 Phase 5
+**Launch-patient binding (flag-gated).** Mirrors ``/chat``'s Phase 1 #124 Phase 5
 binding exactly: gated by the SAME ``copilot_per_user_token_enabled`` flag,
 using the SAME ``get_launch_binding_checker()`` dependency. Flag OFF: a
 no-op, byte-identical to before -- binding is deliberately inactive per the
@@ -94,7 +94,7 @@ def source_document_endpoint(
         _logger.warning("source document not found", extra={"source_id": source_id})
         raise HTTPException(status_code=404, detail="document not found")
 
-    # #124 Phase 5 parity (see module docstring): same flag-gated
+    # Phase 1 #124 Phase 5 parity (see module docstring): same flag-gated
     # launch-patient binding /chat enforces via get_launch_binding_checker(),
     # applied here against the document's OWN stored patient_id rather than a
     # request-body patient_id. An unresolvable patient_id (e.g. a document

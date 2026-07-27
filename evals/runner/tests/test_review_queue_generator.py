@@ -101,14 +101,14 @@ def test_thumbs_down_with_comment_produces_a_schema_valid_case(tmp_path: Path) -
     case = _load(tmp_path, text)
 
     assert case.category == "regression"
-    # #157: the raw clinician comment is scrubbed from the public export; the
+    # Phase 1 #157: the raw clinician comment is scrubbed from the public export; the
     # field carries a neutral non-empty TODO placeholder instead.
     assert "Missed the recent A1C value entirely." not in text
     assert case.failure_mode
 
 
 def test_thumbs_down_comment_is_scrubbed_from_promoted_export(tmp_path: Path) -> None:
-    """PHI-safety (#157): promoted cases are committed to the PUBLIC ``evals/``
+    """PHI-safety (Phase 1 #157): promoted cases are committed to the PUBLIC ``evals/``
     repo, so the raw clinician free-text comment must NEVER appear in the
     exported YAML -- a clinician who typed patient details into a thumbs-down
     comment would otherwise leak PHI into public git. ``failure_mode`` instead
@@ -133,7 +133,7 @@ def test_thumbs_down_comment_is_scrubbed_from_promoted_export(tmp_path: Path) ->
     # The sentinel (standing in for free-text PHI) is absent from the whole
     # export, not just the parsed field.
     assert "SENTINEL_COMMENT_TEXT" not in text
-    # failure_mode stays a non-empty required field (#155), points at the cid,
+    # failure_mode stays a non-empty required field (Phase 1 #155), points at the cid,
     # and is marked as a TODO for a human to complete.
     assert case.failure_mode
     assert "TODO" in case.failure_mode

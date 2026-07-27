@@ -1,7 +1,7 @@
 id: 140-eav-vitals-citation
 category: regression
 failure_mode: >
-  Regression guard for #140: get_vitals returns long-format/EAV records
+  Regression guard for Phase 1 #140: get_vitals returns long-format/EAV records
   ({vital_type, value, unit, date}); before the fix, a weight claim cited
   the literal field ("value") instead of the concept ("weight"), so vitals
   claims were stripped at scale (measured 17% citation-validity vs 100% for

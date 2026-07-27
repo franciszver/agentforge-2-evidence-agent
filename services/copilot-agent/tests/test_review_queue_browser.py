@@ -120,7 +120,7 @@ def test_promote_click_produces_a_valid_regression_case_yaml(app_base_url: str) 
             yaml_text = output.text_content() or ""
             assert "category: regression" in yaml_text
             assert _SEEDED_CORRELATION_ID in yaml_text
-            # #157: the raw comment is never in the promoted export either --
+            # Phase 1 #157: the raw comment is never in the promoted export either --
             # a clinician who typed PHI into the comment must not leak it
             # into the public evals/ repo. Only a neutral TODO placeholder is
             # emitted. (#176: the /review page itself also redacts it now,

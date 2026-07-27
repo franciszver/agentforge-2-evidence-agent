@@ -22,7 +22,7 @@ NOT succeed on their recorded attempt. ``tool_call_count`` counts ALL tool
 spans (successes and failures both), so it and ``retry_count`` are reported
 side by side rather than one being a subset presented alone.
 
-**Feedback dedup (#54).** The P4.4 UI can write TWO feedback spans for one
+**Feedback dedup (Phase 1 #54).** The P4.4 UI can write TWO feedback spans for one
 thumbs-down: an immediate ``{thumb: down}`` on click, then a second
 ``{thumb: down, comment: "..."}`` if the clinician follows up with a comment.
 Both spans share ``correlation_id`` and ``span_type = 'feedback'``. Counting

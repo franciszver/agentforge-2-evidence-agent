@@ -1,5 +1,5 @@
-"""Hermetic tests for streaming the planner's free-text reasoning (#213,
-sub-issue C of epic #209 -- #211 streams the SSE relay, #212 streams
+"""Hermetic tests for streaming the planner's free-text reasoning (Phase 1 #213,
+sub-issue C of epic Phase 1 #209 -- Phase 1 #211 streams the SSE relay, Phase 1 #212 streams
 ``tool_call`` frames incrementally).
 
 Today ``Planner._finalize_answer`` reasons in one blocking ``chat()`` call,
@@ -223,7 +223,7 @@ def test_stream_chat_emits_reasoning_delta_frames_before_answer_frame_verified_o
 
 
 def test_stream_chat_with_no_reasoning_delta_events_emits_no_reasoning_delta_frames() -> None:
-    """A planner double that only implements ``run()`` (all pre-#212 fake
+    """A planner double that only implements ``run()`` (all pre-Phase 1 #212 fake
     planners) never emits reasoning_delta frames -- the fallback replay path
     has no such events to replay, exactly like it has no live tool_call
     frames either."""

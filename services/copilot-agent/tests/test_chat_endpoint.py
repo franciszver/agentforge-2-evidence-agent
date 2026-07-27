@@ -140,7 +140,7 @@ def _override_planner_factory(fake_planner: FakePlanner) -> None:
 def _override_planner_factory_keyed_by_bearer_token(planners_by_token: dict[str, FakePlanner]) -> None:
     """Unlike ``_override_planner_factory`` above (always the SAME planner,
     regardless of caller) -- mirrors what the REAL ``get_planner_factory``
-    does with ``copilot_per_user_token_enabled`` ON (#124 Phase 4): a
+    does with ``copilot_per_user_token_enabled`` ON (Phase 1 #124 Phase 4): a
     DIFFERENT planner bound to EACH caller's own forwarded bearer token.
     Needed to prove #174 Gate 2's authorization-scope fix, which is
     specifically about caller A's cached fetch never being served to
@@ -429,12 +429,12 @@ def test_append_turn_survives_mid_request_eviction():
 
 
 # --------------------------------------------------------------------------
-# #224 name-binding: Conversation gains the bound patient's own display name,
+# Phase 1 #224 name-binding: Conversation gains the bound patient's own display name,
 # resolved once at conversation-creation time via the planner's OPTIONAL
 # ``resolve_patient_name`` capability (getattr-duck-typed, same pattern as
 # ``run_streaming``). ``FakePlanner`` above implements neither, so every
 # EXISTING test in this file (none of which set up a resolver) keeps getting
-# ``patient_name=None`` -- byte-identical pre-#224 behavior.
+# ``patient_name=None`` -- byte-identical pre-Phase 1 #224 behavior.
 # --------------------------------------------------------------------------
 
 
@@ -501,7 +501,7 @@ def test_resumed_conversation_does_not_re_resolve_the_patient_name():
 
 
 def test_new_conversation_leaves_patient_name_none_when_planner_has_no_resolver():
-    # FakePlanner (no resolve_patient_name) -- the pre-#224 default double
+    # FakePlanner (no resolve_patient_name) -- the pre-Phase 1 #224 default double
     # used throughout this file -- must not break conversation creation.
     fake_planner = FakePlanner(trace=[], answer="ok")
     _override_ok_validator()
@@ -554,7 +554,7 @@ def test_named_cross_patient_reference_is_refused_before_any_tool_dispatch_when_
 
 
 # --------------------------------------------------------------------------
-# #237 roster-based cross-patient detection: the "switch (over) to <Name>"
+# Phase 1 #237 roster-based cross-patient detection: the "switch (over) to <Name>"
 # signal (app.extraction.detect_foreign_patient_reference's signal 3), fed by
 # the planner's OPTIONAL ``resolve_patient_roster`` capability -- resolved
 # LAZILY (only when a "switch to <Name>" construction actually matched, never
@@ -970,7 +970,7 @@ def test_roster_fetch_amplification_is_bounded_across_n_distinct_conversations()
 
 
 def test_switch_to_message_does_not_crash_when_planner_has_no_roster_resolver():
-    # FakePlanner (no resolve_patient_roster) -- the pre-#237 default double
+    # FakePlanner (no resolve_patient_roster) -- the pre-Phase 1 #237 default double
     # used throughout this file -- must not break, and the roster signal is
     # simply skipped (planner runs normally, no refusal).
     fake_planner = FakePlanner(trace=[], answer="ok")

@@ -5,7 +5,7 @@ Two pure pieces, both read-only over ``app.trace_store``:
   * :func:`list_review_queue` -- which correlation ids belong on the
     clinician-facing worklist: a thumbs-down feedback span, and/or a
     verification span whose verdict is not ``verified``. Feedback is
-    deduped the same way the P4.5 dashboard does (#54): prefer the row
+    deduped the same way the P4.5 dashboard does (Phase 1 #54): prefer the row
     WITH a comment, then the most recently written row.
   * :func:`generate_regression_case` -- trace spans -> a schema-valid
     ``EvalCase`` YAML skeleton (the P4.7 shape, ``evals/runner/schema.py``).
@@ -20,7 +20,7 @@ real regression guard. The only genuinely case-specific content this module
 can supply is what the trace store actually recorded: the correlation id
 (as ``source:``) and the observed verdict (as a starting ``verdict``
 assertion, when a verification span exists). The clinician's feedback comment
-is deliberately NOT re-emitted (#157): promoted cases land in the PUBLIC
+is deliberately NOT re-emitted (Phase 1 #157): promoted cases land in the PUBLIC
 ``evals/`` repo, and the free-text comment may contain PHI, so ``failure_mode``
 carries only a neutral TODO placeholder referencing the correlation id. The
 raw comment is not shown on any rendered page (#176: ``app.review_page``'s
@@ -71,7 +71,7 @@ class ReviewQueueEntry:
     response, and -- unlike this DTO's other fields -- it may incidentally
     contain PHI (see ``app.trace_store``'s module docstring); callers of
     this DTO must not render it (``app.review_page``'s ``/review`` redacts
-    it, #176, and ``generate_regression_case`` never re-emits it, #157)."""
+    it, #176, and ``generate_regression_case`` never re-emits it, Phase 1 #157)."""
 
     correlation_id: str
     feedback_thumb: FeedbackThumb | None
@@ -88,7 +88,7 @@ class ReviewQueueEntry:
 
 
 def _latest_feedback(feedback_spans: list[Span]) -> Span | None:
-    """Same dedup rule as the P4.5 dashboard's ``_FEEDBACK_DEDUP_SQL`` (#54):
+    """Same dedup rule as the P4.5 dashboard's ``_FEEDBACK_DEDUP_SQL`` (Phase 1 #54):
     prefer the row WITH a comment (more informative); among ties, the most
     recently written row. ``feedback_spans`` is in insertion order (as
     returned by ``TraceStore.get_spans``), so the last matching element is
@@ -189,7 +189,7 @@ def _failure_mode(feedback: Span | None, verification: Span | None, correlation_
     # as the failure_mode. Fall through to the verdict-based message instead.
     if feedback is not None and feedback.feedback_thumb == FeedbackThumb.DOWN:
         if feedback.feedback_comment:
-            # PHI-safety (#157): promoted cases are committed to the PUBLIC
+            # PHI-safety (Phase 1 #157): promoted cases are committed to the PUBLIC
             # evals/ repo. The clinician's free-text comment may contain
             # patient details, so it is NEVER re-emitted here -- only a neutral
             # TODO placeholder pointing back at the correlation id. The raw

@@ -1,7 +1,7 @@
 """ACL / authorization scoping proven end-to-end against the LIVE stack (P2.18).
 
 Three capstone integration cases that prove the authorization story built
-across P2.13-P2.17 -- and completed by the #124 ``authorization_code`` flow --
+across P2.13-P2.17 -- and completed by the Phase 1 #124 ``authorization_code`` flow --
 holds against the real OpenEMR + real qwen3:4b, not just in hermetic mocks:
 
   (a) A real, per-user OpenEMR bearer token for a genuinely SCOPED demo user
@@ -29,7 +29,7 @@ holds against the real OpenEMR + real qwen3:4b, not just in hermetic mocks:
       attempt (who asked, on which bound chart, what they asked).
 
   (c) Genuine per-ROLE differentiation on the SAME clinical endpoint, proven
-      live end-to-end via the #124 ``authorization_code`` + PKCE + SMART-launch
+      live end-to-end via the Phase 1 #124 ``authorization_code`` + PKCE + SMART-launch
       + introspection flow: a restricted role (``accountant``) is denied with a
       hard HTTP 403 while ``admin`` gets HTTP 200 on the identical
       ``GET /apis/default/api/patient/1/medication`` request. This is the real
@@ -306,7 +306,7 @@ def test_per_role_authorization_code_acl_is_role_differentiated() -> None:
     valid endpoint/patient, not a broken request or an expired token.
 
     Live-proven end-to-end 2026-07-16 against the running dev stack via the
-    #124 authorization_code + PKCE + SMART-launch + introspection flow:
+    Phase 1 #124 authorization_code + PKCE + SMART-launch + introspection flow:
     accountant -> HTTP 403, admin -> HTTP 200 on this exact endpoint. Because
     minting these tokens needs interactive browser consent (the prod client has
     no password grant), the tokens are supplied via env and the test skips when

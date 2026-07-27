@@ -39,7 +39,7 @@ enforced). The dev client secret and tokens are written only to the gitignored
 `services/copilot-agent/.openemr-dev-client.json` and are never printed or
 committed.
 
-## OpenEMR OAuth (production authorization_code client) — #124 Phase 1
+## OpenEMR OAuth (production authorization_code client) — Phase 1 #124 Phase 1
 
 Production does **not** use the password grant. It uses the OAuth2
 `authorization_code` grant against a confidential client that a browser drives
@@ -108,7 +108,7 @@ The production client secret is written only to the container-local
 `copilot_prod_client_creds_path` (default `/data/openemr-prod-client.json`) and
 is never printed or committed.
 
-### Wire the client into the module globals (dev) — #124 Phase 6
+### Wire the client into the module globals (dev) — Phase 1 #124 Phase 6
 
 Registering + enabling the client is not enough: the OpenEMR module reads the
 client id/secret and the consent-enable flag from **globals**

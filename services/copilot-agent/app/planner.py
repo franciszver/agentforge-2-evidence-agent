@@ -573,12 +573,12 @@ class Planner:
 
     def resolve_patient_name(self) -> str | None:
         """Best-effort resolve this conversation's bound patient display name
-        (#224 name-binding), e.g. for ``app.extraction
+        (Phase 1 #224 name-binding), e.g. for ``app.extraction
         .detect_foreign_patient_reference``'s named cross-patient signals.
 
         ``None`` on any OpenEMR API error (patient not found, timeout, ...)
         -- callers treat a missing name as "name-binding unavailable", which
-        that guard already handles by falling back to its pre-#224
+        that guard already handles by falling back to its pre-Phase 1 #224
         numeric-only signal. An OPTIONAL capability, not part of
         ``app.chat.PlannerProtocol`` -- callers duck-type it via ``getattr``
         (same pattern as ``run_streaming``), so a test double that only
@@ -587,7 +587,7 @@ class Planner:
         return get_patient_name(self._openemr, self._token, self._patient_id)
 
     def resolve_patient_roster(self) -> list[RosterEntry]:
-        """Every patient's (pid, display name) pair (#237 roster-based
+        """Every patient's (pid, display name) pair (Phase 1 #237 roster-based
         cross-patient detection), for ``app.extraction
         .detect_foreign_patient_reference``'s "switch to <Name>" signal.
 

@@ -1,4 +1,4 @@
-"""Owner-only writer for OAuth client-credential files (#176).
+"""Owner-only writer for OAuth client-credential files (Phase 1 #176).
 
 The dev token bridge and the production client registration both persist a
 ``{"client_id", "client_secret"}`` JSON file. That file holds a real OAuth

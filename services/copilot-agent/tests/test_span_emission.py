@@ -1,4 +1,4 @@
-"""Hermetic tests: ``POST /chat`` emits ``tool`` + ``llm`` spans (#149).
+"""Hermetic tests: ``POST /chat`` emits ``tool`` + ``llm`` spans (Phase 1 #149).
 
 Extends P4.2's request/verification span wiring (``test_chat_trace_emission.py``)
 to the ``tool`` and ``llm`` spans P4.5's dashboard aggregates (tool_call_count,

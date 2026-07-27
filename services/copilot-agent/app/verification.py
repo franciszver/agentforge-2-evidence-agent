@@ -259,7 +259,7 @@ word, still fails ``QUOTE_NOT_FOUND`` after this change). Applied AFTER the
 empty-quote and length-floor guards above (which operate on the
 un-normalized ``stripped_quote``), so those guards' behavior is unchanged.
 
-**Recency notices (issue #153) -- an additive, separate concern from
+**Recency notices (issue Phase 1 #153) -- an additive, separate concern from
 citation re-validation above, not a change to it.**
 
 The rule (also deterministic, no LLM): the record types the model may
@@ -279,7 +279,7 @@ extraction is itself an LLM call (``ClaimExtractor.extract_claims``), and
 both the eval harness (``runner.pipeline.needs_verification``) and this
 module's own citation-checking path only reach it for turns whose assertions
 need a verdict. A recency check gated on claim extraction would never fire
-for a turn whose recording has no extraction call -- exactly the #153
+for a turn whose recording has no extraction call -- exactly the Phase 1 #153
 stale-data eval cases (``stale-only-lab``, ``stale-only-vitals``), whose
 recordings only ever exercise ``Planner.run()``. Nor can the eval be made to
 always extract: offline replay (``runner.ollama_replay.ReplayOllamaClient``)
@@ -826,7 +826,7 @@ def check_document_citation(
 
 
 # ---------------------------------------------------------------------------
-# Recency notices (#153) -- see module docstring, "Recency notices", for the
+# Recency notices (Phase 1 #153) -- see module docstring, "Recency notices", for the
 # full rationale (why every returned record, not per-claim citations; the
 # one deliberate clock exception; the threshold rationale).
 # ---------------------------------------------------------------------------

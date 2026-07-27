@@ -31,7 +31,7 @@ conversation *content* and durable *trace* data are different concerns; see
 ``app.trace_store``): a durable, queryable ``TraceStore`` (P4.2) is wired in
 alongside it and records a **request** span (whole invocation), a
 **verification** span (the P3.7 verdict fold), a **tool** span per planner
-tool dispatch, and an **llm** span per completed Ollama call (#149), all
+tool dispatch, and an **llm** span per completed Ollama call (Phase 1 #149), all
 keyed by the SAME correlation id ``Turn`` already carries. Tool timing comes
 from ``app.planner.ToolCallTrace.start_ts``/``end_ts`` (its ``error`` field
 doubles as the tool span's ``error_category`` -- already a closed-set string,
@@ -237,7 +237,7 @@ class PlannerProtocol(Protocol):
 
 TokenValidator = Callable[[str], None]
 PlannerFactory = Callable[[int], PlannerProtocol]
-# Wall-clock seam for the #153 recency notice: production reads the real UTC
+# Wall-clock seam for the Phase 1 #153 recency notice: production reads the real UTC
 # clock, hermetic tests inject a fixed instant (mirroring the eval harness's
 # ``_EVAL_FIXED_NOW``). Returns a tz-AWARE UTC datetime so the recency
 # comparison is well-defined against tz-aware OpenEMR/FHIR record dates (see
@@ -293,7 +293,7 @@ class _IntrospectionValidator:
 
     Exposes ``peek_cached`` -- a duck-typed *optional* capability (the same
     pattern as ``Planner.run_streaming``, see this module's docstring) that
-    ``_validate_token`` (#185) looks up via ``getattr`` to decide whether a
+    ``_validate_token`` (Phase 1 #185) looks up via ``getattr`` to decide whether a
     call can stay on the event loop (a cache hit) or must be dispatched to
     FastAPI's threadpool (a cache miss, which makes a real HTTP call). A
     validator built over an ``Introspector`` double that has no
@@ -334,7 +334,7 @@ def build_introspection_validator(
 
 async def _validate_token(validator: TokenValidator, token: str) -> None:
     """Invoke ``validator(token)``, dispatching to FastAPI's threadpool only
-    when necessary (#185).
+    when necessary (Phase 1 #185).
 
     A cache-MISS introspection makes a real, blocking HTTP call and must not
     occupy the event loop inside the ``async`` ``chat_endpoint`` body -- so it
@@ -462,7 +462,7 @@ LaunchBindingChecker = Callable[[str, int], None]
 
 def _default_launch_binding_checker(token: str, patient_id: int) -> None:
     """Flag-OFF default: no-op. Keeps /chat byte-identical to today -- the
-    token-launch patient binding is a flag-on (#124 Phase 5) layer."""
+    token-launch patient binding is a flag-on (Phase 1 #124 Phase 5) layer."""
     return None
 
 
@@ -487,7 +487,7 @@ def get_launch_patient_binder() -> LaunchPatientBinder:
 def get_launch_binding_checker() -> LaunchBindingChecker:
     """FastAPI dependency: the active launch-patient binding check. Override in tests.
 
-    Flag ON (``copilot_per_user_token_enabled``, #124 Phase 5): verifies the
+    Flag ON (``copilot_per_user_token_enabled``, Phase 1 #124 Phase 5): verifies the
     token's SMART launch patient matches ``request.patient_id`` before the
     planner runs. Flag OFF: a no-op, so /chat is byte-identical to today.
     """
@@ -645,13 +645,13 @@ def _default_planner_factory(token: str) -> PlannerFactory:
     """Build the production planner factory bound to one real OpenEMR ``token``.
 
     ``token`` is a REAL OpenEMR token obtained server-side by the
-    ``DevTokenBridge`` (finding F4 / issue #126) -- NOT the browser's
+    ``DevTokenBridge`` (finding F4 / issue Phase 1 #126) -- NOT the browser's
     ``DevAgentToken`` (an HMAC identity assertion), which never reaches tool
     calls: this factory chain has no access to it at all. The browser token
     still gates the request and carries the pid for patient-context binding
     upstream in ``chat_endpoint``.
 
-    Identity for ACL is the bridge's configured demo clinician until #124
+    Identity for ACL is the bridge's configured demo clinician until Phase 1 #124
     (production ``authorization_code``, per-user tokens) lands. A tool call
     made with an expired/rejected token still fails per-call (caught as
     ``OpenEmrApiError`` in the planner loop) without crashing the conversation.
@@ -694,7 +694,7 @@ def get_planner_factory(
     password-grants against the demo clinician account, and a timing oracle
     disclosing whether the bridge is provisioned (see #177 for measurements).
 
-    Flag ON (``copilot_per_user_token_enabled``, #124 Phase 4): the planner is
+    Flag ON (``copilot_per_user_token_enabled``, Phase 1 #124 Phase 4): the planner is
     bound to the REQUEST's own forwarded bearer -- already extracted and
     validated by ``get_authenticated_token`` -- so OpenEMR maps every tool
     call to that user -> per-user ACL.
@@ -736,14 +736,14 @@ def get_planner_factory(
 
 
 def _default_clock() -> datetime:
-    """Production wall clock for the #153 recency notice: the real time, UTC
+    """Production wall clock for the Phase 1 #153 recency notice: the real time, UTC
     and tz-aware. Aware (not naive) so the staleness comparison against
     possibly-tz-aware OpenEMR/FHIR record dates never raises ``TypeError``."""
     return datetime.now(timezone.utc)
 
 
 def get_clock() -> Clock:
-    """FastAPI dependency: the wall clock for the recency notice (#153).
+    """FastAPI dependency: the wall clock for the recency notice (Phase 1 #153).
     Override in tests to inject a fixed instant for deterministic assertions."""
     return _default_clock
 
@@ -824,16 +824,16 @@ def _user_identity_from_token(token: str) -> str:
 class Conversation:
     """One multi-turn conversation, bound to the patient it was created for.
 
-    ``patient_name`` (#224 name-binding) is the bound patient's own display
+    ``patient_name`` (Phase 1 #224 name-binding) is the bound patient's own display
     name, resolved ONCE at creation time (see ``chat_endpoint``'s
     ``_resolve_conversation_patient_name`` call) -- ``None`` when it could
     not be resolved (e.g. an OpenEMR API error, or a planner double with no
     ``resolve_patient_name`` capability). Fed into ``app.extraction
     .detect_foreign_patient_reference``'s named cross-patient signals; a
     ``None`` name simply disables those signals for this conversation,
-    falling back to #223's numeric-only detection.
+    falling back to Phase 1 #223's numeric-only detection.
 
-    Issue #174: this class used to also carry ``patient_roster`` (#237
+    Issue #174: this class used to also carry ``patient_roster`` (Phase 1 #237
     roster-based detection) -- every OTHER patient's display name, resolved
     lazily and cached HERE, on the conversation, for the conversation's
     entire lifetime. That field is gone. Two independent problems with it,
@@ -1065,7 +1065,7 @@ class RosterCache:
     executes ``GET /apis/default/api/patient`` AS THAT USER --
     ``docs/ARCHITECTURE.md``'s "Patient-context binding" section documents
     that OpenEMR's REST authorization is role- and resource-scoped (its
-    #124 Phase 4 example: an ``accountant``-role token gets 403 where an
+    Phase 1 #124 Phase 4 example: an ``accountant``-role token gets 403 where an
     ``admin`` token gets 200 on the SAME endpoint shape), and that role is a
     property of the OpenEMR USER ACCOUNT (the introspected ``sub``), not of
     any one token -- two different tokens introspecting to the SAME ``sub``
@@ -1731,7 +1731,7 @@ def get_patient_fact_provider(settings: Settings = Depends(get_settings)) -> Pat
     which is scoped STRICTLY to the ``patient_id`` it is called with -- see
     that method's docstring for how it fails closed on any malformed/foreign
     data. ``_stream_chat`` calls this ONLY with ``conversation.patient_id``,
-    the SAME id ``/chat``'s launch-patient binding (#124 Phase 5, flag-gated,
+    the SAME id ``/chat``'s launch-patient binding (Phase 1 #124 Phase 5, flag-gated,
     ``get_launch_binding_checker``) and P2.16 conversation binding already
     verify before a turn ever reaches this call -- a request that failed
     either of those checks never dispatches the planner, let alone this
@@ -1910,7 +1910,7 @@ def _tool_call_frame(trace_store: TraceStore, correlation_id: str, call: ToolCal
 
 
 def _emit_llm_spans(trace_store: TraceStore, correlation_id: str, llm_calls: list[LlmCallStats]) -> None:
-    """Record one ``llm`` span per completed Ollama call (P4/#149), best-effort.
+    """Record one ``llm`` span per completed Ollama call (P4/Phase 1 #149), best-effort.
 
     ``llm_calls`` comes from ``PlannerResult.llm_calls`` (decision extracts,
     the quarantine summarizer, the two-call finalize) and, separately, the
@@ -1995,7 +1995,7 @@ def _stream_chat(
         run_streaming = getattr(planner, "run_streaming", None)
 
         def _roster_provider() -> Sequence[RosterEntry]:
-            # #237: resolved LAZILY -- this closure is only ever CALLED by
+            # Phase 1 #237: resolved LAZILY -- this closure is only ever CALLED by
             # detect_foreign_patient_reference when a "switch to <Name>"
             # construction has already matched and isn't the bound patient,
             # so a turn that never uses that construction never pays this
@@ -2005,7 +2005,7 @@ def _stream_chat(
             # ``Conversation``'s docstring and ``RosterCache``'s docstring
             # for why a shared cache is correct here, not just cheaper. A
             # planner double with no ``resolve_patient_roster`` capability
-            # (the pre-#237 default) never reaches the cache at all.
+            # (the pre-Phase 1 #237 default) never reaches the cache at all.
             #
             # #182: ``owner_subject`` (the #185 introspected principal, or
             # ``None`` flag-off / on a resolution miss) is threaded through
@@ -2023,16 +2023,16 @@ def _stream_chat(
                 return []
             return roster_cache.get_or_fetch(resolve_roster, principal=owner_subject)
 
-        # #223 (extended by #224, #237): deterministic PRE-dispatch
+        # Phase 1 #223 (extended by Phase 1 #224, Phase 1 #237): deterministic PRE-dispatch
         # cross-patient refusal guard, checked BEFORE the planner runs at
-        # all. Unlike #194's apply_subject_check below (which only rewrites
+        # all. Unlike Phase 1 #194's apply_subject_check below (which only rewrites
         # the answer TEXT after tools have already been dispatched), this
         # short-circuits BEFORE any tool dispatch or model call -- the only
         # way to guarantee a forbidden tool never runs. ``conversation
         # .patient_name`` (resolved once at conversation-creation time, see
         # ``_resolve_conversation_patient_name``) enables the guard's named
-        # signals; ``None`` (name-binding unavailable) falls back to #223's
-        # numeric-only detection. ``_roster_provider`` enables the #237
+        # signals; ``None`` (name-binding unavailable) falls back to Phase 1 #223's
+        # numeric-only detection. ``_roster_provider`` enables the Phase 1 #237
         # roster-based "switch to <Name>" signal. See app.extraction
         # .detect_foreign_patient_reference.
         cross_patient_reference_detected = detect_foreign_patient_reference(
@@ -2112,8 +2112,8 @@ def _stream_chat(
         else:
             result = planner.run(message, guideline_excerpts, **planner_kwargs)
         assert result is not None  # mypy: the elif branch's loop widens result
-        # Deterministic cross-patient subject-check (#194, follow-up to
-        # #121): a small model can verbally attribute the bound patient's
+        # Deterministic cross-patient subject-check (Phase 1 #194, follow-up to
+        # Phase 1 #121): a small model can verbally attribute the bound patient's
         # data to a different, unqueried patient the question named/numbered
         # -- this is a model-independent backstop that strips any such
         # reference from the final answer BEFORE it is emitted, regardless of
@@ -2122,17 +2122,17 @@ def _stream_chat(
         # scans the model's own prose -- never text a later deterministic step
         # appends (e.g. a stale record's literal date), which could otherwise
         # coincidentally collide with a foreign patient number. Safe (a
-        # guaranteed no-op) to run unconditionally even when the #223 guard
+        # guaranteed no-op) to run unconditionally even when the Phase 1 #223 guard
         # above already fired: ``cross_patient_refusal_result()``'s generic
         # answer never echoes the foreign patient it detected, so this never
         # finds anything to strip.
         result = apply_subject_check(result, question=message, patient_id=conversation.patient_id)
-        # Deterministic unresolvable-referent guard (#225): a demonstrative
+        # Deterministic unresolvable-referent guard (Phase 1 #225): a demonstrative
         # medication reference the question never names ("that new
         # medication") with no prior turn in THIS conversation to anchor it
         # -- a small model is prone to silently guessing the referent rather
         # than asking. Skipped (not called unconditionally like
-        # apply_subject_check above) when the #223 guard already fired: a
+        # apply_subject_check above) when the Phase 1 #223 guard already fired: a
         # cross-patient refusal is a different, higher-priority question
         # class, and overriding it here would silently discard that refusal
         # even though its own answer text never happens to trip this guard.
@@ -2144,7 +2144,7 @@ def _stream_chat(
             result = clarify_unresolvable_referent(
                 result, question=message, has_prior_turns=bool(conversation.history)
             )
-        # Deterministic recency notice (#153): append a caveat naming the
+        # Deterministic recency notice (Phase 1 #153): append a caveat naming the
         # record's date for any stale record the planner returned this turn,
         # BEFORE the answer is emitted -- so a real user never sees years-old
         # data presented as "current" without its age. No LLM call; a pure
@@ -2264,13 +2264,13 @@ def _stream_chat(
 
 async def _resolve_conversation_patient_name(planner: PlannerProtocol) -> str | None:
     """Best-effort resolve the bound patient's display name for a brand-new
-    conversation (#224 name-binding), via the planner's OPTIONAL
+    conversation (Phase 1 #224 name-binding), via the planner's OPTIONAL
     ``resolve_patient_name`` capability -- duck-typed via ``getattr``, the
     same pattern ``_stream_chat`` already uses for ``run_streaming``: a
     ``PlannerProtocol`` double that only implements ``run()`` simply has no
     name to offer, and every caller of ``detect_foreign_patient_reference``
     already treats ``None`` as "name-binding unavailable" (falls back to
-    #223's numeric-only signal) -- never a hard failure.
+    Phase 1 #223's numeric-only signal) -- never a hard failure.
 
     Dispatched to FastAPI's threadpool because a real resolve is a blocking
     HTTP round trip (mirrors ``_validate_token``'s own threadpool dispatch,
@@ -2346,7 +2346,7 @@ async def chat_endpoint(
     # any more: a validation failure raises HTTPException(401) inside the
     # dependency and this body never runs.
 
-    # #124 Phase 5: the token's SMART launch patient (when present) is the
+    # Phase 1 #124 Phase 5: the token's SMART launch patient (when present) is the
     # authoritative binding -- reject a mismatch here, BEFORE the planner (and
     # thus any tool call) is run. A token WITHOUT launch context is not
     # hard-failed; the checker is a no-op and the request falls back to the
@@ -2391,7 +2391,7 @@ async def chat_endpoint(
                 detail="conversation_id is bound to a different patient_id",
             )
     else:
-        # #224: resolve the bound patient's own display name ONCE, at
+        # Phase 1 #224: resolve the bound patient's own display name ONCE, at
         # conversation-creation time -- see _resolve_conversation_patient_name.
         patient_name = await _resolve_conversation_patient_name(planner)
         conversation = store.create(request.patient_id, patient_name=patient_name)

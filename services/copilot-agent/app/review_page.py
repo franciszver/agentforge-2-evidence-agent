@@ -45,7 +45,7 @@ only working way to view the page, with no proxy to fall back on. **This
 was previously documented as "no PHI to disclose" -- that was false.**
 ``entry.feedback_comment`` is clinician free text, and
 ``app.review_queue``'s module docstring says outright it "may contain PHI"
-(the same reasoning #157 already applied to the promote-to-eval YAML,
+(the same reasoning Phase 1 #157 already applied to the promote-to-eval YAML,
 which never re-emits the raw comment). So instead of gating the route, this
 page never renders the raw comment: :func:`_entry_card` substitutes a fixed
 redaction placeholder (:data:`_REDACTED_COMMENT_PLACEHOLDER`) whenever

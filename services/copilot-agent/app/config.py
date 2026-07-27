@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:4b"
     ollama_api_timeout_seconds: float = 60.0
     ollama_extract_max_retries: int = 2
-    # Issue #204 (gate-3 finding on #194): the document-ingestion VISION role
+    # Issue #204 (gate-3 finding on Phase 1 #194): the document-ingestion VISION role
     # (app.supervisor.IntakeExtractorWorker, built by
     # app.chat._build_evidence_workers) used to share ``ollama_model`` above
     # with the text rollback path -- so a plain `docker compose ... up`,
@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     # ``openemr_base_url``.
     openemr_oauth_registration_path: str = "/oauth2/default/registration"
     openemr_oauth_token_path: str = "/oauth2/default/token"
-    # RFC 7662 token introspection endpoint (#124 Phase 4). The agent
+    # RFC 7662 token introspection endpoint (Phase 1 #124 Phase 4). The agent
     # introspects the forwarded per-user bearer here, authenticating as the
     # confidential prod client via HTTP Basic auth.
     openemr_oauth_introspection_path: str = "/oauth2/default/introspect"
@@ -186,11 +186,11 @@ class Settings(BaseSettings):
         "openid offline_access api:oemr api:fhir user/patient.read user/Patient.read"
     )
 
-    # DEV-ONLY dev-token bridge (issue #126, finding F4). The agent obtains a
+    # DEV-ONLY dev-token bridge (issue Phase 1 #126, finding F4). The agent obtains a
     # REAL OpenEMR user token server-side (dev password grant) for its tool
     # calls, because the browser's DevAgentToken is only an identity assertion,
     # not a real OpenEMR token. The real token never reaches the browser.
-    # Identity for ACL is this demo clinician until #124 (production
+    # Identity for ACL is this demo clinician until Phase 1 #124 (production
     # authorization_code) lands. See app/dev_token_bridge.py.
     #
     # Path (inside the agent container) to the confidential-client credentials
@@ -211,7 +211,7 @@ class Settings(BaseSettings):
         "user/procedure.read user/Observation.read"
     )
 
-    # Production authorization_code client (#124 Phase 1). Distinct from the dev
+    # Production authorization_code client (Phase 1 #124 Phase 1). Distinct from the dev
     # token bridge above: this client is driven by the browser via the OAuth2
     # authorization_code grant, and an OpenEMR admin (not a dev SQL shortcut)
     # enables it. See app/prod_client_registration.py and the README.
@@ -248,7 +248,7 @@ class Settings(BaseSettings):
     # written by the prod registration CLI. Distinct file from the dev bridge's.
     copilot_prod_client_creds_path: str = "/data/openemr-prod-client.json"
 
-    # #124 Phase 4 (pivotal): when true, the agent (a) validates the request's
+    # Phase 1 #124 Phase 4 (pivotal): when true, the agent (a) validates the request's
     # forwarded per-user OpenEMR bearer via introspection and (b) uses that same
     # token for every tool call, so OpenEMR enforces per-user ACL end-to-end.
     # Default OFF -- flag off keeps today's dev stub validator + DevTokenBridge

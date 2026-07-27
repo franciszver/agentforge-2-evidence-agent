@@ -430,7 +430,7 @@ def test_chat_endpoint_response_header_matches_the_recorded_turn_correlation_id(
 
 
 def test_chat_endpoint_logs_never_carry_patient_id(caplog):
-    """PHI guard (#144): the JSON log formatter renders every ``extra=``
+    """PHI guard (Phase 1 #144): the JSON log formatter renders every ``extra=``
     attribute on a record, so a log call site attaching ``patient_id`` --
     even one that predates this seam -- would now leak it into every
     emitted log line. No log record from a ``/chat`` invocation may carry

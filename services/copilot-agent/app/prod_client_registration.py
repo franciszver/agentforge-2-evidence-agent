@@ -1,4 +1,4 @@
-"""Production OAuth2 ``authorization_code`` client registration (#124 Phase 1).
+"""Production OAuth2 ``authorization_code`` client registration (Phase 1 #124 Phase 1).
 
 Registers the confidential client the browser-driven ``authorization_code``
 flow (Phase 2) will use. Unlike the dev token bridge (password grant, demo

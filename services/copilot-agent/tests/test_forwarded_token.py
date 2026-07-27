@@ -1,4 +1,4 @@
-"""#124 Phase 4: the planner factory uses the REQUEST's forwarded token.
+"""Phase 1 #124 Phase 4: the planner factory uses the REQUEST's forwarded token.
 
 Flag ON  -> ``get_planner_factory`` builds the planner with the request's own
             bearer, so OpenEMR maps every tool call to that user (per-user ACL).

@@ -146,7 +146,7 @@ def test_authenticated_get_sets_bearer_header_and_returns_200_body():
     assert response.json()["resourceType"] == "Bundle"
 
 
-# --- #124 Phase 1: production authorization_code client registration -------
+# --- Phase 1 #124 Phase 1: production authorization_code client registration -------
 
 # The canonical browser-facing module OAuth callback. Phase 2's authorize/
 # callback must match this byte-for-byte (OpenEMR requires exact redirect_uri
@@ -205,7 +205,7 @@ def test_register_prod_client_sends_authz_code_payload():
 
 
 def test_dev_register_cli_payload_unchanged(tmp_path, monkeypatch):
-    """Regression guard: #124 Phase 1 must not alter the DEV bridge's
+    """Regression guard: Phase 1 #124 Phase 1 must not alter the DEV bridge's
     registration inputs (internal callback redirect + explicit per-resource
     dev scopes). Drives the real ``_register_cli`` with register_client faked."""
     from app import dev_token_bridge
@@ -232,7 +232,7 @@ def test_dev_register_cli_payload_unchanged(tmp_path, monkeypatch):
     )
 
 
-# --- #176: OAuth client-secret creds file must be owner-only (0o600) --------
+# --- Phase 1 #176: OAuth client-secret creds file must be owner-only (0o600) --------
 
 
 def _stub_prod_registration(monkeypatch, tmp_path):

@@ -32,7 +32,7 @@ Only non-PHI data is ever stored:
     this field carries no PHI: it is not rendered on any page for that
     reason (``app.review_page``'s ``/review`` redacts it; the P4.5 dashboard
     never rendered it; ``/review/promote`` never re-emits it into the public
-    ``evals/`` repo, #157). It stays on disk here only.
+    ``evals/`` repo, Phase 1 #157). It stays on disk here only.
   * ownership, recorded on the ``REQUEST`` and ``FEEDBACK`` spans in ONE of
     two mutually-exclusive regimes, explicitly tagged by ``owner_kind`` (see
     :class:`OwnerKind`) so a reader never has to guess which one wrote a
