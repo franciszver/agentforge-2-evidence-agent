@@ -158,3 +158,26 @@ docker run -d --rm -p 8099:8000 --name copilot-agent-test copilot-agent:dev
 curl http://localhost:8099/health
 docker stop copilot-agent-test
 ```
+
+### Dependency lock (`requirements.txt`)
+
+The Dockerfile installs the production runtime dependencies from
+`requirements.txt`, not directly from `pyproject.toml`. That file is
+generated, hash-locked, and pins the entire runtime closure (transitives
+included) so every build from a given commit resolves byte-identical
+dependencies -- see issue 213. `pyproject.toml`'s `[project.dependencies]`
+floor/ceiling ranges (#196) remain the human-facing contract; the lock is
+one concrete, verified point inside those ranges.
+
+**Do not hand-edit `requirements.txt`.** Regenerate it after changing
+`[project.dependencies]`:
+
+```bash
+bash scripts/lock-deps.sh
+```
+
+This runs `pip-compile --generate-hashes` inside the same digest-pinned
+`python:3.11-slim` base the Dockerfile installs into, so the lock matches
+the platform/Python build the image actually ships. Review the diff before
+committing -- `tests/test_dependency_lock.py` enforces that every declared
+runtime dependency stays pinned-with-hashes and inside pyproject's range.

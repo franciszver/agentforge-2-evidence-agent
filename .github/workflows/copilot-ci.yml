@@ -70,6 +70,28 @@ jobs:
         working-directory: services/copilot-agent
         run: pip-audit
 
+      - name: Audit locked container dependencies for known vulnerabilities
+        working-directory: services/copilot-agent
+        # Separate from the env audit above: this reads requirements.txt (the
+        # hash-locked production runtime closure the Dockerfile installs,
+        # issue #213) directly, so a vulnerable transitive pinned in the lock
+        # is caught even if the dev/test env above resolved something else.
+        run: pip-audit -r requirements.txt
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build copilot-agent image
+        # No push -- this job exists purely to catch a broken lockfile or
+        # Dockerfile (issue #213) before merge; nothing else in this
+        # workflow builds the image.
+        run: docker build services/copilot-agent
+
   jest-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
