@@ -70,6 +70,73 @@ def test_introspect_active_returns_active_and_uses_body_client_auth():
     assert _CID not in captured["url"]
 
 
+def test_introspect_parses_sub_and_fhir_user():
+    # #185: OpenEMR's introspection response carries a signature-verified
+    # `sub` (the user id) and, for access-token introspection, a derived
+    # `fhirUser` reference -- see IntrospectionResult's docstring for the
+    # OpenEMR source lines this parsing matches.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "active": True,
+                "exp": 9999999999,
+                "sub": "42",
+                "fhirUser": "Practitioner/42",
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = introspect_token(
+            client,
+            base_url="https://openemr",
+            introspect_path="/oauth2/default/introspect",
+            client_id=_CID,
+            client_secret=_CSEC,
+            token=_TOK,
+        )
+
+    assert result == IntrospectionResult(
+        active=True, exp=9999999999, sub="42", fhir_user="Practitioner/42"
+    )
+
+
+def test_introspect_active_without_sub_or_fhir_user_has_none_of_both():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "exp": 9999999999})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = introspect_token(
+            client,
+            base_url="https://openemr",
+            introspect_path="/oauth2/default/introspect",
+            client_id=_CID,
+            client_secret=_CSEC,
+            token=_TOK,
+        )
+
+    assert result.sub is None
+    assert result.fhir_user is None
+
+
+def test_introspect_non_string_sub_and_fhir_user_are_ignored():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"active": True, "sub": 42, "fhirUser": 42})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = introspect_token(
+            client,
+            base_url="https://openemr",
+            introspect_path="/oauth2/default/introspect",
+            client_id=_CID,
+            client_secret=_CSEC,
+            token=_TOK,
+        )
+
+    assert result.sub is None
+    assert result.fhir_user is None
+
+
 def test_introspect_inactive_returns_invalid():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"active": False})

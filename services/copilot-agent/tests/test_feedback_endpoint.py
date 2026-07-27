@@ -283,7 +283,7 @@ class _RaisingTraceStore:
     would raise ``AttributeError`` on this minimal double before the write
     it is meant to exercise ever runs."""
 
-    def caller_owns_trace(self, correlation_id: str, token: str) -> bool:
+    def caller_owns_trace(self, correlation_id: str, token: str, *, subject: str | None = None) -> bool:
         return True
 
     def record_feedback_span(self, **kwargs: object) -> int:

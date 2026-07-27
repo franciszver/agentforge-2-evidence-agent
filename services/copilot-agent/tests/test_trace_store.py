@@ -46,6 +46,38 @@ CREATE TABLE IF NOT EXISTS spans (
 )
 """
 
+# The exact pre-#185 schema (committed on main before this branch added
+# owner_kind/owner_subject) -- P3.8's columns plus #180's owner_token_hash,
+# nothing else. Models a REAL production traces.db recorded entirely under
+# the #180 token-hash regime, upgraded in place by this branch.
+_PRE_185_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
+    span_type TEXT NOT NULL,
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_name TEXT,
+    args_hash TEXT,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    verdict TEXT,
+    claim_count INTEGER,
+    stripped_count INTEGER,
+    feedback_thumb TEXT,
+    feedback_comment TEXT,
+    error_category TEXT,
+    span_id TEXT,
+    parent_span_id TEXT,
+    worker_name TEXT,
+    sub_task_type TEXT,
+    owner_token_hash TEXT
+)
+"""
+
 # Derived (not a hardcoded literal) so no secret-shaped string is committed;
 # stable within a run, so the store fixture and the hash-equality assertions
 # below share the SAME key and still prove HMAC keying.
@@ -151,6 +183,47 @@ def test_migrates_a_pre_p38_db_so_new_columns_are_writable(db_path: str) -> None
 
     # Re-constructing against the now-migrated DB must still not raise.
     TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+
+def test_migrates_a_pre_185_db_with_existing_token_hash_rows_so_they_stay_claimable(db_path: str) -> None:
+    """#185: a REAL pre-existing ``traces.db`` recorded entirely under #180's
+    token-hash regime (no ``owner_kind``/``owner_subject`` columns at all)
+    must migrate cleanly, AND the pre-existing row's ownership must survive
+    the migration unchanged -- ``caller_owns_trace`` still recognizes the
+    original token as the owner, inferring ``token_hash`` from the presence
+    of ``owner_token_hash`` alone (see that method's docstring)."""
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_PRE_185_SCHEMA)
+        connection.execute(
+            "INSERT INTO spans (correlation_id, span_type, start_ts, end_ts, duration_ms, status, "
+            "owner_token_hash) VALUES (?, 'request', 0.0, 1.0, 1000.0, 'ok', ?)",
+            ("corr-pre-185", hash_owner_token("clinician-a-token", _TEST_HASH_KEY)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    # Must not raise sqlite3.OperationalError: no column named owner_kind/owner_subject.
+    store = TraceStore(db_path=db_path, hash_secret=_TEST_HASH_KEY)
+
+    span = store.get_spans("corr-pre-185")[0]
+    assert span.owner_kind is None
+    assert span.owner_subject is None
+    assert span.owner_token_hash is not None
+
+    # The pre-existing owner still owns their trace after the migration --
+    # #185 must never re-litigate a row #180 already decided.
+    assert store.caller_owns_trace("corr-pre-185", "clinician-a-token") is True
+    assert store.caller_owns_trace("corr-pre-185", "attacker-token") is False
+
+    # New writes against the migrated DB use the new columns normally.
+    store.record_request_span(
+        correlation_id="corr-post-185", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="user-1"
+    )
+    new_span = store.get_spans("corr-post-185")[0]
+    assert new_span.owner_kind == "subject"
+    assert new_span.owner_subject == "user-1"
 
 
 def test_migration_tolerates_a_concurrent_racing_alter_table(db_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,6 +381,166 @@ def test_caller_owns_trace_first_request_span_wins_over_a_later_appended_one(sto
 
     assert store.caller_owns_trace("corr-shared", "clinician-a-token") is True
     assert store.caller_owns_trace("corr-shared", "attacker-token") is False
+
+
+# --- #185: subject-based ownership + the mixed-regime matrix -------------
+
+
+def test_record_request_span_with_owner_subject_stores_subject_kind(store: TraceStore) -> None:
+    store.record_request_span(
+        correlation_id="corr-subj", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="user-42"
+    )
+
+    span = store.get_spans("corr-subj")[0]
+    assert span.owner_kind == "subject"
+    assert span.owner_subject == "user-42"
+    # Never both regimes on one row: no token hash even though owner_subject
+    # was supplied and no owner_token was.
+    assert span.owner_token_hash is None
+
+
+def test_record_request_span_with_owner_subject_ignores_owner_token(store: TraceStore) -> None:
+    # #185: a caller supplying BOTH (should never happen in production --
+    # app.chat picks exactly one per the current flag -- but the store must
+    # not silently blend the two into an ambiguous row).
+    store.record_request_span(
+        correlation_id="corr-both",
+        start_ts=0.0,
+        end_ts=1.0,
+        ok=True,
+        owner_token="some-token",
+        owner_subject="user-1",
+    )
+
+    span = store.get_spans("corr-both")[0]
+    assert span.owner_kind == "subject"
+    assert span.owner_subject == "user-1"
+    assert span.owner_token_hash is None
+
+
+def test_record_request_span_without_owner_subject_stores_token_hash_kind(store: TraceStore) -> None:
+    store.record_request_span(
+        correlation_id="corr-tok", start_ts=0.0, end_ts=1.0, ok=True, owner_token="clinician-a-token"
+    )
+
+    span = store.get_spans("corr-tok")[0]
+    assert span.owner_kind == "token_hash"
+    assert span.owner_subject is None
+    assert span.owner_token_hash is not None
+
+
+def test_caller_owns_trace_two_different_tokens_same_subject_both_claim(store: TraceStore) -> None:
+    # The issue's red-first scenario: two different bearer tokens issued to
+    # the SAME OpenEMR subject (e.g. a reissued token, or two browser
+    # sessions for the same clinician) must both be able to rate that
+    # subject's own trace.
+    store.record_request_span(
+        correlation_id="corr-subj-owner", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="user-42"
+    )
+
+    assert store.caller_owns_trace("corr-subj-owner", "token-session-1", subject="user-42") is True
+    assert store.caller_owns_trace("corr-subj-owner", "token-session-2-reissued", subject="user-42") is True
+
+
+def test_caller_owns_trace_different_subject_is_rejected(store: TraceStore) -> None:
+    store.record_request_span(
+        correlation_id="corr-subj-owner", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="user-42"
+    )
+
+    assert store.caller_owns_trace("corr-subj-owner", "attacker-token", subject="user-99") is False
+
+
+# Mixed-regime matrix ------------------------------------------------------
+#
+# Cell 1: a row written under the #180 token-hash regime, checked later with
+# the flag ON (caller now presents a subject) -- must remain claimable ONLY
+# via the original token, never via any subject (no owner_subject was ever
+# recorded for it, so no new claimant becomes possible).
+def test_matrix_token_hash_row_stays_token_claimable_even_when_caller_also_has_a_subject(
+    store: TraceStore,
+) -> None:
+    store.record_request_span(
+        correlation_id="corr-mixed-1", start_ts=0.0, end_ts=1.0, ok=True, owner_token="clinician-a-token"
+    )
+
+    # Original owner, now also presenting a subject (flag flipped ON) -> True.
+    assert store.caller_owns_trace("corr-mixed-1", "clinician-a-token", subject="user-42") is True
+    # A DIFFERENT caller whose subject happens to be supplied cannot claim it
+    # via subject -- this row was never subject-owned.
+    assert store.caller_owns_trace("corr-mixed-1", "wrong-token", subject="user-42") is False
+
+
+# Cell 2: a row written under the #185 subject regime, checked later with the
+# flag OFF (caller has no subject at all) -- must be rejected outright, even
+# for the original clinician's own token. Fail-closed: the flag-off regime
+# has no verified subject to compare, and falling back to a token comparison
+# here would make the row ambiguously claimable under either regime.
+def test_matrix_subject_row_is_unclaimable_once_the_flag_is_off_even_for_the_original_token(
+    store: TraceStore,
+) -> None:
+    store.record_request_span(
+        correlation_id="corr-mixed-2", start_ts=0.0, end_ts=1.0, ok=True, owner_subject="user-42"
+    )
+
+    # Same token that /chat originally saw, but no subject presented now
+    # (flag OFF) -> rejected, not silently allowed through.
+    assert store.caller_owns_trace("corr-mixed-2", "clinician-a-token", subject=None) is False
+
+
+# Cell 3: NULL / pre-migration rows (no owner recorded at all) -- must always
+# reject, regardless of what the caller presents.
+def test_matrix_unowned_row_rejects_both_token_only_and_subject_callers(store: TraceStore) -> None:
+    store.record_request_span(correlation_id="corr-mixed-3", start_ts=0.0, end_ts=1.0, ok=True)
+
+    assert store.caller_owns_trace("corr-mixed-3", "any-token") is False
+    assert store.caller_owns_trace("corr-mixed-3", "any-token", subject="user-42") is False
+
+
+# Cell 4: a row written by #180-era code that predates the owner_kind column
+# entirely (owner_token_hash set, owner_kind/owner_subject added later by
+# _migrate_missing_columns and therefore NULL) -- must be treated exactly as
+# token_hash, never as subject, so upgrading to #185 never re-litigates a
+# row #180 already decided.
+def test_matrix_legacy_pre_owner_kind_row_is_treated_as_token_hash(store: TraceStore, db_path: str) -> None:
+    # Simulate the #180-era write path directly (no owner_kind/owner_subject
+    # populated), bypassing record_request_span's #185-aware column logic.
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "INSERT INTO spans (correlation_id, span_type, start_ts, end_ts, duration_ms, status, "
+            "owner_token_hash) VALUES (?, 'request', 0.0, 1.0, 1000.0, 'ok', ?)",
+            ("corr-mixed-4", hash_owner_token("clinician-a-token", _TEST_HASH_KEY)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    span = store.get_spans("corr-mixed-4")[0]
+    assert span.owner_kind is None  # never populated by the #180-era write
+    assert span.owner_token_hash is not None
+
+    assert store.caller_owns_trace("corr-mixed-4", "clinician-a-token") is True
+    assert store.caller_owns_trace("corr-mixed-4", "clinician-a-token", subject="user-42") is True
+    assert store.caller_owns_trace("corr-mixed-4", "wrong-token") is False
+    # A caller with only a subject and none of the original token cannot
+    # claim a token_hash-regime row via that subject.
+    assert store.caller_owns_trace("corr-mixed-4", "some-other-token", subject="user-42") is False
+
+
+def test_record_feedback_span_records_owner_subject_and_kind(store: TraceStore) -> None:
+    store.record_feedback_span(
+        correlation_id="corr-fb-subj",
+        start_ts=0.0,
+        end_ts=1.0,
+        feedback_thumb=FeedbackThumb.UP,
+        feedback_comment=None,
+        owner_subject="user-42",
+    )
+
+    span = store.get_spans("corr-fb-subj")[0]
+    assert span.owner_kind == "subject"
+    assert span.owner_subject == "user-42"
+    assert span.owner_token_hash is None
 
 
 def test_record_tool_span_write_and_read_back(store: TraceStore) -> None:
