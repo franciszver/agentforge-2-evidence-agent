@@ -20,6 +20,7 @@ from app.semantic_support import (
     SupportVerdict,
     apply_semantic_support,
     judge_support,
+    judge_support_full,
 )
 from app.verification import (
     CitationCheckResult,
@@ -121,6 +122,50 @@ def test_judge_support_never_raises_engine_error():
     # Must not propagate -- a flaky judge call degrades to "not verified",
     # never crashes an otherwise-working turn.
     judge_support("claim text", "quote text", judge)
+
+
+class _MessageCapturingJudge:
+    """Records the EXACT ``messages`` list handed to ``.extract`` (not just
+    the user-content string like ``_ScriptedJudge`` does), so a test can
+    assert two call sites built byte-identical messages -- the regression
+    guard for issue #192 gate-1 finding 1 (see the test below)."""
+
+    def __init__(self, response: SemanticSupportJudgement) -> None:
+        self._response = response
+        self.messages_seen: list[list[dict[str, str]]] = []
+
+    def extract(self, prompt_or_messages: object, schema: type[BaseModel], *, options: object = None) -> BaseModel:
+        assert schema is SemanticSupportJudgement
+        assert isinstance(prompt_or_messages, list)
+        self.messages_seen.append(prompt_or_messages)
+        return self._response
+
+
+def test_judge_support_full_builds_byte_identical_messages_to_judge_support():
+    """Regression guard for issue #192 gate-1 finding 1: the live injection
+    battery (``evals/runner/issue_192_injection_battery.py``) used to
+    reconstruct ``judge_support``'s message shape by importing this module's
+    private ``_SYSTEM_PROMPT``/``_INSTRUCTIONS_TEMPLATE`` and re-assembling
+    ``messages`` itself -- so if this module's assembly ever changed shape,
+    the battery would silently keep attacking the OLD shape. The fix: the
+    battery now calls ``judge_support_full`` directly (the same public seam
+    ``judge_support`` itself delegates to), so there is only ONE message-
+    assembly code path left. This test proves that path is exercised
+    identically regardless of entry point -- ``judge_support`` (bool) and
+    ``judge_support_full`` (full judgement) must send byte-for-byte the same
+    ``messages`` for the same inputs, including ``context_facts``."""
+    claim_text = "The patient's LDL cholesterol was 165 mg/dL, above the target range."
+    quote = "Lipid panel results: LDL cholesterol 165 mg/dL. Target LDL below 100 mg/dL."
+    context_facts = ["a1c: 6.8%"]
+
+    bool_judge = _MessageCapturingJudge(_supported())
+    judge_support(claim_text, quote, bool_judge, context_facts)
+
+    full_judge = _MessageCapturingJudge(_supported())
+    judge_support_full(claim_text, quote, full_judge, context_facts)
+
+    assert bool_judge.messages_seen == full_judge.messages_seen
+    assert len(bool_judge.messages_seen[0]) == 2  # system + user, same shape both entry points
 
 
 # ---------------------------------------------------------------------------

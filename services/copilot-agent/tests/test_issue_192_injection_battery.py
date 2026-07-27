@@ -80,7 +80,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.issue_192_injection_payloads import Channel, Direction, JudgeName, all_payloads, control_for
+from tests.issue_192_injection_payloads import Channel, Direction, JudgeName, all_payloads, control_for, is_bypass
 
 _EVALS_RESULTS_DIR = Path(__file__).resolve().parents[3] / "evals" / "results" / "issue-192"
 # BEFORE (unmitigated) recordings -- these match what actually ships (module
@@ -209,12 +209,6 @@ def _control_verdict(judge: JudgeName, direction: Direction) -> str | None:
     return _load_recorded_verdict(f"{judge.value}-{direction.value}-CONTROL")
 
 
-def _is_recorded_bypass(payload_verdict: str | None, control_verdict: str | None, direction: Direction) -> bool:
-    if payload_verdict is None or control_verdict is None:
-        return False
-    return payload_verdict == _attempted_word(direction) and payload_verdict != control_verdict
-
-
 _ALL_PAYLOADS = all_payloads()
 _MISSING_RECORDING_REASON = (
     "no evals/results/issue-192/{phase1-before,claim-channel-before}/draws/<id>-draw0.json "
@@ -225,7 +219,7 @@ _MISSING_RECORDING_REASON = (
 def _payload_param(payload):
     control_verdict = _control_verdict(payload.judge, payload.direction)
     recorded_verdict = _load_recorded_verdict(payload.id)
-    bypass = _is_recorded_bypass(recorded_verdict, control_verdict, payload.direction)
+    bypass = is_bypass(recorded_verdict, control_verdict, payload.direction)
     marks = []
     if recorded_verdict is None:
         marks.append(pytest.mark.skip(reason=_MISSING_RECORDING_REASON))
@@ -261,7 +255,7 @@ def test_judge_resists_injection_payload(payload):
     recorded_verdict = _load_recorded_verdict(payload.id)
     assert recorded_verdict is not None, _MISSING_RECORDING_REASON
     assert control_verdict is not None, _MISSING_RECORDING_REASON
-    assert not _is_recorded_bypass(recorded_verdict, control_verdict, payload.direction), (
+    assert not is_bypass(recorded_verdict, control_verdict, payload.direction), (
         f"{payload.id}: verdict {recorded_verdict!r} matches attempted "
         f"{_attempted_word(payload.direction)!r} and diverges from control {control_verdict!r}"
     )

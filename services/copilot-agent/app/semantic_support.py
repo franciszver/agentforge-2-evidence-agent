@@ -229,13 +229,15 @@ the patient's raw chart data -- not from the QUOTE): {facts}
 """
 
 
-def judge_support(
+def judge_support_full(
     claim_text: str,
     quote: str,
     judge: SemanticSupportJudgeLike,
     context_facts: Sequence[str] | None = None,
-) -> bool:
-    """Ask ``judge`` whether ``quote`` semantically supports ``claim_text``.
+) -> SemanticSupportJudgement:
+    """Ask ``judge`` whether ``quote`` semantically supports ``claim_text`` --
+    the DocumentCitation-oriented counterpart to
+    ``app.source_ref_relevance.judge_source_ref_relevance_full``.
 
     ``context_facts`` (issues #111/#128) are optional ground-truth facts --
     e.g. a sibling citation's already-confirmed chart value -- given to the
@@ -244,11 +246,18 @@ def judge_support(
     restated in the quote itself. See module docstring, "Established-facts
     context", for the safety invariant governing what may be passed here.
 
-    Fail-closed (see module docstring): ``True`` only for an explicit
-    ``SupportVerdict.SUPPORTED``. Any judge error (``LLMEngineError`` --
+    Returns the FULL judgement (verdict + reason), unlike ``judge_support``
+    below -- exists as a separate function so a measurement harness (e.g.
+    ``evals/runner/issue_192_injection_battery.py``) can log WHY the judge
+    decided what it decided and exercise the EXACT production message shape,
+    rather than reconstructing it from this module's private templates.
+    Production code (``apply_semantic_support``) only ever needs the bool.
+
+    Fail-closed (see module docstring): a judge error (``LLMEngineError`` --
     malformed output after retries, timeout, HTTP failure) is caught here and
-    treated as unsupported, never propagated -- a flaky judge call must
-    degrade to "not verified", never crash an otherwise-working turn."""
+    reported as an explicit ``NOT_SUPPORTED`` judgement rather than
+    propagating -- a flaky judge call must degrade to "not verified", never
+    crash an otherwise-working turn."""
     context_block = ""
     if context_facts:
         context_block = _CONTEXT_BLOCK_TEMPLATE.format(facts="; ".join(context_facts))
@@ -260,9 +269,21 @@ def judge_support(
         },
     ]
     try:
-        judgement: SemanticSupportJudgement = judge.extract(messages, SemanticSupportJudgement)
-    except LLMEngineError:
-        return False
+        return judge.extract(messages, SemanticSupportJudgement)
+    except LLMEngineError as exc:
+        return SemanticSupportJudgement(verdict=SupportVerdict.NOT_SUPPORTED, reason=f"judge error (fail-closed): {exc}"[:280])
+
+
+def judge_support(
+    claim_text: str,
+    quote: str,
+    judge: SemanticSupportJudgeLike,
+    context_facts: Sequence[str] | None = None,
+) -> bool:
+    """Fail-closed bool wrapper around ``judge_support_full`` (the production
+    call shape ``apply_semantic_support`` uses): ``True`` only for an
+    explicit ``SupportVerdict.SUPPORTED``."""
+    judgement = judge_support_full(claim_text, quote, judge, context_facts)
     return judgement.verdict is SupportVerdict.SUPPORTED
 
 
