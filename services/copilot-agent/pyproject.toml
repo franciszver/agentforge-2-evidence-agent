@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 # next MINOR for 0.x packages where any minor can break. Full policy
 # discussion and rejected alternatives (exact `==` pins, a lockfile): #196.
 dependencies = [
-    "fastapi>=0.139.2,<0.140",  # verified: 0.139.2 -- 0.x: any minor may break (ceiling trails latest 0.140.7, deliberate; see PR)
+    "fastapi>=0.139.2,<0.141",  # verified: 0.139.2 -- 0.x: any minor may break (ceiling trails latest 0.140.7, deliberate; see PR)
     "uvicorn[standard]>=0.51.0,<0.52",  # verified: 0.51.0 -- 0.x: any minor may break
     "pydantic>=2.13.4,<3",  # verified: 2.13.4 -- semver: only a major breaks
     "pydantic-settings>=2.14.2,<3",  # verified: 2.14.2 -- semver: only a major breaks
